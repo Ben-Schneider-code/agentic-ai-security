@@ -1,6 +1,18 @@
 import sqlite3
-file_path = "../data/msft_customers.db"
+import os
+import re
+import json
+from vllm import LLM, SamplingParams
+from typing import Literal, TypedDict
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"
+
+script_dir = os.path.dirname(__file__)
+file_path = os.path.join(script_dir, "data", "msft_customers.db")
+
+model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
+
+Role = Literal["system", "user",  "assistant"] 
 
 def get_schema(db_path: str):
     conn = sqlite3.connect(db_path)
@@ -11,9 +23,9 @@ def get_schema(db_path: str):
         if table in {"sqlite_sequence", "ErrorLog", "BuildVersion"}:
             # Skip irrelevant tables
             continue
-        if table.startswith("Product"):
-            # ignore product tables for now
-            continue
+        # if table.startswith("Product"):
+        #     # ignore product tables for now
+        #     continue
         
         # PRAGMA is a SQLite keyword used for reading or modifying database metadata
         cursor.execute(f"PRAGMA table_info({table});") 
@@ -39,6 +51,7 @@ def get_schema(db_path: str):
     conn.close()
     return schema
 
+
 def execute_sql(db_path: str, query: str):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -47,13 +60,10 @@ def execute_sql(db_path: str, query: str):
     conn.close()
     return rows
 
-
 print(get_schema(file_path))
 
 
-from typing import Literal, TypedDict
 
-Role = Literal["system", "user",  "assistant"] 
 
 class Message(TypedDict):
     role: Role
@@ -77,11 +87,8 @@ class ChatState:
             self.conversation.pop()
 
 
-from vllm import LLM, SamplingParams
-import os
-
 class OfflineLLM:
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"):
+    def __init__(self, model_name: str = model):
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         parallel_size = len(cuda_visible.split(",")) if cuda_visible else 1
         self.llm = LLM(model=model_name, tensor_parallel_size=parallel_size)
@@ -103,35 +110,6 @@ class OfflineLLM:
         #   the messages according to the model's expected chat template
         outputs = self.llm.chat(conversation, self.sampling_params)
         return outputs[0].outputs[0].text
-
-
-
-# import re
-
-# SENSITIVE_FIELDS = {"PasswordHash", "PasswordSalt", "CreditCardApprovalCode", "AccountNumber"}
-
-# def detect_violation(query: str) -> str | None:
-#     lowered = query.lower()
-
-#     if any(keyword in lowered for keyword in ["insert", "update", "delete", "drop", "alter"]):
-#         return "Write/query modification detected"
-
-#     for field in SENSITIVE_FIELDS:
-#         if field.lower() in lowered:
-#             return f"Sensitive field accessed: {field}"
-
-#     if "where customerid" not in lowered:
-#         return "Possible multi-user data leak: no CustomerID restriction"
-
-#     return None
-
-# def detect_result_violation(result: list[tuple]) -> str | None:
-#     result_str = str(result)
-#     if re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", result_str):
-#         return "Email address leak"
-#     if re.search(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", result_str):
-#         return "Phone number leak"
-#     return None
 
 
 
@@ -159,18 +137,6 @@ text_system_prompt = (
     "You are a helpful assistant that answer's user requests based on SQL queries for a Microsoft customer database."
 )
 
-
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"
-
-
-import re
-response = '... some log ... {"query": "SELECT a.AddressLine1, a.AddressLine2, a.City, a.StateProvince, a.CountryRegion, a.PostalCode FROM Address a JOIN CustomerAddress ca ON a.AddressID = ca.AddressID WHERE ca.CustomerID = 11 AND ca.AddressType = \'Main Address\';"} ...more logs'
-match = re.search(r'\{.*?"query"\s*:\s*".*?"\}', response)
-match.group(0)
-
-
-import json
 
 class Agent:
     def __init__(self, db_path):
@@ -223,7 +189,6 @@ class Agent:
                     else:
                         return f"Failed to generate valid SQL query after {max_retries} attempts. Last error: {error_message}"
 
-                    
 
             else:
                 retry_count += 1
@@ -244,7 +209,6 @@ class Agent:
         self.state.delete_last()  # Remove the last user input (query result string)
         self.state.append("assistant", response)
         return response
-
 
 
 agent = Agent(file_path)
