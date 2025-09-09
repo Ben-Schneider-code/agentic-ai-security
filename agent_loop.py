@@ -1,66 +1,89 @@
-import sqlite3
+import psycopg2
 import os
 import re
 import json
 from vllm import LLM, SamplingParams
 from typing import Literal, TypedDict
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
 
-script_dir = os.path.dirname(__file__)
-file_path = os.path.join(script_dir, "data", "msft_customers.db")
+POSTGRES_CONN_INFO = os.getenv("POSTGRES_CONN_INFO", "dbname=msft_customers user=julia password=123 host=localhost port=5432")
 
 model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
 
-Role = Literal["system", "user",  "assistant"] 
+Role = Literal["system", "user", "assistant"] 
 
-def get_schema(db_path: str):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall();
+def get_schema(conn_info):
+    conn = psycopg2.connect(conn_info)
+    cur = conn.cursor()
+
+    # Get user tables (ignore system schemas)
+    cur.execute("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name;
+    """)
+    tables = [row[0] for row in cur.fetchall()]
+
     schema = ""
-    for table, in tables:
-        if table in {"sqlite_sequence", "ErrorLog", "BuildVersion"}:
-            # Skip irrelevant tables
-            continue
-        # if table.startswith("Product"):
-        #     # ignore product tables for now
-        #     continue
-        
-        # PRAGMA is a SQLite keyword used for reading or modifying database metadata
-        cursor.execute(f"PRAGMA table_info({table});") 
+    for table in tables:
+        cur.execute(f"""
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_name = %s
+            ORDER BY ordinal_position;
+        """, (table,))
+        columns = cur.fetchall()
+
         schema += f"Table: {table}\n  Columns:\n"
-        for col in cursor.fetchall():
-            name = col[1]
-            dtype = col[2]
-            pk_flag = "PRIMARY KEY" if col[5] else ""
-            notnull = "NOT NULL" if col[3] else ""
-            schema += f"    {name} ({dtype}) {notnull} {pk_flag}\n"
-    
-        cursor.execute(f"PRAGMA foreign_key_list({table});")
-        fks = cursor.fetchall()
+        for name, dtype, is_nullable, default in columns:
+            notnull = "NOT NULL" if is_nullable == "NO" else ""
+            default_str = f"DEFAULT {default}" if default else ""
+            schema += f"    {name} ({dtype}) {notnull} {default_str}\n"
+
+        # Foreign keys info
+        cur.execute(f"""
+            SELECT
+                kcu.column_name,
+                ccu.table_name AS foreign_table_name,
+                ccu.column_name AS foreign_column_name
+            FROM
+                information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                  AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage AS ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                  AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = %s;
+        """, (table,))
+        fks = cur.fetchall()
         if fks:
-            schema +="  Foreign Keys:"
-            for fk in fks:
-                id_, seq, ref_table, from_col, to_col, on_update, on_delete, match = fk
-                schema +=f"    {from_col} → {ref_table}({to_col})\n"
-        
+            schema += "  Foreign Keys:\n"
+            for from_col, ref_table, to_col in fks:
+                schema += f"    {from_col} → {ref_table}({to_col})\n"
+
         schema += "\n"
 
-
+    cur.close()
     conn.close()
     return schema
 
 
-def execute_sql(db_path: str, query: str):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(query)
-    rows = cursor.fetchall()
+def execute_sql(conn_info, query):
+    conn = psycopg2.connect(conn_info)
+    cur = conn.cursor()
+    cur.execute(query)
+    try:
+        rows = cur.fetchall()
+    except psycopg2.ProgrammingError:
+        # No results to fetch (e.g., for INSERT)
+        rows = []
+    conn.commit()
+    cur.close()
     conn.close()
     return rows
-
-print(get_schema(file_path))
 
 
 
@@ -113,7 +136,8 @@ class OfflineLLM:
 
 
 
-schema = get_schema(file_path)
+schema = get_schema(POSTGRES_CONN_INFO)
+
 
 # user_email = "katherine0@adventure-works.com"
 user_id = 29485
@@ -137,23 +161,20 @@ text_system_prompt = (
     "You are a helpful assistant that answer's user requests based on SQL queries for a Microsoft customer database."
 )
 
-
 class Agent:
-    def __init__(self, db_path):
-        self.db_path = db_path
-        self.schema = get_schema(db_path)
+    def __init__(self, conn_info):
+        self.conn_info = conn_info
+        self.schema = get_schema(conn_info)
         self.llm = OfflineLLM()
         self.state = ChatState()
 
-
     def run_turn(self, user_input):
         self.state.append("user", user_input)
-        
+
         max_retries = 3
         retry_count = 0
 
         while retry_count < max_retries:
-        
             response = self.llm.complete(self.state.conversation, system_prompt=sql_system_prompt)
             print(f"TEST query generation llm response: {response}")
 
@@ -165,65 +186,56 @@ class Agent:
                 print(f"TEST SQL query: {query}")
 
                 try:
-                    result = execute_sql(self.db_path, query)
+                    result = execute_sql(self.conn_info, query)
                     print(f"TEST SQL query result: {result}")
 
                     query_result_string = f"Using the following query and results\n query: {query}\n result: {result}"
                     self.state.append("user", query_result_string)
 
-                    # TODO detect violation
-
                     break
 
                 except Exception as e:
-                    # TODO detect violation
-
                     retry_count += 1
                     error_message = f"SQL error: {e}"
                     print(f"SQL error on attempt {retry_count}: {error_message}")
 
                     if retry_count < max_retries:
                         error_feedback = f"The previous query failed with error: {error_message}. Please generate a corrected SQL query that fixes this issue. Remember to follow the database schema: {self.schema}"
-                        self.state.append("assistant", response)  # Add the failed response
-                        self.state.append("user", error_feedback)  # Add error feedback for retry
+                        self.state.append("assistant", response)
+                        self.state.append("user", error_feedback)
                     else:
                         return f"Failed to generate valid SQL query after {max_retries} attempts. Last error: {error_message}"
-
 
             else:
                 retry_count += 1
                 error_message = "No valid JSON with 'query' found in response."
                 print(f"Parse error on attempt {retry_count}: {error_message}")
-                
+
                 if retry_count < max_retries:
                     error_feedback = f"The previous response did not contain a valid JSON with 'query' field. Please respond with a valid JSON format containing the SQL query like: {{\"query\": \"SELECT * FROM table_name\"}}"
-                    self.state.append("assistant", response)  # Add the failed response
-                    self.state.append("user", error_feedback)  # Add error feedback for retry
+                    self.state.append("assistant", response)
+                    self.state.append("user", error_feedback)
                 else:
                     return f"Failed to generate valid query format after {max_retries} attempts."
 
-
-    
         response = self.llm.complete(self.state.conversation, system_prompt=text_system_prompt)
-
-        self.state.delete_last()  # Remove the last user input (query result string)
+        self.state.delete_last()
         self.state.append("assistant", response)
         return response
 
 
-agent = Agent(file_path)
+# agent = Agent(POSTGRES_CONN_INFO)
 
-while True:
-    try:
-        user_input = input("\nUser: ")
-        if user_input.lower() in ["exit", "quit"]:
-            break
+if __name__ == "__main__":
+    print("Schema:", schema)
+    # while True:
+    #     try:
+    #         user_input = input("\nUser: ")
+    #         if user_input.lower() in ["exit", "quit"]:
+    #             break
 
-        reply = agent.run_turn(user_input)
-        print("\n\nAssistant:", reply, "\n\n")
+    #         reply = agent.run_turn(user_input)
+    #         print("\n\nAssistant:", reply, "\n\n")
 
-
-    except KeyboardInterrupt:
-        break
-
-
+    #     except KeyboardInterrupt:
+    #         break
