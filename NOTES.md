@@ -1,0 +1,5 @@
+### Notes from Julia on Docker
+
+The Dockerfile that you sent me last time is in dockerfile_old, I created a new one that does pretty much the same thing in dockerfile. The Postgresql schema is stored in schema.sql and its used to spin up the database in the container. Then, it copies over the data from the CSVs in the /data folder (it’s identical to the old sqlite db, minus the sqlite specific files) and imports them into the Postgres db. All of this should work fine as of the last time I tested it.  
+
+The last part where it starts up the agent_loop.py needs a bit more work. I tried a couple of things to get the GPU to connect but I don’t think I got it to work fully. After that there might be some changes that need to be made to the agent_loop file for it to work with the new db. I remember Anudeep mentioned that we would need to copy the cached model over to the same repo for the container to have access to it. But if we switch to MCP maybe we can just scrap the agent_loop and separate it into the client (LLM) and server (db) instead.
