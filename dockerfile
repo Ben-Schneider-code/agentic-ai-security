@@ -44,4 +44,4 @@ EXPOSE 5432
 CMD service postgresql start && \
     psql -U julia -d msft_customers -f /app/schema.sql && \
     /app/import_csvs.sh && \
-    python3 agent_loop.py
+    python3 connect_agent_to_db.py
