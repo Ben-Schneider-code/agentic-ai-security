@@ -4,7 +4,7 @@ import signal
 import sys
 import argparse
 import os
-from typing import List
+from typing import List, Dict
 
 class VLLMServerManager:
     def __init__(self, max_retries: int = 3, retry_delay: int = 30):
