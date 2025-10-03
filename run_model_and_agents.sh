@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start the server in the background
-python3 host_models.py 2>&1 | tee server.log &
+python3 host_models.py 2>&1 &
 SERVER_PID=$!
 
 # Wait for server to start
@@ -14,9 +14,6 @@ service postgresql start && \
 
 # Keep container alive by bringing server to foreground
 cat server.log
-
-# Keep showing server logs in real-time
-tail -f server.log &
 
 # Keep container alive
 wait $SERVER_PID

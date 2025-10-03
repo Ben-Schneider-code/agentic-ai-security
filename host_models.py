@@ -37,8 +37,14 @@ class VLLMServerManager:
             import gpustat
             stats = gpustat.GPUStatCollection.new_query()
             best_gpu = max(stats, key=lambda g: g.memory_free if g.index not in self.used_gpus else 0).index
+            self.used_gpus.add(best_gpu)
             print(f"Starting vLLM server on port {port} with model {model} (auto GPU selection: {best_gpu})")
             env["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+
+        # Set cache directory to avoid conflicts
+        cache_dir = os.path.expanduser(f"~/.cache/vllm/{server_id}")
+        os.makedirs(cache_dir, exist_ok=True)
+        env["VLLM_CACHE_ROOT"] = cache_dir
 
         print(f"Command: {' '.join(cmd)}")
         
