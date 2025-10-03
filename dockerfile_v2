@@ -28,6 +28,7 @@ RUN chmod +x ./script/import_csvs.sh ./script/init.sh
 
 # mcp
 COPY mcp/ /app/mcp/
+COPY util/ /app/util/
 
 # agent
 COPY connect_agent_to_db.py /app/connect_agent_to_db.py

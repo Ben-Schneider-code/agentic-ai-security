@@ -16,12 +16,9 @@ class MCPClient:
         await self.exit_stack.aclose()
 
     async def connect_to_server(self, server_script_path: str):
-        is_python = server_script_path.endswith('.py')
-        is_js = server_script_path.endswith('.js')
-        if not (is_python or is_js):
-            raise ValueError("Server script must be a .py or .js file")
 
-        command = "python3" if is_python else "node"
+
+        command = "python3"
         server_params = StdioServerParameters(
             command=command,
             args=[server_script_path],
@@ -34,20 +31,17 @@ class MCPClient:
 
         await self.session.initialize()
 
-
-    async def call_tool(self, tool, tool_input) -> str:
-
+    async def list_tools(self):
         response = await self.session.list_tools()
 
-        # list tools
-        available_tools = [{
+        return [{
             "name": tool.name,
             "description": tool.description,
             "input_schema": tool.inputSchema
         } for tool in response.tools]
 
-        print(available_tools)
 
-     
+    async def call_tool(self, tool, tool_input) -> str:
+
         result = await self.session.call_tool(tool, tool_input)
         return result

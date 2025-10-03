@@ -9,7 +9,8 @@ async def main():
 
     try:
         await client.connect_to_server("/app/mcp/postgres.py")
-        await client.call_tool("sql", sql_query)
+        out = await client.call_tool("sql", sql_query)
+        print(out)
     finally:
         await client.cleanup()
 
