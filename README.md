@@ -11,3 +11,14 @@ git clone git@github.com:liya-zhu/ml-security.git
 ```
 
 Add the database file to `/data/msft_customers.db`, or change the file_path at the beginning of `agent_loop.py` to wherever it is.
+
+
+We are currently testing between two redteaming training libraries/approaches: Agent-lightning and MARFT.
+
+## AgentLightning
+
+Follow the instructions in the agentlightning/ repository to set it up. The attempt at redteaming is in agentlightning/examples/redteaming.
+
+## MARFT
+
+Follow the instructions in the MARFT/ repository to set it up. The attempt at redteaming can be run via MARFT/marft/scripts/sample_redteam_script.sh
