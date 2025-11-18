@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES="2"
+# export CUDA_VISIBLE_DEVICES="0"
 echo $CUDA_VISIBLE_DEVICES
 python train_redteam_sql.py \
         --seed 10 \
@@ -12,7 +12,7 @@ python train_redteam_sql.py \
         --lr 1e-6 \
         --critic_lr 5e-5 \
         --dataset_path None \
-        --model_name_or_path meta-llama/Llama-2-7b-chat-hf \
+        --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
         --n_agents 1 \
         --agent_iteration_interval 1000 \
         --profile_path profiles/redteam_sql.json \
