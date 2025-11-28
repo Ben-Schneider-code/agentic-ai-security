@@ -25,11 +25,22 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY agent_loop.py .
+# PostgresDB
 COPY data/ /app/data/
 COPY schema.sql /app/schema.sql
-COPY import_csvs.sh /app/import_csvs.sh
-RUN chmod +x /app/import_csvs.sh
+COPY script/ ./script/
+RUN chmod +x ./script/import_csvs.sh ./script/init.sh
+
+# mcp
+COPY mcp/ /app/mcp/
+COPY util/ /app/util/
+
+# agent
+COPY connect_agent_to_db.py /app/connect_agent_to_db.py
+COPY run_model_and_agents.sh /app/run_model_and_agents.sh
+RUN chmod +x /app/run_model_and_agents.sh
+COPY host_models.py /app/host_models.py
+COPY agent_loop.py .
 
 # Set environment variables for Postgres
 ENV PGHOST=localhost
@@ -40,8 +51,12 @@ ENV PGDATABASE=msft_customers
 # Expose PostgreSQL port
 EXPOSE 5432
 
-# Start Postgres and run script
-CMD service postgresql start && \
-    psql -U julia -d msft_customers -f /app/schema.sql && \
-    /app/import_csvs.sh && \
-    python3 connect_agent_to_db.py
+# Expose ports for the two models for testing
+EXPOSE 8000
+EXPOSE 8001
+
+# Start Postgres, models, and run script
+
+COPY db_agent.py /app/db_agent.py
+
+CMD /app/run_model_and_agents.sh && /app/script/init.sh && python3 db_agent.py

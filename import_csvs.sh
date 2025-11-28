@@ -29,3 +29,8 @@ import_csv SalesOrderHeader /app/data/SalesOrderHeader.csv
 import_csv SalesOrderDetail /app/data/SalesOrderDetail.csv
 
 echo "CSV import complete."
+
+# echo "Applying Row-Level Security configuration from /app/row_security_setup.sql..."
+# psql -U "$PGUSER" -d "$PGDATABASE" -f /app/row_security_setup.sql
+
+echo "Database setup, data import, and security configuration complete."
