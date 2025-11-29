@@ -1,3 +1,28 @@
-vllm==0.9.1
-transformers==4.52.4
-psycopg2-binary==2.9.10
+vllm==0.6.3
+transformers==4.57.3
+psycopg2-binary==2.9.11
+gpustat==1.1.1
+mcp
+starlette
+uvicorn
+asyncpg
+
+### Requirements from MARFT (may need updating from time to time)
+absl_py
+cloudpickle
+fairscale
+json_repair
+peft
+pydantic
+sentence_transformers
+sentencepiece
+setproctitle
+tensorboard
+tensorboardX
+torch # some version, i used 2.4.0+cu121. the below two as well.
+torchvision # some version
+torchaudio # some version
+numpy==1.26.3
+xformers==0.0.27.post2
+latex2sympy2
+word2number

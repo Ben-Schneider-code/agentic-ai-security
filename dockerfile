@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
-    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add - \
-    curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list \
-    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit \
-    sudo systemctl restart docker
+#RUN distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
+#    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add - \
+#    curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list \
+#    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit \
+#    sudo systemctl restart docker
 
 # Create a PostgreSQL user & database
 RUN service postgresql start && \
@@ -24,6 +24,9 @@ RUN service postgresql start && \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# MARFT
+COPY MARFT/ /app/MARFT/
 
 # PostgresDB
 COPY data/ /app/data/
@@ -59,4 +62,4 @@ EXPOSE 8001
 
 COPY db_agent.py /app/db_agent.py
 
-CMD /app/run_model_and_agents.sh && /app/script/init.sh && python3 db_agent.py
+CMD /app/script/init.sh && tail -f /dev/null

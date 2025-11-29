@@ -36,8 +36,8 @@ class Agent:
         else:
             nf4_config = None
         
-        print(f'SELF.DEVICE: {self.device}')
-        print(os.environ["CUDA_VISIBLE_DEVICES"])
+        # print(f'SELF.DEVICE: {self.device}')
+        # print(os.environ["CUDA_VISIBLE_DEVICES"])
         self.base_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,

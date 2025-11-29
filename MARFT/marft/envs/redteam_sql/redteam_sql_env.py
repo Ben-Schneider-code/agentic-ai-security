@@ -7,7 +7,12 @@ import os
 from typing import Literal, TypedDict
 import re
 import pandas as pd
+import asyncio
+import sys
 
+# Add parent directory to path to import util
+sys.path.append('/app')
+from util.mcp import MCPClient
 
 # model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
 model = 'meta-llama/Meta-Llama-3-8B-Instruct'
@@ -50,7 +55,7 @@ class ChatState:
             self.conversation.pop()
 
 class OfflineLLM:
-    def __init__(self, model_name: str = model):
+    def __init__(self, model_name: str = model, mcp_client: Optional[MCPClient] = None):
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         parallel_size = len(cuda_visible.split(",")) if cuda_visible else 1
         self.llm = LLM(model=model_name, tensor_parallel_size=parallel_size, gpu_memory_utilization=0.25)
@@ -59,6 +64,20 @@ class OfflineLLM:
             top_p=0.95,
             max_tokens=2048,
         )
+        self.mcp_client = mcp_client
+
+    async def execute_tool_call(self, tool_name: str, tool_arguments: dict) -> str:
+        if self.mcp_client is None:
+            return "Error: MCP client not initialized"
+        try:
+            result = await self.mcp_client.call_tool(tool_name, tool_arguments)
+            if hasattr(result, 'content'):
+                if isinstance(result.content, list):
+                    return "\n".join([item.text if hasattr(item, 'text') else str(item) for item in result.content])
+                return str(result.content)
+            return str(result)
+        except Exception as e:
+            return f"Error executing tool: {str(e)}"
 
     def complete(
         self,
@@ -66,13 +85,70 @@ class OfflineLLM:
         system_prompt: str = "",
     ) -> str:
         conversation = [{"role": "system", "content": system_prompt}] + history
-
         print("TEST conversation", conversation)
 
         # using chat instead of generate so that vLLM will automatically format
         #   the messages according to the model's expected chat template
         outputs = self.llm.chat(conversation, self.sampling_params)
-        return outputs[0].outputs[0].text
+        response = outputs[0].outputs[0].text
+
+        # Check if response contains SQL and execute via MCP if available
+        print("ZEYU 1:", response)
+        if self.mcp_client and looks_like_sql(response):
+            print("ZEYU 2:", looks_like_sql(response))
+            sql_code = None
+
+            # Try to extract JSON from markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*\n?\s*({.*?})\s*\n?```', response, re.DOTALL)
+            if json_match:
+                try:
+                    json_response = json.loads(json_match.group(1))
+                    if 'query' in json_response:
+                        sql_code = json_response['query']
+                except json.JSONDecodeError:
+                    pass
+            print("ZEYU 3:", json_match, sql_code)
+            
+            # Try to extract JSON without code blocks (inline JSON)
+            if sql_code is None:
+                json_match = re.search(r'{[^{}]*"query"[^{}]*:[^{}]*}', response, re.DOTALL)
+                if json_match:
+                    try:
+                        json_response = json.loads(json_match.group(0))
+                        if 'query' in json_response:
+                            sql_code = json_response['query']
+                    except json.JSONDecodeError:
+                        pass
+                print("ZEYU 4:", json_match, sql_code)
+            
+            # Try to parse entire response as JSON
+            if sql_code is None:
+                try:
+                    json_response = json.loads(response)
+                    if 'query' in json_response:
+                        sql_code = json_response['query']
+                except json.JSONDecodeError:
+                    pass
+                print("ZEYU 5:", json_response, sql_code)
+
+            # Fall back to checking if response contains SQL
+            if sql_code is None and looks_like_sql(response):
+                sql_code = response.strip()
+            print("ZEYU 6:", sql_code, looks_like_sql(sql_code))
+
+            # Execute SQL via MCP if we found any
+            if sql_code and looks_like_sql(sql_code):
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                print("ZEYU 7:", sql_code, looks_like_sql(sql_code))
+                result = loop.run_until_complete(self.execute_tool_call("sql", {"sql": sql_code}))
+                print("ZEYU 8:", sql_code, result)
+                return f"{response}\nExecution Result: {result}"
+
+        return response
 
 
 # === dataset loading ===
@@ -123,13 +199,23 @@ class SQLEnv:
         assert self.n_agents == len(self.profiles), "Number of agents must match profiles."
         self.max_steps = horizon
         self.step_count = 0
-        self.victim_llm = OfflineLLM()
+
+        # Initialize MCP client
+        self.mcp_client = MCPClient()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.mcp_client.connect_to_server("/app/mcp/postgres.py"))
+
+        self.victim_llm = OfflineLLM(mcp_client=self.mcp_client)
         self.victim_state = ChatState()
         
         self.question = None
         self.label = None
         self.current_state = None
-        self.dataset = pd.read_csv('/home/a38das/MARFT/marft/envs/redteam_sql/redteam_dataset.csv')
+        self.dataset = pd.read_csv('/app/MARFT/marft/envs/redteam_sql/redteam_dataset.csv')
 
     def reset(self):
         # pair = random.choice(self.dataset)
@@ -201,4 +287,9 @@ class SQLEnv:
         return {"n_agents": self.n_agents}
     
     def close(self):
-        pass
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.mcp_client.cleanup())
