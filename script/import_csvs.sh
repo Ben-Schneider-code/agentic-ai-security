@@ -3,7 +3,7 @@ set -e
 
 # Use env vars or defaults
 PGUSER=${PGUSER:-julia}
-PGDATABASE=${PGDATABASE:-msft_db}
+PGDATABASE=${PGDATABASE:-msft_customers}
 
 echo "Using user: $PGUSER"
 echo "Using database: $PGDATABASE"

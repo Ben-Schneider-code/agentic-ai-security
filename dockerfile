@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
 
 # Create a PostgreSQL user & database
 RUN service postgresql start && \
+    su postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'postgres123';\"" && \
     su postgres -c "psql -c \"CREATE USER julia WITH PASSWORD '123';\"" && \
     su postgres -c "psql -c \"CREATE DATABASE msft_customers OWNER julia;\""
 
@@ -27,12 +28,16 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # MARFT
 COPY MARFT/ /app/MARFT/
+RUN chmod +x /app/MARFT/marft/scripts/sample_redteam_script.sh
 
 # PostgresDB
 COPY data/ /app/data/
 COPY schema.sql /app/schema.sql
 COPY script/ ./script/
 RUN chmod +x ./script/import_csvs.sh ./script/init.sh
+
+# Access rules
+COPY access_rules/ /app/access_rules/
 
 # mcp
 COPY mcp/ /app/mcp/
@@ -44,6 +49,13 @@ COPY run_model_and_agents.sh /app/run_model_and_agents.sh
 RUN chmod +x /app/run_model_and_agents.sh
 COPY host_models.py /app/host_models.py
 COPY agent_loop.py .
+
+# Test files
+COPY test_reward_detection.py /app/test_reward_detection.py
+COPY test_db_agent_rewards.py /app/test_db_agent_rewards.py
+COPY test_mcp_direct.py /app/test_mcp_direct.py
+COPY run_tests.sh /app/run_tests.sh
+RUN chmod +x /app/test_reward_detection.py /app/test_db_agent_rewards.py /app/test_mcp_direct.py /app/run_tests.sh
 
 # Set environment variables for Postgres
 ENV PGHOST=localhost
@@ -62,4 +74,7 @@ EXPOSE 8001
 
 COPY db_agent.py /app/db_agent.py
 
-CMD /app/script/init.sh && tail -f /dev/null
+CMD /app/script/init.sh && \
+    cd /app/MARFT/marft/scripts && \
+    ./sample_redteam_script.sh 2>&1 | tee /app/redteam_output.log && \
+    tail -f /app/redteam_output.log

@@ -10,10 +10,10 @@ mcp = FastMCP("postgres")
 # ENV PGPASSWORD=123
 # ENV PGDATABASE=msft_customers
 
-#TODO fix to get this from env
+# Use restricted agent_user instead of privileged julia user
 DB_CONFIG = {
-    "user": "julia",
-    "password": "123",
+    "user": "agent_user",
+    "password": "db_agent_password",
     "database": "msft_customers",
     "host": "localhost",
     "port": 5432,
