@@ -1,11 +1,24 @@
+### Core ML dependencies (install torch first)
+numpy==1.26.3
+torch # some version, used 2.4.0 the below two as well.
+torchvision # some version, 2.4.0 right now
+torchaudio # 0.19.0
+
+### vLLM and model dependencies
+transformers[torch]==4.57.3
 vllm==0.6.3
-transformers==4.57.3
+lm-format-enforcer
+xformers==0.0.27.post2
+
+### Database and server
 psycopg2-binary==2.9.11
 gpustat==1.1.1
 mcp
 starlette
 uvicorn
 asyncpg
+pyairports
+requests
 
 ### Requirements from MARFT (may need updating from time to time)
 absl_py
@@ -19,10 +32,5 @@ sentencepiece
 setproctitle
 tensorboard
 tensorboardX
-torch # some version, i used 2.4.0+cu121. the below two as well.
-torchvision # some version
-torchaudio # some version
-numpy==1.26.3
-xformers==0.0.27.post2
 latex2sympy2
 word2number

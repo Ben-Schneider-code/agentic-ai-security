@@ -7,4 +7,8 @@ service postgresql start && \
     PGPASSWORD=postgres123 psql -U postgres -d msft_customers -f /app/access_rules/row_security_setup.sql
 
 # start mcp server
-python3 mcp/postgres.py &
+echo "Starting MCP server..."
+cd /app && python3 mcp/postgres.py > /app/mcp_server.log 2>&1 &
+MCP_PID=$!
+echo "MCP server started with PID: $MCP_PID"
+sleep 2

@@ -9,6 +9,8 @@ import re
 import pandas as pd
 import asyncio
 import sys
+import time
+import requests
 
 # Add parent directory to path to import util
 sys.path.append('/app')
@@ -79,16 +81,72 @@ class ChatState:
             self.conversation.pop()
 
 class OfflineLLM:
-    def __init__(self, model_name: str = model, mcp_client: Optional[MCPClient] = None):
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-        parallel_size = len(cuda_visible.split(",")) if cuda_visible else 1
-        self.llm = LLM(model=model_name, tensor_parallel_size=parallel_size, gpu_memory_utilization=0.25)
-        self.sampling_params = SamplingParams(
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=2048,
-        )
+    def __init__(self, model_name: str = model, mcp_client: Optional[MCPClient] = None, vllm_base_url: str = "http://localhost:8000/v1", max_wait_time: int = 300):
+        """
+        Args:
+            model_name: Name of the model (informational only, server already has model loaded)
+            mcp_client: MCP client for database operations
+            vllm_base_url: Base URL of the vLLM server (default: http://localhost:8000/v1)
+            max_wait_time: Maximum time to wait for server to be ready in seconds (default: 300)
+        """
+        from openai import OpenAI
+        
+        self.vllm_base_url = vllm_base_url
+        self.model_name = model_name
         self.mcp_client = mcp_client
+        
+        # Sampling parameters
+        self.temperature = 0.7
+        self.top_p = 0.95
+        self.max_tokens = 2048
+        
+        # Wait for vLLM server to be ready
+        print(f"Waiting for vLLM server at {vllm_base_url} to be ready...")
+        self._wait_for_server(max_wait_time)
+        
+        # Initialize OpenAI client after server is ready
+        self.client = OpenAI(
+            base_url=vllm_base_url,
+            api_key="EMPTY"
+        )
+        print(f"Successfully connected to vLLM server at {vllm_base_url}")
+        
+        # Store event loop for async MCP operations (reuse instead of creating new ones)
+        try:
+            self.loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+    
+    def _wait_for_server(self, max_wait_time: int):
+        """Wait for vLLM server to be ready by checking /v1/models endpoint"""
+        import time
+        import requests
+        
+        start_time = time.time()
+        retry_interval = 5  # Check every 5 seconds
+        
+        # Extract base URL without /v1 suffix for health check
+        base_url = self.vllm_base_url.rstrip('/v1').rstrip('/')
+        models_url = f"{base_url}/v1/models"
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                response = requests.get(models_url, timeout=2)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data and len(data['data']) > 0:
+                        elapsed = time.time() - start_time
+                        print(f"vLLM server is ready! (waited {elapsed:.1f}s)")
+                        return
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+                pass  # Server not ready yet
+            
+            elapsed = time.time() - start_time
+            print(f"Waiting for vLLM server... ({elapsed:.0f}s / {max_wait_time}s)")
+            time.sleep(retry_interval)
+        
+        raise RuntimeError(f"vLLM server at {self.vllm_base_url} did not become ready within {max_wait_time} seconds")
 
     async def execute_tool_call(self, tool_name: str, tool_arguments: dict) -> str:
         if self.mcp_client is None:
@@ -109,19 +167,28 @@ class OfflineLLM:
         system_prompt: str = "",
     ) -> str:
         conversation = [{"role": "system", "content": system_prompt}] + history
-        print("TEST conversation", conversation)
+        print("=== OfflineLLM.complete() called ===")
+        print(f"Conversation length: {len(conversation)}")
 
-        # using chat instead of generate so that vLLM will automatically format
-        #   the messages according to the model's expected chat template
-        outputs = self.llm.chat(conversation, self.sampling_params)
-        response = outputs[0].outputs[0].text
+        # Call vLLM server via OpenAI-compatible API
+        print("Calling vLLM server...")
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=conversation,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            max_tokens=self.max_tokens
+        )
+        
+        response_text = response.choices[0].message.content
+        print(f"=== vLLM Response received: {response_text[:200]}...")
 
         # Check if response contains SQL and execute via MCP if available
-        if self.mcp_client and looks_like_sql(response):
+        if self.mcp_client and looks_like_sql(response_text):
             sql_code = None
 
             # Try to extract JSON from markdown code blocks
-            json_match = re.search(r'```(?:json)?\s*\n?\s*({.*?})\s*\n?```', response, re.DOTALL)
+            json_match = re.search(r'```(?:json)?\s*\n?\s*({.*?})\s*\n?```', response_text, re.DOTALL)
             if json_match:
                 try:
                     json_response = json.loads(json_match.group(1))
@@ -132,7 +199,7 @@ class OfflineLLM:
             
             # Try to extract JSON without code blocks (inline JSON)
             if sql_code is None:
-                json_match = re.search(r'{[^{}]*"query"[^{}]*:[^{}]*}', response, re.DOTALL)
+                json_match = re.search(r'{[^{}]*"query"[^{}]*:[^{}]*}', response_text, re.DOTALL)
                 if json_match:
                     try:
                         json_response = json.loads(json_match.group(0))
@@ -144,27 +211,30 @@ class OfflineLLM:
             # Try to parse entire response as JSON
             if sql_code is None:
                 try:
-                    json_response = json.loads(response)
+                    json_response = json.loads(response_text)
                     if 'query' in json_response:
                         sql_code = json_response['query']
                 except json.JSONDecodeError:
                     pass
 
             # Fall back to checking if response contains SQL
-            if sql_code is None and looks_like_sql(response):
-                sql_code = response.strip()
+            if sql_code is None and looks_like_sql(response_text):
+                sql_code = response_text.strip()
 
             # Execute SQL via MCP if we found any
             if sql_code and looks_like_sql(sql_code):
+                print(f"=== Executing SQL: {sql_code[:100]}...")
+                # Use stored event loop (fast, no overhead of creating new loop)
                 try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(self.execute_tool_call("sql", {"sql": sql_code}))
-                return f"{response}\nExecution Result: {result}"
+                    result = self.loop.run_until_complete(self.execute_tool_call("sql", {"sql": sql_code}))
+                    print(f"=== SQL Execution result: {result[:200]}...")
+                except Exception as e:
+                    result = f"Error: Could not execute SQL query - {str(e)}"
+                    print(f"=== SQL Execution error: {result}")
+                return f"{response_text}\nExecution Result: {result}"
 
-        return response
+        print(f"=== Returning response without SQL execution")
+        return response_text
 
 
 # === dataset loading ===

@@ -4,7 +4,7 @@ import signal
 import sys
 import argparse
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 class VLLMServerManager:
     def __init__(self, max_retries: int = 3, retry_delay: int = 30):
@@ -25,13 +25,16 @@ class VLLMServerManager:
             "--gpu-memory-utilization", str(gpu_memory_utilization),
             "--tensor-parallel-size", str(tensor_parallel_size),
             "--trust-remote-code",
-            "--enable-auto-tool-choice",
-            "--tool-call-parser", "mistral", # https://docs.vllm.ai/en/stable/features/tool_calling.html
-            "--tokenizer-mode", "mistral",
+            "--disable-log-requests",
         ]
         
         # Set up environment for GPU selection
         env = os.environ.copy()
+        
+        # Set HuggingFace token if available
+        if "HF_TOKEN" in os.environ:
+            env["HF_TOKEN"] = os.environ["HF_TOKEN"]
+        
         if gpu_id is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             print(f"Starting vLLM server on port {port} with model {model} (GPU {gpu_id})")
@@ -152,7 +155,7 @@ class VLLMServerManager:
     def stop_servers(self):
         """Stop all running servers"""
         print("Stopping all servers...")
-        for process in self.processes:
+        for process in self.processes.values():
             try:
                 process.terminate()
                 process.wait(timeout=5)
@@ -173,69 +176,96 @@ class VLLMServerManager:
             status = "Running" if process and process.poll() is None else "Stopped"
             config = self.server_configs[server_id]
             print(f"Server {server_id}: http://{config['host']}:{config['port']} (Model: {config['model']}) - {status}")
+    
+    def monitor_servers(self, check_interval: int = 30):
+        """Monitor servers and restart if needed"""
+        print("\n" + "="*50)
+        self.print_server_status()
+        print("="*50)
+        print("\nPress Ctrl+C to stop all servers")
+        
+        try:
+            while True:
+                time.sleep(check_interval)
+                if self.check_and_restart_failed_servers():
+                    print("!!! Some servers were restarted")
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stop_servers()
+
+
+def setup_model_server(
+    server_id: str,
+    model: str,
+    port: int,
+    host: str = "0.0.0.0",
+    gpu_memory_utilization: float = 0.45,
+    gpu_id: Optional[int] = None,
+    tensor_parallel_size: int = 1,
+    manager: Optional[VLLMServerManager] = None
+) -> VLLMServerManager:
+    """
+    Set up a vLLM model server with the specified configuration.
+    
+    Args:
+        server_id: Unique identifier for this server
+        model: HuggingFace model name/path
+        port: Port to run the server on
+        host: Host address (default: 0.0.0.0)
+        gpu_memory_utilization: GPU memory utilization (0.0-1.0)
+        gpu_id: Specific GPU ID to use (None for auto-selection)
+        tensor_parallel_size: Number of GPUs for tensor parallelism
+        manager: Existing VLLMServerManager to use (creates new if None)
+    
+    Returns:
+        VLLMServerManager instance with the server started
+    """
+    if manager is None:
+        manager = VLLMServerManager()
+    
+    manager.start_server(
+        server_id=server_id,
+        model=model,
+        port=port,
+        host=host,
+        gpu_memory_utilization=gpu_memory_utilization,
+        gpu_id=gpu_id,
+        tensor_parallel_size=tensor_parallel_size
+    )
+    
+    return manager
+
 
 def main():
-    model_db = "mistralai/Mistral-Nemo-Instruct-FP8-2407"
-    model_red = "mistralai/Mistral-Nemo-Instruct-FP8-2407"
-    
-    port_db_model = 8000
-    port_red_model = 8001
-
-    host = "0.0.0.0"
-
-    gpu_memory_utilization = 0.45
-
-    gpu_id_db = None
-    gpu_id_red = None
-
-    tensor_parallel_size_db_model = 1
-    tensor_parallel_size_red_model = 1
-
+    """Main entry point - currently only runs DB agent model"""
     manager = VLLMServerManager()
     
     # Signal handler for shutdown
     signal.signal(signal.SIGINT, manager.signal_handler)
     signal.signal(signal.SIGTERM, manager.signal_handler)
     
-    # Start both servers
-    server_db_model = manager.start_server(
-        "db_model",
-        model_db, 
-        port_db_model, 
-        host, 
-        gpu_memory_utilization, 
-        gpu_id_db,
-        tensor_parallel_size_db_model,
+    # Setup only DB agent model for now
+    setup_model_server(
+        server_id="db_model",
+        model="meta-llama/Meta-Llama-3-8B-Instruct",
+        port=8000,
+        manager=manager
     )
-    server_red_model = manager.start_server(
-        "red_model",
-        model_red, 
-        port_red_model, 
-        host, 
-        gpu_memory_utilization, 
-        gpu_id_red,
-        tensor_parallel_size_red_model,
-    )
+    
+    # Optionally setup red team model too:
+    # setup_model_server(
+    #     server_id="red_model",
+    #     model="meta-llama/Meta-Llama-3-8B-Instruct",
+    #     port=8001,
+    #     manager=manager
+    # )
     
     manager.wait_for_servers()
     manager.check_and_restart_failed_servers()
     
-    print("\n" + "="*50)
-    manager.print_server_status()
-    print("="*50)
-    print("\nPress Ctrl+C to stop all servers")
-    
-    try:
-        # Keep the script running and monitor servers
-        check_interval = 30
-        while True:
-            time.sleep(check_interval)
-            if manager.check_and_restart_failed_servers():
-                print("!!! Some servers were restarted")
-    except KeyboardInterrupt:
-        pass
-    finally:
-        manager.stop_servers()
+    # Monitor servers
+    manager.monitor_servers(check_interval=30)
     
     return 0
 

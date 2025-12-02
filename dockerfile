@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     postgresql postgresql-contrib \
     python3 python3-pip \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 #RUN distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
@@ -25,6 +26,9 @@ RUN service postgresql start && \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install pyairports from git to get latest version
+RUN pip3 install git+https://github.com/ozeliger/pyairports.git
 
 # MARFT
 COPY MARFT/ /app/MARFT/
@@ -74,7 +78,4 @@ EXPOSE 8001
 
 COPY db_agent.py /app/db_agent.py
 
-CMD /app/script/init.sh && \
-    cd /app/MARFT/marft/scripts && \
-    ./sample_redteam_script.sh 2>&1 | tee /app/redteam_output.log && \
-    tail -f /app/redteam_output.log
+CMD /app/run_model_and_agents.sh
