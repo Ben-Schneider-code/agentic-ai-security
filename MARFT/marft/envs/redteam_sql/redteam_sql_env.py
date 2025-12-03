@@ -129,7 +129,7 @@ class SQLEnv:
         self.question = None
         self.label = None
         self.current_state = None
-        self.dataset = pd.read_csv('/home/a38das/MARFT/marft/envs/redteam_sql/redteam_dataset.csv')
+        self.dataset = pd.read_csv('/home/a38das/MARFT/marft/envs/redteam_sql/redteam_dataset_specific.csv')
 
     def reset(self):
         # pair = random.choice(self.dataset)
