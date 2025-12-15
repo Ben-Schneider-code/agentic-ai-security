@@ -250,7 +250,8 @@ def main():
         server_id="db_model",
         model="meta-llama/Meta-Llama-3-8B-Instruct",
         port=8000,
-        manager=manager
+        manager=manager,
+        gpu_id=1
     )
     
     # Optionally setup red team model too:

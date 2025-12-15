@@ -32,7 +32,7 @@ class MAS(ABC):
         self.algo = algo
         self.normalization_mode = normalization_mode
         self.num_agents = num_agents
-        self.device = "cuda:2"
+        self.device = "cuda:0" # Docker container will reroute the gpus to 0, 1, 2, ...
 
 
         self.context_window = context_window
@@ -43,7 +43,7 @@ class MAS(ABC):
         # available_devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
         # print(available_devices)
         # available_devices = ["cuda:1", "cuda:2"]
-        available_devices = ["cuda:2"]
+        available_devices = ["cuda:0"]
         print(available_devices)
         print(self.device)
         next_dev = 0
@@ -81,7 +81,7 @@ class MAS(ABC):
             agent = Agent(
                 model_path=model_path,
                 profile=profile,
-                device="cuda:2",
+                device="cuda:0",
                 load_path=lora_path,
                 load_in_4bit=load_in_4bit,
                 bf16=bf16,

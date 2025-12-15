@@ -22,3 +22,41 @@ Follow the instructions in the agentlightning/ repository to set it up. The atte
 ## MARFT
 
 Follow the instructions in the MARFT/ repository to set it up. The attempt at redteaming can be run via MARFT/marft/scripts/sample_redteam_script.sh
+
+## HuggingFace Token
+
+To run models within the docker container that are gated behind a HuggingFace token, you can set up the `export HF_TOKEN="<token here>"` line in run_model_and_agents.sh and sample_redteam_script.sh.
+
+## Running MARFT Dockerized
+
+To get started, you can build the docker image and run with specific GPU IDs and viewing the logs from MARFT:
+```
+docker build -t test-image .
+docker run -d --gpus '"device=1,2"' --name test-container test-image
+docker logs -f test-container
+```
+
+If you want to debug the vLLM logs while the original container is running you can view the logs live using the following command:
+```
+docker exec -it test-container tail -f /app/model_server.log
+```
+
+If you want to stop and rebuild a container to fix an issue:
+```
+docker stop test-container
+docker remove test-container
+...<make your changes>...
+docker build -t test-image .
+```
+
+### Important Files
+
+dockerfile: Dockerized container to run MARFT in docker on growl
+
+host_models.py: Sets up vLLM model services under separate processes. You can use the `setup_model_server` function to setup a model on a specific port.
+
+util/mcp.py and mcp/postgres.py: MCP connector between the database and the database agent
+
+script/...: Bash scripts run during the docker container initialization, sets up the database within the container.
+
+access_rules/...: SQL files used to set up access control for the database
