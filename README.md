@@ -32,7 +32,7 @@ To run models within the docker container that are gated behind a HuggingFace to
 To get started, you can build the docker image and run with specific GPU IDs and viewing the logs from MARFT:
 ```
 docker build -t test-image .
-docker run -d --gpus '"device=1,2"' --name test-container test-image
+docker run -d -e HF_TOKEN --gpus '"device=1,2"' --name test-container test-image
 docker logs -f test-container
 ```
 

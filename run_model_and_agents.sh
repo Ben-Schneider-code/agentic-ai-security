@@ -1,6 +1,6 @@
 #!/bin/bash
 # Set HuggingFace token for model access
-export HF_TOKEN=""
+#export HF_TOKEN=""
 
 # Start the model server in the background
 echo "Starting vLLM model server..."

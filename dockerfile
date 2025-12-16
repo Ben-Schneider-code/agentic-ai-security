@@ -1,5 +1,5 @@
 # Base image with CUDA + Python
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -25,6 +25,7 @@ RUN service postgresql start && \
 # Copy requirements & Python script
 WORKDIR /app
 COPY requirements.txt .
+RUN pip3 install torch torchvision
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Install pyairports from git to get latest version
