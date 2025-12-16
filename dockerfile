@@ -48,18 +48,10 @@ COPY mcp/ /app/mcp/
 COPY util/ /app/util/
 
 # agent
-COPY connect_agent_to_db.py /app/connect_agent_to_db.py
 COPY run_model_and_agents.sh /app/run_model_and_agents.sh
 RUN chmod +x /app/run_model_and_agents.sh
 COPY host_models.py /app/host_models.py
 COPY agent_loop.py .
-
-# Test files
-COPY test_reward_detection.py /app/test_reward_detection.py
-COPY test_db_agent_rewards.py /app/test_db_agent_rewards.py
-COPY test_mcp_direct.py /app/test_mcp_direct.py
-COPY run_tests.sh /app/run_tests.sh
-RUN chmod +x /app/test_reward_detection.py /app/test_db_agent_rewards.py /app/test_mcp_direct.py /app/run_tests.sh
 
 # Set environment variables for Postgres
 ENV PGHOST=localhost
@@ -67,15 +59,6 @@ ENV PGUSER=julia
 ENV PGPASSWORD=123
 ENV PGDATABASE=msft_customers
 
-# Expose PostgreSQL port
-EXPOSE 5432
-
-# Expose ports for the two models for testing
-EXPOSE 8000
-EXPOSE 8001
-
 # Start Postgres, models, and run script
-
-COPY db_agent.py /app/db_agent.py
 
 CMD /app/run_model_and_agents.sh
