@@ -33,7 +33,10 @@ class VLLMServerManager:
         
         # Set HuggingFace token if available
         if "HF_TOKEN" in os.environ:
+            print(f'Using HF_TOKEN={os.environ["HF_TOKEN"]}')
             env["HF_TOKEN"] = os.environ["HF_TOKEN"]
+        else:
+            print("No HF_TOKEN found in env")
         
         if gpu_id is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
