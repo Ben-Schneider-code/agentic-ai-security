@@ -1,6 +1,8 @@
 # export CUDA_VISIBLE_DEVICES="0"
-export HF_TOKEN="" # Replace this with your Hugging Face token that has read access to Llama models
 echo $CUDA_VISIBLE_DEVICES
+echo HF_TOKEN:
+echo $HF_TOKEN
+
 python3 train_redteam_sql.py \
         --seed 10 \
         --env_name redteam_sql_env \

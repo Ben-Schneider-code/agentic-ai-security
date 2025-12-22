@@ -25,14 +25,14 @@ Follow the instructions in the MARFT/ repository to set it up. The attempt at re
 
 ## HuggingFace Token
 
-To run models within the docker container that are gated behind a HuggingFace token, you can set up the `export HF_TOKEN="<token here>"` line in run_model_and_agents.sh and sample_redteam_script.sh.
+To run models within the docker container that are gated behind a HuggingFace token, you can set an env variable using `export HF_TOKEN="<token here>"`. The token will be passed into the docker container.
 
 ## Running MARFT Dockerized
 
 To get started, you can build the docker image and run with specific GPU IDs and viewing the logs from MARFT:
 ```
 docker build -t test-image .
-docker run -d --gpus '"device=1,2"' --name test-container test-image
+docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image
 docker logs -f test-container
 ```
 
