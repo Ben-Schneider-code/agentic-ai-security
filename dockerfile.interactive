@@ -61,3 +61,5 @@ ENV PGDATABASE=msft_customers
 # Start services and keep container interactive
 CMD /app/run_interactive.sh
 
+
+
