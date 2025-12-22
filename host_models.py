@@ -31,7 +31,6 @@ class VLLMServerManager:
         # Set up environment for GPU selection
         env = os.environ.copy()
         
-        # Set HuggingFace token if available
         if "HF_TOKEN" in os.environ:
             env["HF_TOKEN"] = os.environ["HF_TOKEN"]
         

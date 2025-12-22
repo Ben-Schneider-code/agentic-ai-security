@@ -1,0 +1,63 @@
+# Base image with CUDA + Python
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install PostgreSQL and Python
+RUN apt-get update && apt-get install -y \
+    postgresql postgresql-contrib \
+    python3 python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a PostgreSQL user & database
+RUN service postgresql start && \
+    su postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'postgres123';\"" && \
+    su postgres -c "psql -c \"CREATE USER julia WITH PASSWORD '123';\"" && \
+    su postgres -c "psql -c \"CREATE DATABASE msft_customers OWNER julia;\""
+
+# Copy requirements & Python script
+WORKDIR /app
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install pyairports from git to get latest version
+RUN pip3 install git+https://github.com/ozeliger/pyairports.git
+
+# MARFT
+COPY MARFT/ /app/MARFT/
+RUN chmod +x /app/MARFT/marft/scripts/sample_redteam_script.sh
+
+# PostgresDB
+COPY data/ /app/data/
+COPY schema.sql /app/schema.sql
+COPY script/ ./script/
+RUN chmod +x ./script/import_csvs.sh ./script/init.sh
+
+# Access rules
+COPY access_rules/ /app/access_rules/
+
+# mcp
+COPY mcp/ /app/mcp/
+COPY util/ /app/util/
+
+# agent
+COPY run_model_and_agents.sh /app/run_model_and_agents.sh
+RUN chmod +x /app/run_model_and_agents.sh
+COPY host_models.py /app/host_models.py
+COPY agent_loop.py .
+
+# Interactive mode files
+COPY run_interactive.sh /app/run_interactive.sh
+RUN chmod +x /app/run_interactive.sh
+COPY interactive_sql_env.py /app/interactive_sql_env.py
+
+# Set environment variables for Postgres
+ENV PGHOST=localhost
+ENV PGUSER=julia
+ENV PGPASSWORD=123
+ENV PGDATABASE=msft_customers
+
+# Start services and keep container interactive
+CMD /app/run_interactive.sh
+

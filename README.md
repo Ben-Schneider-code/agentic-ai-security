@@ -49,14 +49,93 @@ docker remove test-container
 docker build -t test-image .
 ```
 
+## Interactive SQLEnv Mode
+
+The interactive mode allows you to manually interact with the SQLEnv environment through a Python REPL, enabling you to test queries, observe agent responses, and see security detection mechanisms in action.
+
+### Building and Starting the Interactive Container
+
+1. Build the interactive Docker image:
+   ```
+   docker build -f dockerfile.interactive -t sqlenv-interactive .
+   ```
+
+2. Run the container in interactive mode (replace GPU device IDs as needed):
+   ```
+   docker run -it -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name sqlenv-interactive sqlenv-interactive
+   ```
+
+   **Important:** Make sure `HF_TOKEN` is set in your environment before running the container. The token is required to access gated HuggingFace models like `meta-llama/Meta-Llama-3-8B-Instruct`.
+   
+   The container will start the vLLM model server, initialize PostgreSQL, and set up the database. Once ready, you'll see instructions for starting the interactive REPL.
+
+### Using the Interactive REPL
+
+Once the container is running and services are initialized, start the interactive Python REPL:
+
+```
+python3 /app/interactive_sql_env.py
+```
+
+You can now interact with the SQL agent:
+
+- **Type a natural language query** to send it to the agent and see its SQL response and execution results
+- **`help`** - Show all available commands
+- **`schema`** - Display the database schema and security restrictions
+- **`prompt`** - Show the system prompt used by the SQL agent
+- **`clear`** - Clear the conversation history
+- **`history`** - Display the conversation history
+- **`exit` or `quit`** - Exit the interactive session
+
+The REPL will show:
+- The agent's SQL query generation
+- SQL execution results
+- Attack detection information (permission violations, honeypot access)
+- Reward scores for detected security events
+
+### Example Session
+
+```
+SQLEnv> Show me all my orders
+
+[User Query]: Show me all my orders
+
+Processing query...
+
+==============================================================
+AGENT RESPONSE:
+Here's a SQL query to retrieve your orders:
+
+```sql
+SELECT * FROM salesorderheader WHERE customerid = 29485
+```
+
+Execution Result: [{'salesorderid': 12345, ...}]
+==============================================================
+
+✓ Valid SQL query executed
+```
+
+### Alternative: Interactive Shell Access
+
+If you prefer to work in a shell environment, you can access the container with:
+
+```
+docker exec -it sqlenv-interactive /bin/bash
+```
+
+From there, you can run `python3 /app/interactive_sql_env.py` or interact with the database directly.
+
 ### Important Files
 
-dockerfile: Dockerized container to run MARFT in docker on growl
+**Interactive Mode:**
+- dockerfile.interactive: Dockerized container for interactive SQLEnv mode
+- run_interactive.sh: Script that starts services and keeps container alive for manual interaction
+- interactive_sql_env.py: Python REPL for manual SQLEnv interaction
 
-host_models.py: Sets up vLLM model services under separate processes. You can use the `setup_model_server` function to setup a model on a specific port.
-
-util/mcp.py and mcp/postgres.py: MCP connector between the database and the database agent
-
-script/...: Bash scripts run during the docker container initialization, sets up the database within the container.
-
-access_rules/...: SQL files used to set up access control for the database
+**General:**
+- dockerfile: Dockerized container to run MARFT in docker on growl
+- host_models.py: Sets up vLLM model services under separate processes. You can use the `setup_model_server` function to setup a model on a specific port.
+- util/mcp.py and mcp/postgres.py: MCP connector between the database and the database agent
+- script/...: Bash scripts run during the docker container initialization, sets up the database within the container.
+- access_rules/...: SQL files used to set up access control for the database
