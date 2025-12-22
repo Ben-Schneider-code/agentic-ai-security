@@ -7,7 +7,7 @@ More and more applications use machine learning to derive insights from large da
 
 Clone the repo:
 ```
-git clone git@github.com:liya-zhu/ml-security.git
+git clone https://github.com/Ben-Schneider-code/agentic-ai-security.git
 ```
 
 Add the database file to `/data/msft_customers.db`, or change the file_path at the beginning of `agent_loop.py` to wherever it is.
