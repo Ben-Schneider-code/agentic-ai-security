@@ -62,8 +62,10 @@ The interactive mode allows you to manually interact with the SQLEnv environment
 
 2. Run the container in interactive mode (replace GPU device IDs as needed):
    ```
-   docker run -it -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name sqlenv-interactive sqlenv-interactive
+   docker run -it --rm -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name sqlenv-interactive sqlenv-interactive
    ```
+   
+   **Note:** The `--rm` flag automatically removes the container when it exits, so you don't need to manually clean it up.
 
    **Important:** Make sure `HF_TOKEN` is set in your environment before running the container. The token is required to access gated HuggingFace models like `meta-llama/Meta-Llama-3-8B-Instruct`.
    
