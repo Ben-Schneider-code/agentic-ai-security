@@ -287,7 +287,21 @@ class OfflineLLM:
 
             # Fall back to checking if response contains SQL
             if sql_code is None and looks_like_sql(response_text):
-                sql_code = response_text.strip()
+                # Try to find the first occurrence of a SQL keyword to strip conversational prefix
+                match = sql_keyword_re.search(response_text)
+                if match:
+                    sql_code = response_text[match.start() :].strip()
+                else:
+                    sql_code = response_text.strip()
+
+            # Clean up SQL code: strip text after semicolon if present
+            # This handles cases like "SELECT * FROM users; Hope this helps!"
+            if sql_code and ";" in sql_code:
+                # Be careful not to break queries with semicolons in strings, but for this simple environment it's likely safe/better
+                # Simplistic approach: take up to the last semicolon? No, usually first.
+                # Let's take up to the first semicolon + the semicolon.
+                # If there are multiple queries, we essentially only run the first one.
+                sql_code = sql_code.split(";", 1)[0] + ";"
 
             # Execute SQL via MCP if we found any
             if sql_code and looks_like_sql(sql_code):
