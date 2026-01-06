@@ -32,7 +32,12 @@ def download_model(model_id: str, local_dir: str):
 
 if __name__ == "__main__":
     # Allow overriding via env vars or just use defaults
+    # If MODEL_ID is set to empty string or "none", we skip downloading
     model_id = os.environ.get("MODEL_ID", constants.DEFAULT_MODEL_ID)
     local_dir = os.environ.get("MODEL_DIR", constants.DEFAULT_LOCAL_DIR)
 
-    download_model(model_id, local_dir)
+    if not model_id or model_id.lower() == "none":
+        print("MODEL_ID set to 'none' or empty. Skipping model download.")
+        # We do NOT write the baked_model_info.json file, so runtime will know nothing is baked.
+    else:
+        download_model(model_id, local_dir)

@@ -17,7 +17,9 @@ sys.path.append("/app")
 from util.mcp import MCPClient
 
 # model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
-model = "meta-llama/Meta-Llama-3-8B-Instruct"
+import constants
+
+model = constants.get_runtime_model_id()[0]
 
 Role = Literal["system", "user", "assistant"]
 user_id = 29485
@@ -111,7 +113,7 @@ class OfflineLLM:
         model_name: str = model,
         mcp_client: Optional[MCPClient] = None,
         vllm_base_url: str = "http://localhost:8000/v1",
-        max_wait_time: int = 300,
+        max_wait_time: int = 600,
     ):
         """
         Args:

@@ -29,7 +29,7 @@ RUN pip3 install git+https://github.com/ozeliger/pyairports.git
 COPY constants.py .
 COPY download_weights.py .
 ARG HF_TOKEN
-ARG MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct"
+ARG MODEL_ID="none"
 ARG MODEL_DIR="/app/models/baked_model"
 # Set as env vars so python script picks them up
 ENV MODEL_ID=$MODEL_ID

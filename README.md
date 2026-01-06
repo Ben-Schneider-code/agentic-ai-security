@@ -31,20 +31,34 @@ To run models within the docker container that are gated behind a HuggingFace to
 To get started, you can build the docker image and run with specific GPU IDs and viewing the logs from MARFT:
 
 ```sh
-# Standard build (downloads model during build)
+# Standard build (NO model baked in)
 docker build --build-arg HF_TOKEN=$HF_TOKEN -t test-image .
 
 # Build with a specific model baked in
 docker build \
     --build-arg HF_TOKEN=$HF_TOKEN \
     --build-arg MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
-    -t test-image .
+    -t test-image-baked .
 ```
 
 Run the container:
 
+**Option A: No baked model (mounts host cache)**
+recommended for development to reuse downloads.
+
 ```bash
-docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image
+docker run -d \
+    -e HF_TOKEN="$HF_TOKEN" \
+    -v huggingface_cache:/root/.cache/huggingface \
+    --gpus '"device=1,2"' \
+    --name test-container \
+    test-image
+```
+
+**Option B: Baked-in model**
+
+```bash
+docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image-baked
 ```
 
 ### Model Selection
@@ -81,6 +95,12 @@ docker remove test-container
 docker build -t test-image .
 ```
 
+### Tested Models
+
+- `meta-llama/Meta-Llama-3-8B-Instruct`
+- `motherduckdb/DuckDB-NSQL-7B-v0.1`
+- `Snowflake/Qwen-2.5-coder-Arctic-ExCoT-32B`
+
 ## Interactive SQLEnv Mode
 
 The interactive mode allows you to manually interact with the SQLEnv environment through a Python REPL, enabling you to test queries, observe agent responses, and see security detection mechanisms in action.
@@ -88,23 +108,45 @@ The interactive mode allows you to manually interact with the SQLEnv environment
 ### Building and Starting the Interactive Container
 
 1. Build the interactive Docker image:
+
    ```bash
-   # Standard build
+   # Standard build (NO model baked in, lighter image)
    docker build --build-arg HF_TOKEN=$HF_TOKEN -f dockerfile.interactive -t sqlenv-interactive .
 
-   # Build with a specific model baked in
+   # Build with a specific model baked in (slower build, larger image, faster startup)
    docker build \
        --build-arg HF_TOKEN=$HF_TOKEN \
        --build-arg MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
        -f dockerfile.interactive \
-       -t sqlenv-interactive .
+       -t sqlenv-interactive-baked .
    ```
 
 2. Run the container in interactive mode (replace GPU device IDs as needed):
+
+   **Option A: No baked model (mounts host cache)**
+   Use this if you built the "Standard build" above. We mount the host's HuggingFace cache so models are downloaded once to your machine and reused.
+
+   ```bash
+   docker run -it --rm \
+       -e HF_TOKEN="$HF_TOKEN" \
+       -e MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
+       -v huggingface_cache:/root/.cache/huggingface \
+       --gpus '"device=1,2"' \
+       --name sqlenv-interactive \
+       sqlenv-interactive
    ```
-   docker run -it --rm -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name sqlenv-interactive sqlenv-interactive
+
+   **Option B: With baked model**
+   Use this if you built the image with `MODEL_ID` baked in.
+
+   ```bash
+   docker run -it --rm \
+       -e HF_TOKEN="$HF_TOKEN" \
+       --gpus '"device=1,2"' \
+       --name sqlenv-interactive \
+       sqlenv-interactive-baked
    ```
-   
+
    **Note:** The `--rm` flag automatically removes the container when it exits, so you don't need to manually clean it up.
 
    **Important:** Make sure `HF_TOKEN` is set in your environment before running the container. The token is required to access gated HuggingFace models like `meta-llama/Meta-Llama-3-8B-Instruct`.
