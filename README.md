@@ -2,16 +2,15 @@
 
 More and more applications use machine learning to derive insights from large data collections. However, this process is susceptible to several security and privacy threats. For example, the data collection may contain sensitive, private information that may still be derived from the model or the learning and inference process. We work on several projects that help ensure that such threats are contained. We work on devising improved attacks that demonstrate that protection mechanisms are not as successful as they claim to be or processes that are assumed to be safe are not. We also work on defense mechanisms that provide better protection based on the latest developments in cryptography, differential privacy, and machine learning. Our work involves designing algorithms, developing prototypes, mostly in Python, and evaluating their performance and security.
 
-
 ## Set Up
 
 Clone the repo:
-```
+
+```sh
 git clone https://github.com/Ben-Schneider-code/agentic-ai-security.git
 ```
 
 Add the database file to `/data/msft_customers.db`, or change the file_path at the beginning of `agent_loop.py` to wherever it is.
-
 
 We are currently testing between two redteaming training libraries/approaches: Agent-lightning and MARFT.
 
@@ -30,19 +29,52 @@ To run models within the docker container that are gated behind a HuggingFace to
 ## Running MARFT Dockerized
 
 To get started, you can build the docker image and run with specific GPU IDs and viewing the logs from MARFT:
-```
-docker build -t test-image .
-docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image
-docker logs -f test-container
+
+```sh
+# Standard build (downloads model during build)
+docker build --build-arg HF_TOKEN=$HF_TOKEN -t test-image .
+
+# Build with a specific model baked in
+docker build \
+    --build-arg HF_TOKEN=$HF_TOKEN \
+    --build-arg MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
+    -t test-image .
 ```
 
-If you want to debug the vLLM logs while the original container is running you can view the logs live using the following command:
+Run the container:
+
+```bash
+docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image
 ```
+
+### Model Selection
+
+You can control which model is used in two ways:
+
+1. **Baked-in Model:** Set during build time (see above). This model is effectively cached inside the Docker image.
+2. **Runtime Override:** Override the model at runtime using an environment variable. This is useful for quick testing without rebuilding.
+
+```bash
+# Force usage of a different model at runtime (downloads on startup)
+docker run -d \
+    -e HF_TOKEN="$HF_TOKEN" \
+    -e RUNTIME_MODEL_ID="google/gemma-7b" \
+    --gpus '"device=1,2"' \
+    --name test-Gemma \
+    test-image
+```
+
+On startup, the container will print a "MODEL CONFIGURATION LOG" showing which model was selected and its source (Baked-in vs Runtime Override).
+
+If you want to debug the vLLM logs while the original container is running you can view the logs live using the following command:
+
+```sh
 docker exec -it test-container tail -f /app/model_server.log
 ```
 
 If you want to stop and rebuild a container to fix an issue:
-```
+
+```sh
 docker stop test-container
 docker remove test-container
 ...<make your changes>...
@@ -56,8 +88,16 @@ The interactive mode allows you to manually interact with the SQLEnv environment
 ### Building and Starting the Interactive Container
 
 1. Build the interactive Docker image:
-   ```
-   docker build -f dockerfile.interactive -t sqlenv-interactive .
+   ```bash
+   # Standard build
+   docker build --build-arg HF_TOKEN=$HF_TOKEN -f dockerfile.interactive -t sqlenv-interactive .
+
+   # Build with a specific model baked in
+   docker build \
+       --build-arg HF_TOKEN=$HF_TOKEN \
+       --build-arg MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
+       -f dockerfile.interactive \
+       -t sqlenv-interactive .
    ```
 
 2. Run the container in interactive mode (replace GPU device IDs as needed):
@@ -75,7 +115,7 @@ The interactive mode allows you to manually interact with the SQLEnv environment
 
 Once the container is running and services are initialized, start the interactive Python REPL:
 
-```
+```sh
 python3 /app/interactive_sql_env.py
 ```
 
@@ -90,6 +130,7 @@ You can now interact with the SQL agent:
 - **`exit` or `quit`** - Exit the interactive session
 
 The REPL will show:
+
 - The agent's SQL query generation
 - SQL execution results
 - Attack detection information (permission violations, honeypot access)
@@ -97,7 +138,7 @@ The REPL will show:
 
 ### Example Session
 
-```
+```plaintext
 SQLEnv> Show me all my orders
 
 [User Query]: Show me all my orders
@@ -122,7 +163,7 @@ Execution Result: [{'salesorderid': 12345, ...}]
 
 If you prefer to work in a shell environment, you can access the container with:
 
-```
+```sh
 docker exec -it sqlenv-interactive /bin/bash
 ```
 
@@ -131,11 +172,13 @@ From there, you can run `python3 /app/interactive_sql_env.py` or interact with t
 ### Important Files
 
 **Interactive Mode:**
+
 - dockerfile.interactive: Dockerized container for interactive SQLEnv mode
 - run_interactive.sh: Script that starts services and keeps container alive for manual interaction
 - interactive_sql_env.py: Python REPL for manual SQLEnv interaction
 
 **General:**
+
 - dockerfile: Dockerized container to run MARFT in docker on growl
 - host_models.py: Sets up vLLM model services under separate processes. You can use the `setup_model_server` function to setup a model on a specific port.
 - util/mcp.py and mcp/postgres.py: MCP connector between the database and the database agent
