@@ -49,8 +49,9 @@ recommended for development to reuse downloads.
 ```bash
 docker run -d \
     -e HF_TOKEN="$HF_TOKEN" \
+    -e RUNTIME_MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
     -v huggingface_cache:/root/.cache/huggingface \
-    --gpus '"device=1,2"' \
+    --gpus '"device=6,7"' \
     --name test-container \
     test-image
 ```
@@ -58,7 +59,7 @@ docker run -d \
 **Option B: Baked-in model**
 
 ```bash
-docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=1,2"' --name test-container test-image-baked
+docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=6,7"' --name test-container test-image-baked
 ```
 
 ### Model Selection
@@ -73,7 +74,7 @@ You can control which model is used in two ways:
 docker run -d \
     -e HF_TOKEN="$HF_TOKEN" \
     -e RUNTIME_MODEL_ID="google/gemma-7b" \
-    --gpus '"device=1,2"' \
+    --gpus '"device=6,7"' \
     --name test-Gemma \
     test-image
 ```
@@ -131,7 +132,7 @@ The interactive mode allows you to manually interact with the SQLEnv environment
        -e HF_TOKEN="$HF_TOKEN" \
        -e MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
        -v huggingface_cache:/root/.cache/huggingface \
-       --gpus '"device=1,2"' \
+       --gpus '"device=6,7"' \
        --name sqlenv-interactive \
        sqlenv-interactive
    ```
@@ -142,7 +143,7 @@ The interactive mode allows you to manually interact with the SQLEnv environment
    ```bash
    docker run -it --rm \
        -e HF_TOKEN="$HF_TOKEN" \
-       --gpus '"device=1,2"' \
+       --gpus '"device=6,7"' \
        --name sqlenv-interactive \
        sqlenv-interactive-baked
    ```

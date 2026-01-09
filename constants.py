@@ -21,7 +21,7 @@ def get_runtime_model_id() -> tuple[str, str]:
     """
     # 1. Check if user wants to override via env var (Highest priority)
     env_model_id = os.environ.get("RUNTIME_MODEL_ID") or os.environ.get("MODEL_ID")
-    if env_model_id:
+    if env_model_id and env_model_id.lower() != "none":
         return env_model_id, "Environment Variable (RUNTIME_MODEL_ID/MODEL_ID)"
 
     # 2. Check for baked-in model metadata
