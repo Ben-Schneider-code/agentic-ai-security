@@ -12,47 +12,49 @@ This script provides a command-line interface to:
 import sys
 import os
 import json
+import constants
 import asyncio
 from typing import Optional
 
 # Force unbuffered output for real-time progress
-if hasattr(sys.stdout, 'reconfigure'):
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
 # Add parent directory to path
-sys.path.append('/app')
-sys.path.append('/app/MARFT')
+sys.path.append("/app")
+sys.path.append("/app/MARFT")
 
 # Import with error handling
 try:
-    from marft.envs.redteam_sql.redteam_sql_env import SQLEnv, sql_system_prompt, judge_correct
+    from marft.envs.redteam_sql.redteam_sql_env import (
+        SQLEnv,
+        sql_system_prompt,
+        judge_correct,
+    )
 except ImportError as e:
     print(f"ERROR: Failed to import SQLEnv: {e}", file=sys.stderr)
     print(f"Python path: {sys.path}", file=sys.stderr)
     sys.exit(1)
 
 # Create a minimal profile for single-agent interaction
-MINIMAL_PROFILE = [
-    {
-        "role": "interactive_user",
-        "prompt": "",
-        "with_answer": False
-    }
-]
+MINIMAL_PROFILE = [{"role": "interactive_user", "prompt": "", "with_answer": False}]
+
 
 def save_minimal_profile():
     """Save a minimal profile JSON file for interactive mode."""
     profile_path = "/app/interactive_profile.json"
-    with open(profile_path, 'w') as f:
+    with open(profile_path, "w") as f:
         json.dump(MINIMAL_PROFILE, f, indent=2)
     return profile_path
 
+
 def print_banner():
     """Print welcome banner."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("  Interactive SQLEnv - Manual SQL Agent Interaction")
-    print("="*70)
+    print("=" * 70)
     print()
+
 
 def print_help():
     """Print help message with available commands."""
@@ -65,6 +67,7 @@ def print_help():
     print("  history           - Show conversation history")
     print("  exit / quit       - Exit the interactive session")
     print()
+
 
 def print_schema():
     """Print the database schema."""
@@ -88,13 +91,15 @@ def print_schema():
     )
     print(schema)
 
+
 def print_prompt():
     """Print the system prompt."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("SYSTEM PROMPT:")
-    print("="*70)
+    print("=" * 70)
     print(sql_system_prompt)
-    print("="*70 + "\n")
+    print("=" * 70 + "\n")
+
 
 def format_response(response: str) -> tuple[str, Optional[float]]:
     """
@@ -107,27 +112,29 @@ def format_response(response: str) -> tuple[str, Optional[float]]:
         parts = response.split("Execution Result:", 1)
         if len(parts) == 2:
             execution_result = parts[1].strip()
-    
+
     # Calculate reward (using None as groundtruth for manual interaction)
     reward = judge_correct(None, response, enable_logging=True)
-    
+
     return response, reward
+
 
 def main():
     """Main interactive loop."""
     # Immediate feedback that script is starting
-    print("="*70, flush=True)
+    print("=" * 70, flush=True)
     print("Starting Interactive SQLEnv...", flush=True)
-    print("="*70, flush=True)
-    
+    print("=" * 70, flush=True)
+
     print_banner()
     sys.stdout.flush()
-    
+
     # Check if vLLM server is ready
     print("Checking vLLM server connection...")
     sys.stdout.flush()
     try:
         import requests
+
         response = requests.get("http://localhost:8000/v1/models", timeout=5)
         if response.status_code != 200:
             print("WARNING: vLLM server may not be ready. Responses may be slow.")
@@ -138,38 +145,51 @@ def main():
         print(f"WARNING: Could not connect to vLLM server: {e}")
         print("Make sure the model server is running.")
         sys.stdout.flush()
-    
+
     # Create minimal profile
     print("Creating minimal profile...")
     sys.stdout.flush()
     profile_path = save_minimal_profile()
     print(f"✓ Profile created at {profile_path}")
     sys.stdout.flush()
-    
+
     # Initialize SQLEnv
     print("Initializing SQLEnv...")
-    print("  (This may take a moment - connecting to MCP server and waiting for vLLM...)")
+    print(
+        "  (This may take a moment - connecting to MCP server and waiting for vLLM...)"
+    )
     sys.stdout.flush()
     try:
-        print("  Step 1/4: Creating SQLEnv instance (connecting to MCP server)...", flush=True)
+        print(
+            "  Step 1/4: Creating SQLEnv instance (connecting to MCP server)...",
+            flush=True,
+        )
+
+        # dynamic model loading
+        model_id, source = constants.get_runtime_model_id()
+        print(f"  Model Selection: {model_id} (Source: {source})")
+
         env = SQLEnv(
             rank=0,
-            model_name="meta-llama/Meta-Llama-3-8B-Instruct",
+            model_name=model_id,
             num_agents=1,
             profile_path=profile_path,
             horizon=100,  # High horizon for manual interaction
             mode="interactive",
-            dataset_path=None
+            dataset_path=None,
         )
-        print("  Step 2/4: SQLEnv instance created, initializing LLM (waiting for vLLM server)...", flush=True)
+        print(
+            "  Step 2/4: SQLEnv instance created, initializing LLM (waiting for vLLM server)...",
+            flush=True,
+        )
         # The OfflineLLM initialization happens in SQLEnv.__init__, but we need to wait for it
         # The print statements from OfflineLLM should show progress
         print("  Step 3/4: Resetting environment...", flush=True)
-        
+
         # Reset environment (this loads a question, but we'll ignore it for manual mode)
         env.reset()
         print("  Step 4/4: Environment reset complete", flush=True)
-        
+
         # Clear the conversation for manual interaction
         env.victim_state.conversation = []
         print("✓ SQLEnv initialized successfully!\n")
@@ -181,54 +201,55 @@ def main():
     except Exception as e:
         print(f"\nERROR: Failed to initialize SQLEnv: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.stdout.flush()
         sys.stderr.flush()
         return 1
-    
+
     print_help()
     print("Type your query or command (type 'help' for commands):\n")
     sys.stdout.flush()
-    
+
     # Main interaction loop
     try:
         while True:
             try:
                 # Get user input
                 user_input = input("SQLEnv> ").strip()
-                
+
                 if not user_input:
                     continue
-                
+
                 # Handle commands
-                if user_input.lower() in ['exit', 'quit']:
+                if user_input.lower() in ["exit", "quit"]:
                     print("\nExiting interactive session...")
                     break
-                
-                elif user_input.lower() == 'help':
+
+                elif user_input.lower() == "help":
                     print_help()
                     continue
-                
-                elif user_input.lower() == 'schema':
+
+                elif user_input.lower() == "schema":
                     print_schema()
                     continue
-                
-                elif user_input.lower() == 'prompt':
+
+                elif user_input.lower() == "prompt":
                     print_prompt()
                     continue
-                
-                elif user_input.lower() == 'clear':
+
+                elif user_input.lower() == "clear":
                     env.victim_state.conversation = []
                     print("Conversation history cleared.\n")
                     continue
-                
-                elif user_input.lower() == 'history':
+
+                elif user_input.lower() == "history":
                     if env.victim_state.conversation:
                         print("\nConversation History:")
                         print("-" * 70)
                         for msg in env.victim_state.conversation:
-                            role = msg['role'].upper()
-                            content = msg['content']
+                            role = msg["role"].upper()
+                            content = msg["content"]
                             # Truncate long content
                             if len(content) > 500:
                                 content = content[:500] + "... [truncated]"
@@ -237,29 +258,28 @@ def main():
                     else:
                         print("No conversation history.\n")
                     continue
-                
+
                 # Process as a query
                 print(f"\n[User Query]: {user_input}\n")
                 print("Processing query...")
-                
+
                 # Add user message to conversation
                 env.victim_state.append("user", user_input)
-                
+
                 # Get response from victim LLM
                 response = env.victim_llm.complete(
-                    env.victim_state.conversation,
-                    system_prompt=sql_system_prompt
+                    env.victim_state.conversation, system_prompt=sql_system_prompt
                 )
-                
+
                 # Format and display response
                 formatted_response, reward = format_response(response)
-                
-                print("\n" + "="*70)
+
+                print("\n" + "=" * 70)
                 print("AGENT RESPONSE:")
-                print("="*70)
+                print("=" * 70)
                 print(formatted_response)
-                print("="*70)
-                
+                print("=" * 70)
+
                 if reward is not None and reward > 0:
                     print(f"\n[REWARD DETECTED]: {reward}")
                     if reward >= 5.0:
@@ -269,12 +289,14 @@ def main():
                     elif reward >= 1.0:
                         print("  ✓ Valid SQL query executed")
                 print()
-                
+
                 # Add assistant response to conversation
                 env.victim_state.append("assistant", response)
-                
+
             except KeyboardInterrupt:
-                print("\n\nInterrupted. Type 'exit' to quit or continue with another query.")
+                print(
+                    "\n\nInterrupted. Type 'exit' to quit or continue with another query."
+                )
                 continue
             except EOFError:
                 print("\n\nExiting...")
@@ -282,9 +304,10 @@ def main():
             except Exception as e:
                 print(f"\nERROR: {e}")
                 import traceback
+
                 traceback.print_exc()
                 print()
-    
+
     finally:
         # Cleanup
         print("\nCleaning up...")
@@ -293,9 +316,9 @@ def main():
         except:
             pass
         print("Goodbye!\n")
-    
+
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
-

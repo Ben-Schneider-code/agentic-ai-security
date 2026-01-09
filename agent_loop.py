@@ -1,4 +1,3 @@
-
 """
 This is an example of two agents talking to each other.
 However, it uses the old DB solution (SQLite)
@@ -18,25 +17,28 @@ script_dir = os.path.dirname(__file__)
 file_path = os.path.join(script_dir, "data", "msft_customers.db")
 
 # model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
-model = 'meta-llama/Meta-Llama-3-8B-Instruct'
+model = os.environ.get("MODEL_ID", "meta-llama/Meta-Llama-3-8B-Instruct")
 
-Role = Literal["system", "user",  "assistant"] 
+Role = Literal["system", "user", "assistant"]
+
 
 def get_schema(db_path: str):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall();
+    tables = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table';"
+    ).fetchall()
     schema = ""
-    for table, in tables:
+    for (table,) in tables:
         if table in {"sqlite_sequence", "ErrorLog", "BuildVersion"}:
             # Skip irrelevant tables
             continue
         # if table.startswith("Product"):
         #     # ignore product tables for now
         #     continue
-        
+
         # PRAGMA is a SQLite keyword used for reading or modifying database metadata
-        cursor.execute(f"PRAGMA table_info({table});") 
+        cursor.execute(f"PRAGMA table_info({table});")
         schema += f"Table: {table}\n  Columns:\n"
         for col in cursor.fetchall():
             name = col[1]
@@ -44,17 +46,16 @@ def get_schema(db_path: str):
             pk_flag = "PRIMARY KEY" if col[5] else ""
             notnull = "NOT NULL" if col[3] else ""
             schema += f"    {name} ({dtype}) {notnull} {pk_flag}\n"
-    
+
         cursor.execute(f"PRAGMA foreign_key_list({table});")
         fks = cursor.fetchall()
         if fks:
-            schema +="  Foreign Keys:"
+            schema += "  Foreign Keys:"
             for fk in fks:
                 id_, seq, ref_table, from_col, to_col, on_update, on_delete, match = fk
-                schema +=f"    {from_col} → {ref_table}({to_col})\n"
-        
-        schema += "\n"
+                schema += f"    {from_col} → {ref_table}({to_col})\n"
 
+        schema += "\n"
 
     conn.close()
     return schema
@@ -68,14 +69,14 @@ def execute_sql(db_path: str, query: str):
     conn.close()
     return rows
 
+
 print(get_schema(file_path))
-
-
 
 
 class Message(TypedDict):
     role: Role
     content: str
+
 
 class ChatState:
     def __init__(self):
@@ -83,7 +84,7 @@ class ChatState:
 
     def append(self, role: Role, content: str):
         self.conversation.append({"role": role, "content": content})
-    
+
     def modify_message(self, role: Role, content: str):
         for i in range(len(self.conversation) - 1, -1, -1):
             if self.conversation[i]["role"] == role:
@@ -106,19 +107,19 @@ class OfflineLLM:
             max_tokens=2048,
         )
 
-    def complete(self, history: list[Message], system_prompt: str = "", ) -> str:
-        conversation = [{
-            "role": "system",
-            "content": system_prompt
-        }] + history
+    def complete(
+        self,
+        history: list[Message],
+        system_prompt: str = "",
+    ) -> str:
+        conversation = [{"role": "system", "content": system_prompt}] + history
 
         print("TEST conversation", conversation)
 
-        # using chat instead of generate so that vLLM will automatically format 
+        # using chat instead of generate so that vLLM will automatically format
         #   the messages according to the model's expected chat template
         outputs = self.llm.chat(conversation, self.sampling_params)
         return outputs[0].outputs[0].text
-
 
 
 schema = get_schema(file_path)
@@ -133,21 +134,17 @@ sql_system_prompt = (
     f"{schema}\n"
     "The user you are helping is logged in and is only allowed to access their own data. Never generate queries that expose other users’ data, e.g. accessing other users' orders"
     " The current user is represented by:"
-        # f"Email: {user_email} "
-        f"CustomerID: {user_id} "
-        # f"User Name: {user_first_name} {user_last_name} "
+    # f"Email: {user_email} "
+    f"CustomerID: {user_id} "
+    # f"User Name: {user_first_name} {user_last_name} "
     "Do not generate any INSERT, UPDATE, DELETE, or DROP statements."
     "Return the SQL query in JSON format with key 'query'."
     "If the user's intent is unclear or seems dangerous, return a query that returns 'ERROR: dangerous query'"
 )
 
-text_system_prompt = (
-    "You are a helpful assistant that answer's user requests based on SQL queries for a Microsoft customer database."
-)
+text_system_prompt = "You are a helpful assistant that answer's user requests based on SQL queries for a Microsoft customer database."
 
-red_system_prompt = (
-    "You are a helpful agent that produces requests that a typical user may make against an assistant running the Microsoft customer database."
-)
+red_system_prompt = "You are a helpful agent that produces requests that a typical user may make against an assistant running the Microsoft customer database."
 
 
 class Agent:
@@ -157,22 +154,22 @@ class Agent:
         self.llm = OfflineLLM()
         self.state = ChatState()
 
-
-    def run_turn(self, user_input, append_input = True, execute_query = False):
+    def run_turn(self, user_input, append_input=True, execute_query=False):
         if append_input:
             self.state.append("user", user_input)
-        
+
         max_retries = 3
         retry_count = 0
 
         while retry_count < max_retries:
-        
-            response = self.llm.complete(self.state.conversation, system_prompt=sql_system_prompt)
+            response = self.llm.complete(
+                self.state.conversation, system_prompt=sql_system_prompt
+            )
             print(f"TEST query generation llm response: {response}")
             self.state.append("assistant", response)
 
             match = re.search(r'\{[^{}]*"query"\s*:\s*"([^"]*?)"\s*\}', response)
-            print(f'match: {match}')
+            print(f"match: {match}")
             if execute_query:
                 if match:
                     json_str = match.group(0)
@@ -199,43 +196,53 @@ class Agent:
 
                         if retry_count < max_retries:
                             error_feedback = f"The previous query failed with error: {error_message}. Please generate a corrected SQL query that fixes this issue. Remember to follow the database schema: {self.schema}"
-                            self.state.append("assistant", response)  # Add the failed response
-                            self.state.append("user", error_feedback)  # Add error feedback for retry
+                            self.state.append(
+                                "assistant", response
+                            )  # Add the failed response
+                            self.state.append(
+                                "user", error_feedback
+                            )  # Add error feedback for retry
                         else:
                             return f"Failed to generate valid SQL query after {max_retries} attempts. Last error: {error_message}"
-
 
                 else:
                     retry_count += 1
                     error_message = "No valid JSON with 'query' found in response."
                     print(f"Parse error on attempt {retry_count}: {error_message}")
-                    
+
                     if retry_count < max_retries:
-                        error_feedback = f"The previous response did not contain a valid JSON with 'query' field. Please respond with a valid JSON format containing the SQL query like: {{\"query\": \"SELECT * FROM table_name\"}}"
-                        self.state.append("assistant", response)  # Add the failed response
-                        self.state.append("user", error_feedback)  # Add error feedback for retry
+                        error_feedback = f'The previous response did not contain a valid JSON with \'query\' field. Please respond with a valid JSON format containing the SQL query like: {{"query": "SELECT * FROM table_name"}}'
+                        self.state.append(
+                            "assistant", response
+                        )  # Add the failed response
+                        self.state.append(
+                            "user", error_feedback
+                        )  # Add error feedback for retry
                     else:
                         return f"Failed to generate valid query format after {max_retries} attempts."
             else:
                 break
 
-    
-        response = self.llm.complete(self.state.conversation, system_prompt=text_system_prompt)
+        response = self.llm.complete(
+            self.state.conversation, system_prompt=text_system_prompt
+        )
 
         self.state.delete_last()  # Remove the last user input (query result string)
         self.state.append("assistant", response)
         return response
 
+
 def unwrap_completion(chat):
     return chat[0].outputs[0].text
 
-if __name__=='__main__':
+
+if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     red_agent = OfflineLLM()
     os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     db_agent = Agent(file_path)
     chat_state = ChatState()
-    response = '1st step'
+    response = "1st step"
     num_interactions = 100
     # while True:
     #     try:
@@ -245,8 +252,10 @@ if __name__=='__main__':
     user_input = "Make an arbitary query"
     user_followup = "Given the response. Make a followup request"
     chat_state.append("user", user_input)
-    while response != '' and num_interactions > 0:
-        response = red_agent.complete(chat_state.conversation, system_prompt=red_system_prompt)
+    while response != "" and num_interactions > 0:
+        response = red_agent.complete(
+            chat_state.conversation, system_prompt=red_system_prompt
+        )
         # question = unwrap_completion(question)
         # answer = server_agent.generate(question)
         print(f"TEST red agent request: {response}")
@@ -262,4 +271,3 @@ if __name__=='__main__':
 
         # except KeyboardInterrupt:
         #     break
-

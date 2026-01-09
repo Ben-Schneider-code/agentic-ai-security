@@ -30,6 +30,18 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Install pyairports from git to get latest version
 RUN pip3 install git+https://github.com/ozeliger/pyairports.git
 
+# Bake in model weights
+# Usage: docker build --build-arg HF_TOKEN=$HF_TOKEN --build-arg MODEL_ID="..." -t my-image .
+COPY constants.py .
+COPY download_weights.py .
+ARG HF_TOKEN
+ARG MODEL_ID="none"
+ARG MODEL_DIR="/app/models/baked_model"
+# Set as env vars so python script picks them up
+ENV MODEL_ID=$MODEL_ID
+ENV MODEL_DIR=$MODEL_DIR
+RUN python3 download_weights.py
+
 # MARFT
 COPY MARFT/ /app/MARFT/
 RUN chmod +x /app/MARFT/marft/scripts/sample_redteam_script.sh
