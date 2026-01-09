@@ -102,17 +102,24 @@ def build_run_dir(all_args):
 
 
 def main(args):
+    print(">>> Starting main execution of train_redteam_sql.py")
     parser = get_config()
     all_args = parse_args(args, parser)
+    print(
+        f">>> Arguments parsed. Experiment: {all_args.experiment_name}, Algorithm: {all_args.algorithm_name}"
+    )
     run_dir = build_run_dir(all_args)
     save_args_to_yaml(all_args, run_dir / "args.yaml")
 
     # seed
+    print(f">>> Setting seed to {all_args.seed}")
     torch.manual_seed(all_args.seed)
     torch.cuda.manual_seed_all(all_args.seed)
     np.random.seed(all_args.seed)
 
+    print(">>> Creating training environment...")
     envs = make_train_env(all_args)
+    print(">>> Training environment created.")
     # eval_envs = make_eval_env(all_args)
 
     config = {
@@ -123,15 +130,21 @@ def main(args):
         "run_dir": run_dir,
     }
 
+    print(">>> Initializing Runner...")
     runner = Runner(config)
+    print(">>> Runner initialized. Starting run() loop...")
     runner.run()
+    print(">>> Runner run() completed.")
 
     # post process
     if envs is not None:
+        print(">>> Closing environments...")
         envs.close()
 
+    print(">>> Exporting scalars and closing writer...")
     runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
     runner.writter.close()
+    print(">>> Main execution completed successfully.")
 
 
 if __name__ == "__main__":
