@@ -6,7 +6,8 @@ from pathlib import Path
 import torch
 import yaml
 
-sys.path.append("../../")
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent))
 from marft.config import get_config
 from marft.envs.redteam_sql.redteam_sql_env import SQLEnv
 from marft.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
@@ -27,8 +28,10 @@ def make_train_env(all_args):
             )
             env.seed(all_args.seed + rank * 1000)
             return env
+
         return init_env
-    print(f'NUMBER OF ROLLOUT THREADS: {all_args.n_rollout_threads}')
+
+    print(f"NUMBER OF ROLLOUT THREADS: {all_args.n_rollout_threads}")
     return ShareDummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
@@ -46,8 +49,12 @@ def make_eval_env(all_args):
             )
             env.seed(all_args.seed + rank * 5000)
             return env
+
         return init_env
-    return ShareDummyVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+
+    return ShareDummyVecEnv(
+        [get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)]
+    )
 
 
 def parse_args(args, parser):
@@ -55,10 +62,12 @@ def parse_args(args, parser):
     all_args.base_model = Path(all_args.model_name_or_path).parts[-1]
     return all_args
 
+
 def save_args_to_yaml(args, filename="args.yaml"):
     """Save argparse arguments to a YAML file."""
-    with open(filename, 'w') as f:
+    with open(filename, "w") as f:
         yaml.dump(vars(args), f, default_flow_style=False, sort_keys=False)
+
 
 def build_run_dir(all_args):
     run_dir = (
@@ -90,6 +99,7 @@ def build_run_dir(all_args):
         os.makedirs(str(run_dir))
     print(f"Saving results to {run_dir}")
     return run_dir
+
 
 def main(args):
     parser = get_config()

@@ -3,7 +3,12 @@ import numpy as np
 from tqdm import tqdm
 import torch
 from tensorboardX import SummaryWriter
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from marft.mas import MAS
+
 
 class RedTeamSQLRunner:
     """Runner class to perform training, evaluation. and data collection. See parent class for details."""
@@ -22,9 +27,9 @@ class RedTeamSQLRunner:
         self.eval_envs = config["eval_envs"]
 
         self.mas = MAS(
-            model_path=self.all_args.model_name_or_path, 
+            model_path=self.all_args.model_name_or_path,
             context_window=self.all_args.context_window,
-            max_new_tokens=self.all_args.max_new_tokens, 
+            max_new_tokens=self.all_args.max_new_tokens,
             num_agents=self.num_agents,
             profile_path=self.all_args.profile_path,
             algo=self.algo,
@@ -35,45 +40,87 @@ class RedTeamSQLRunner:
         if self.algo == "APPO":
             from marft.algorithms import APPOTrainer
             from marft.buffers.action_level_buffer import ActionBuffer
+
             self.trainer = APPOTrainer(self.all_args, self.mas)
             self.buffer = ActionBuffer(self.all_args, self.num_agents)
         elif self.algo == "TPPO":
             from marft.algorithms import TPPOTrainer
             from marft.buffers.token_level_buffer import TokenBuffer
+
             self.trainer = TPPOTrainer(self.all_args, self.mas)
-            self.buffer = TokenBuffer(self.all_args, self.num_agents, self.mas.tokenizer.pad_token_id)
+            self.buffer = TokenBuffer(
+                self.all_args, self.num_agents, self.mas.tokenizer.pad_token_id
+            )
         else:
             raise NotImplementedError
-        
+
         self.run_dir = config["run_dir"]
         self._make_log_dir()
         self.writter = SummaryWriter(self.log_dir)
-
 
     def run(self):
         next_obs = self.envs.reset()
         self.buffer.obs[self.buffer.cur_batch_index, 0] = next_obs.copy()
 
-        episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
+        episodes = (
+            int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
+        )
 
-        progress_bar = tqdm(total=episodes, desc=f"Start running...", position=0, leave=True)
+        progress_bar = tqdm(
+            total=episodes, desc=f"Start running...", position=0, leave=True
+        )
+        all_episodic_returns = []
 
         for episode in range(episodes):
-            total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
+            total_num_steps = (
+                (episode + 1) * self.episode_length * self.n_rollout_threads
+            )
             for step in range(self.episode_length):
                 torch.cuda.empty_cache()
-                rollout_obs, actions, action_tokens, values, log_probs = self.mas.infer_for_rollout(self.buffer.obs[self.buffer.cur_batch_index, step])
+                rollout_obs, actions, action_tokens, values, log_probs = (
+                    self.mas.infer_for_rollout(
+                        self.buffer.obs[self.buffer.cur_batch_index, step]
+                    )
+                )
                 next_obs, rewards, dones, infos = self.envs.step(actions)
 
                 # insert data into buffer
-                data = next_obs, rollout_obs, rewards, dones, values, actions, action_tokens, log_probs
+                data = (
+                    next_obs,
+                    rollout_obs,
+                    rewards,
+                    dones,
+                    values,
+                    actions,
+                    action_tokens,
+                    log_probs,
+                )
                 self.insert(data)
 
                 for i in range(self.n_rollout_threads):
                     global_step = total_num_steps + step * self.n_rollout_threads + i
+
                     if dones[i, 0]:
-                        episodic_return = infos[i]['episodic_return']
-                        self.writter.add_scalar("episodic_return", episodic_return, global_step)
+                        episodic_return = infos[i]["episodic_return"]
+                        self.writter.add_scalar(
+                            "episodic_return", episodic_return, global_step
+                        )
+                        all_episodic_returns.append(episodic_return)
+
+                        # Plot every 5 episodes
+                        if (
+                            len(all_episodic_returns) > 0
+                            and len(all_episodic_returns) % 5 == 0
+                        ):
+                            plt.figure()
+                            plt.plot(all_episodic_returns)
+                            plt.title("Total Rewards over Episodes")
+                            plt.xlabel("Episode")
+                            plt.ylabel("Total Reward")
+                            plt.savefig(
+                                os.path.join(self.log_dir, "episode_rewards.png")
+                            )
+                            plt.close()
 
             self.before_update()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
@@ -81,12 +128,16 @@ class RedTeamSQLRunner:
 
             # post process
             # save model
-            if (episode == episodes - 1) or ((episode + 1) % self.all_args.save_interval == 0):
+            if (episode == episodes - 1) or (
+                (episode + 1) % self.all_args.save_interval == 0
+            ):
                 self.save(total_num_steps)
 
             # log info
             if episode % self.log_interval == 0:
-                avg_step_reward = np.mean(self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1])
+                avg_step_reward = np.mean(
+                    self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
+                )
                 progress_bar.set_description(
                     f"Episode {episode}/{episodes}"
                     f"(total step num: {total_num_steps} | average step reward: {avg_step_reward:.4f})",
@@ -99,16 +150,38 @@ class RedTeamSQLRunner:
                 self.eval(total_num_steps)
 
     def insert(self, data):
-        next_obs, rollout_obs, rewards, dones, values, actions, action_tokens, log_probs = data
+        (
+            next_obs,
+            rollout_obs,
+            rewards,
+            dones,
+            values,
+            actions,
+            action_tokens,
+            log_probs,
+        ) = data
         dones_env = np.all(dones, axis=1)
         masks = np.ones((self.n_rollout_threads, self.num_agents), dtype=np.float32)
-        masks[dones_env == True] = np.zeros(((dones_env == True).sum(), self.num_agents), dtype=np.float32)
-        self.buffer.insert(next_obs, actions, rollout_obs, values, rewards, masks, action_tokens, log_probs)
+        masks[dones_env == True] = np.zeros(
+            ((dones_env == True).sum(), self.num_agents), dtype=np.float32
+        )
+        self.buffer.insert(
+            next_obs,
+            actions,
+            rollout_obs,
+            values,
+            rewards,
+            masks,
+            action_tokens,
+            log_probs,
+        )
 
     @torch.no_grad()
     def before_update(self):
         """Calculate returns for the collected data."""
-        values = self.mas.get_next_values(self.buffer.obs[self.buffer.cur_batch_index, -1])
+        values = self.mas.get_next_values(
+            self.buffer.obs[self.buffer.cur_batch_index, -1]
+        )
         self.buffer.compute_gae_and_returns(values)
 
     def log_train(self, train_infos, total_num_steps):
@@ -124,7 +197,9 @@ class RedTeamSQLRunner:
         while True:
             eval_actions, _ = self.mas.get_actions(np.concatenate(eval_obs))
             eval_actions = np.array(np.split(eval_actions, self.n_eval_rollout_threads))
-            eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions)
+            eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(
+                eval_actions
+            )
 
             eval_dones_env = np.all(eval_dones, axis=1)
 

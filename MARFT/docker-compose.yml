@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: julia
+      POSTGRES_PASSWORD: 123
+      POSTGRES_DB: msft_customers
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/app/data
+      - ./schema.sql:/app/schema.sql
+      - ./access_rules:/app/access_rules
+      - ./script:/app/script
+      - ./script/init-docker-compose.sh:/docker-entrypoint-initdb.d/init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U julia -d msft_customers"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

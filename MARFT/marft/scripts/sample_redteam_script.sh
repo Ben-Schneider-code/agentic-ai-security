@@ -1,9 +1,20 @@
-# export CUDA_VISIBLE_DEVICES="0"
+#!/bin/bash
+
+# export CUDA_VISIBLE_DEVICES="6,7"
 echo $CUDA_VISIBLE_DEVICES
 echo HF_TOKEN:
 echo $HF_TOKEN
 
-python3 train_redteam_sql.py \
+# Stop if no token is set
+if [ -z "$HF_TOKEN" ]; then
+    echo "Error: HF_TOKEN is not set"
+    exit 1
+fi
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" &>/dev/null && pwd)
+# source "$SCRIPT_DIR/../../../.venv/bin/activate"
+
+python3 $SCRIPT_DIR/train_redteam_sql.py \
         --seed 10 \
         --env_name redteam_sql_env \
         --algorithm_name APPO \
@@ -18,7 +29,7 @@ python3 train_redteam_sql.py \
         --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
         --n_agents 1 \
         --agent_iteration_interval 1000 \
-        --profile_path profiles/redteam_sql.json \
+        --profile_path $SCRIPT_DIR/profiles/redteam_sql.json \
         --n_rollout_threads 1 \
         --episode_length 1 \
         --gradient_cp_steps 2 \
