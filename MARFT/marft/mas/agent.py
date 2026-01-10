@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 import torch
@@ -35,16 +36,26 @@ class Agent:
             )
         else:
             nf4_config = None
-        
+
         # print(f'SELF.DEVICE: {self.device}')
         # print(os.environ["CUDA_VISIBLE_DEVICES"])
+        if device_map is None:
+            device_map = {"": self.device}
+
+        print(
+            f"[Profiling] Agent {self.role}: Loading base model from {model_path} on {self.device}..."
+        )
+        start_time = time.time()
         self.base_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16 if bf16 else "auto",
             quantization_config=nf4_config,
             device_map=device_map,
-        ).to("cuda")
+        )
+        print(
+            f"[Profiling] Agent {self.role}: Base model loaded in {time.time() - start_time:.2f}s"
+        )
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
@@ -73,10 +84,10 @@ class Agent:
             self.model = PeftModel.from_pretrained(
                 self.base_model, adapter_path, adapter_name=self.role
             )
-        
+
         self.model.print_trainable_parameters()
         self.model.half()
-        self.model.to("cuda")
+        self.model.to(self.device)
 
     def generate(self, *args, **kwargs):
         return self.model.generate(*args, **kwargs)
@@ -92,4 +103,4 @@ class Agent:
 
     def to(self, device: torch.device):
         self.device = torch.device(device)
-        self.model.to('cuda')
+        self.model.to(self.device)

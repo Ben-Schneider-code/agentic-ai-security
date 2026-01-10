@@ -18,16 +18,37 @@ echo "Starting vLLM model server..."
 env HF_TOKEN="$HF_TOKEN" HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" python3 /app/host_models.py > /app/model_server.log 2>&1 &
 MODEL_PID=$!
 
-# Wait for model server to start and load model (60 seconds)
+# Wait for model server to start and load model (up to 120 seconds)
 echo "Waiting for model server to initialize..."
-sleep 60
+TIMEOUT=120
+START_TIME=$(date +%s)
 
-# Check if model server is still running
-if ! kill -0 $MODEL_PID 2>/dev/null; then
-    echo "ERROR: Model server failed to start. Check /app/model_server.log"
-    cat /app/model_server.log
-    exit 1
-fi
+while true; do
+    # Check if process died
+    if ! kill -0 $MODEL_PID 2>/dev/null; then
+        echo "ERROR: Model server process died unexpectedly. Check /app/model_server.log"
+        cat /app/model_server.log
+        exit 1
+    fi
+
+    # Check if endpoint is up using python (curl might not be installed)
+    if python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models')" >/dev/null 2>&1; then
+        echo "Model server is up and ready!"
+        break
+    fi
+
+    CURRENT_TIME=$(date +%s)
+    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+
+    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
+        echo "ERROR: Model server timed out after $TIMEOUT seconds. Check /app/model_server.log"
+        cat /app/model_server.log
+        kill $MODEL_PID 2>/dev/null
+        exit 1
+    fi
+
+    sleep 3
+done
 
 echo "Model server started successfully"
 

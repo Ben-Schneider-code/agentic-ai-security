@@ -392,7 +392,11 @@ def main():
 
     # Logic: If we have multiple GPUs, use them (TP=N).
     # Especially important for 32B models which might not fit on one.
-    tp_size = available_gpus if available_gpus > 0 else 1
+    # Force TP=1 to save the second GPU for the training process
+    tp_size = 1
+
+    # Force GPU ID 0 (Logical) for vLLM, leaving GPU 1 for training
+    vllm_gpu_id = 0
 
     # Setup only DB agent model for now
     setup_model_server(
@@ -401,7 +405,7 @@ def main():
         port=8000,
         manager=manager,
         # Remove hardcoded gpu_id=1 so it can use all if TP > 1
-        gpu_id=None,
+        gpu_id=vllm_gpu_id,
         tensor_parallel_size=tp_size,
     )
 

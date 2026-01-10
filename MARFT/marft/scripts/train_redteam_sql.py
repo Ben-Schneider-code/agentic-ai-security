@@ -148,4 +148,14 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except Exception:
+        import traceback
+
+        print("\n\n" + "=" * 50, file=sys.stderr)
+        print("CRITICAL ERROR IN TRAIN_REDTEAM_SQL.PY", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("=" * 50 + "\n", file=sys.stderr)
+        sys.exit(1)

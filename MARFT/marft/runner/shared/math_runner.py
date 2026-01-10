@@ -56,7 +56,7 @@ class MathRunner:
 
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
 
-        progress_bar = tqdm(total=episodes, desc=f"Start running...", position=0, leave=True)
+        progress_bar = tqdm(total=episodes, desc="Start running...", position=0, leave=True)
 
         for episode in range(episodes):
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads

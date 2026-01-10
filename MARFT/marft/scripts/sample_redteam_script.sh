@@ -14,11 +14,11 @@ fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" &>/dev/null && pwd)
 # source "$SCRIPT_DIR/../../../.venv/bin/activate"
 
-python3 $SCRIPT_DIR/train_redteam_sql.py \
+exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --seed 10 \
         --env_name redteam_sql_env \
         --algorithm_name APPO \
-        --experiment_name experiment_name \
+        --experiment_name sample_redteam_sql \
         --dataset_name None \
         --flag train \
         --num_mini_batch 1 \

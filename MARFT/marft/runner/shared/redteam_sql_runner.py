@@ -59,7 +59,9 @@ class RedTeamSQLRunner:
         self.writter = SummaryWriter(self.log_dir)
 
     def run(self):
+        print("[DEBUG] run(): Starting envs.reset()...")
         next_obs = self.envs.reset()
+        print("[DEBUG] run(): envs.reset() completed.")
         self.buffer.obs[self.buffer.cur_batch_index, 0] = next_obs.copy()
 
         episodes = (
@@ -76,13 +78,21 @@ class RedTeamSQLRunner:
                 (episode + 1) * self.episode_length * self.n_rollout_threads
             )
             for step in range(self.episode_length):
+                print(f"[DEBUG] Episode {episode}, Step {step}: Starting...")
                 torch.cuda.empty_cache()
+                print(
+                    f"[DEBUG] Episode {episode}, Step {step}: Calling mas.infer_for_rollout()..."
+                )
                 rollout_obs, actions, action_tokens, values, log_probs = (
                     self.mas.infer_for_rollout(
                         self.buffer.obs[self.buffer.cur_batch_index, step]
                     )
                 )
+                print(
+                    f"[DEBUG] Episode {episode}, Step {step}: infer_for_rollout() done. Calling envs.step()..."
+                )
                 next_obs, rewards, dones, infos = self.envs.step(actions)
+                print(f"[DEBUG] Episode {episode}, Step {step}: envs.step() done.")
 
                 # insert data into buffer
                 data = (
