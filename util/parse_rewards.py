@@ -41,20 +41,21 @@ def parse_rewards(log_dir):
     steps = [e.step for e in events]
     rewards = [e.value for e in events]
 
-    # Calculate cumulative sum
-    cumulative_rewards = np.cumsum(rewards)
+    # Calculate cumulative sum of rewards > 1 (Treating <= 1 as 0)
+    filtered_rewards = [r if r > 1.0 else 0.0 for r in rewards]
+    cumulative_rewards = np.cumsum(filtered_rewards)
 
     print(f"Found {len(rewards)} episodes.")
-    print(f"{'Step':<10} {'Reward':<10} {'Cumulative':<10}")
+    print(f"{'Step':<10} {'Reward':<10} {'Cumul (>1)':<10}")
     for s, r, c in zip(steps, rewards, cumulative_rewards):
         print(f"{s:<10} {r:<10.4f} {c:<10.4f}")
 
     # Plot
     plt.figure(figsize=(10, 6))
     plt.plot(steps, cumulative_rewards, marker="o", linestyle="-")
-    plt.title("Cumulative Rewards over Episodes")
+    plt.title("Cumulative Rewards (>1) over Episodes")
     plt.xlabel("Step")
-    plt.ylabel("Cumulative Reward")
+    plt.ylabel("Cumulative Reward (>1)")
     plt.grid(True)
 
     output_plot = os.path.join(log_dir, "cumulative_rewards.png")
