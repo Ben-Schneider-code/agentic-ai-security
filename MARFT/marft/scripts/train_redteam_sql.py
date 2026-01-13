@@ -69,6 +69,49 @@ def save_args_to_yaml(args, filename="args.yaml"):
         yaml.dump(vars(args), f, default_flow_style=False, sort_keys=False)
 
 
+def find_latest_checkpoint(run_dir):
+    """Find the latest checkpoint in a run directory.
+
+    Returns:
+        tuple: (checkpoint_path, steps) or (None, 0) if no checkpoint found
+    """
+    checkpoint_dir = Path(run_dir) / "checkpoints"
+    if not checkpoint_dir.exists():
+        return None, 0
+
+    checkpoints = []
+    for folder in checkpoint_dir.iterdir():
+        if folder.is_dir() and folder.name.startswith("steps_"):
+            try:
+                steps = int(folder.name.split("_")[1])
+                checkpoints.append((folder, steps))
+            except (ValueError, IndexError):
+                continue
+
+    if not checkpoints:
+        return None, 0
+
+    # Sort by steps and return the latest
+    checkpoints.sort(key=lambda x: x[1], reverse=True)
+    return str(checkpoints[0][0]), checkpoints[0][1]
+
+
+def load_training_state(run_dir):
+    """Load training state from a run directory.
+
+    Returns:
+        dict with keys: start_episode, total_num_steps, all_episodic_returns
+        or None if no state file found
+    """
+    import json
+
+    state_file = Path(run_dir) / "training_state.json"
+    if state_file.exists():
+        with open(state_file, "r") as f:
+            return json.load(f)
+    return None
+
+
 def build_run_dir(all_args):
     run_dir = (
         Path(
@@ -108,8 +151,35 @@ def main(args):
     print(
         f">>> Arguments parsed. Experiment: {all_args.experiment_name}, Algorithm: {all_args.algorithm_name}"
     )
-    run_dir = build_run_dir(all_args)
-    save_args_to_yaml(all_args, run_dir / "args.yaml")
+
+    # Handle resume vs new run
+    resume_state = None
+    if all_args.resume_run_dir:
+        run_dir = Path(all_args.resume_run_dir)
+        if not run_dir.exists():
+            raise ValueError(f"Resume directory does not exist: {run_dir}")
+
+        # Find the latest checkpoint
+        checkpoint_path, checkpoint_steps = find_latest_checkpoint(run_dir)
+        if checkpoint_path:
+            print(
+                f">>> Resuming from checkpoint: {checkpoint_path} (steps: {checkpoint_steps})"
+            )
+            # Set load_path so MAS and trainer load the checkpoint
+            all_args.load_path = checkpoint_path
+
+            # Load training state for episode tracking
+            resume_state = load_training_state(run_dir)
+            if resume_state:
+                print(
+                    f">>> Loaded training state: episode={resume_state.get('episode', 0)}, "
+                    f"returns_count={len(resume_state.get('all_episodic_returns', []))}"
+                )
+        else:
+            print(">>> No checkpoint found in resume directory, starting fresh")
+    else:
+        run_dir = build_run_dir(all_args)
+        save_args_to_yaml(all_args, run_dir / "args.yaml")
 
     # seed
     print(f">>> Setting seed to {all_args.seed}")
@@ -120,7 +190,6 @@ def main(args):
     print(">>> Creating training environment...")
     envs = make_train_env(all_args)
     print(">>> Training environment created.")
-    # eval_envs = make_eval_env(all_args)
 
     config = {
         "all_args": all_args,
@@ -128,6 +197,7 @@ def main(args):
         "eval_envs": None,
         "num_agents": envs.n_agents if envs is not None else 1,
         "run_dir": run_dir,
+        "resume_state": resume_state,
     }
 
     print(">>> Initializing Runner...")

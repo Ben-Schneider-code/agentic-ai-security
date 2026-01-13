@@ -46,6 +46,9 @@ RUN python3 download_weights.py
 COPY MARFT/ /app/MARFT/
 RUN chmod +x /app/MARFT/marft/scripts/sample_redteam_script.sh
 
+# Results directory for checkpoints
+VOLUME /app/MARFT/marft/scripts/results
+
 # PostgresDB
 COPY data/ /app/data/
 COPY schema.sql /app/schema.sql

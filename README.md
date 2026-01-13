@@ -51,6 +51,7 @@ docker run -d \
     -e HF_TOKEN="$HF_TOKEN" \
     -e RUNTIME_MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
     -v huggingface_cache:/root/.cache/huggingface \
+    -v $(pwd)/results:/app/MARFT/marft/scripts/results \
     --gpus '"device=6,7"' \
     --name test-container \
     test-image
@@ -59,7 +60,12 @@ docker run -d \
 **Option B: Baked-in model**
 
 ```bash
-docker run -d -e HF_TOKEN="$HF_TOKEN" --gpus '"device=6,7"' --name test-container test-image-baked
+docker run -d \
+    -e HF_TOKEN="$HF_TOKEN" \
+    -v $(pwd)/results:/app/MARFT/marft/scripts/results \
+    --gpus '"device=6,7"' \
+    --name test-container \
+    test-image-baked
 ```
 
 ### Model Selection
@@ -95,6 +101,19 @@ docker remove test-container
 ...<make your changes>...
 docker build -t test-image .
 ```
+
+### Resuming Training
+
+If training is interrupted, you can resume from the last checkpoint:
+
+```bash
+python scripts/train_redteam_sql.py \
+    --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
+    --resume_run_dir /path/to/results/.../run_X_agent#1_seedY \
+    ... # other args
+```
+
+The script auto-detects the latest checkpoint and continues from the correct episode.
 
 ### Tested Models
 

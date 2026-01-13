@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -58,41 +59,50 @@ class RedTeamSQLRunner:
         self._make_log_dir()
         self.writter = SummaryWriter(self.log_dir)
 
+        # Store resume state for training loop
+        self.resume_state = config.get("resume_state", None)
+
     def run(self):
-        print("[DEBUG] run(): Starting envs.reset()...")
+        print("[Runner] Starting environment reset...")
         next_obs = self.envs.reset()
-        print("[DEBUG] run(): envs.reset() completed.")
         self.buffer.obs[self.buffer.cur_batch_index, 0] = next_obs.copy()
 
         episodes = (
             int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         )
 
-        progress_bar = tqdm(
-            total=episodes, desc=f"Start running...", position=0, leave=True
-        )
+        # Handle resume state
+        start_episode = 0
         all_episodic_returns = []
+        if self.resume_state:
+            start_episode = (
+                self.resume_state.get("episode", 0) + 1
+            )  # Resume from next episode
+            all_episodic_returns = self.resume_state.get("all_episodic_returns", [])
+            print(
+                f"[Runner] Resuming from episode {start_episode} with {len(all_episodic_returns)} prior returns"
+            )
 
-        for episode in range(episodes):
+        progress_bar = tqdm(
+            total=episodes,
+            initial=start_episode,
+            desc="Training",
+            position=0,
+            leave=True,
+        )
+
+        for episode in range(start_episode, episodes):
             total_num_steps = (
                 (episode + 1) * self.episode_length * self.n_rollout_threads
             )
             for step in range(self.episode_length):
-                print(f"[DEBUG] Episode {episode}, Step {step}: Starting...")
                 torch.cuda.empty_cache()
-                print(
-                    f"[DEBUG] Episode {episode}, Step {step}: Calling mas.infer_for_rollout()..."
-                )
                 rollout_obs, actions, action_tokens, values, log_probs = (
                     self.mas.infer_for_rollout(
                         self.buffer.obs[self.buffer.cur_batch_index, step]
                     )
                 )
-                print(
-                    f"[DEBUG] Episode {episode}, Step {step}: infer_for_rollout() done. Calling envs.step()..."
-                )
                 next_obs, rewards, dones, infos = self.envs.step(actions)
-                print(f"[DEBUG] Episode {episode}, Step {step}: envs.step() done.")
 
                 # insert data into buffer
                 data = (
@@ -118,30 +128,21 @@ class RedTeamSQLRunner:
                         all_episodic_returns.append(episodic_return)
 
                         # Plot every 5 episodes
-                        if (
-                            len(all_episodic_returns) > 0
-                            and len(all_episodic_returns) % 5 == 0
-                        ):
-                            plt.figure()
-                            plt.plot(all_episodic_returns)
-                            plt.title("Total Rewards over Episodes")
-                            plt.xlabel("Episode")
-                            plt.ylabel("Total Reward")
-                            plt.savefig(
-                                os.path.join(self.log_dir, "episode_rewards.png")
-                            )
-                            plt.close()
+                        if len(all_episodic_returns) % 5 == 0:
+                            self._save_reward_plot(all_episodic_returns)
 
             self.before_update()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
             self.buffer.after_update()
 
-            # post process
-            # save model
+            # save model and training state
             if (episode == episodes - 1) or (
                 (episode + 1) % self.all_args.save_interval == 0
             ):
                 self.save(total_num_steps)
+                self._save_training_state(
+                    episode, total_num_steps, all_episodic_returns
+                )
 
             # log info
             if episode % self.log_interval == 0:
@@ -149,8 +150,7 @@ class RedTeamSQLRunner:
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
                 progress_bar.set_description(
-                    f"Episode {episode}/{episodes}"
-                    f"(total step num: {total_num_steps} | average step reward: {avg_step_reward:.4f})",
+                    f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f}"
                 )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
@@ -158,6 +158,30 @@ class RedTeamSQLRunner:
 
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
+
+    def _save_reward_plot(self, all_episodic_returns):
+        """Save the episodic returns plot."""
+        plt.figure()
+        plt.plot(all_episodic_returns)
+        plt.title("Total Rewards over Episodes")
+        plt.xlabel("Episode")
+        plt.ylabel("Total Reward")
+        plt.savefig(os.path.join(self.log_dir, "episode_rewards.png"))
+        plt.close()
+
+    def _save_training_state(self, episode, total_num_steps, all_episodic_returns):
+        """Save training state for resume capability."""
+        state = {
+            "episode": episode,
+            "total_num_steps": total_num_steps,
+            "all_episodic_returns": all_episodic_returns,
+        }
+        state_file = os.path.join(str(self.run_dir), "training_state.json")
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=2)
+        print(
+            f"[Runner] Training state saved: episode={episode}, steps={total_num_steps}"
+        )
 
     def insert(self, data):
         (
