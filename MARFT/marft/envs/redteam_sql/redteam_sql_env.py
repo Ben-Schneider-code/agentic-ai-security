@@ -215,21 +215,73 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
+        from openai import BadRequestError
+
         conversation = [{"role": "system", "content": system_prompt}] + history
         print("=== OfflineLLM.complete() called ===")
         print(f"Conversation length: {len(conversation)}")
 
-        # Call vLLM server via OpenAI-compatible API
+        # Call vLLM server via OpenAI-compatible API with error handling for context length
         print("Calling vLLM server...")
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=conversation,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_tokens=self.max_tokens,
-        )
 
-        response_text = response.choices[0].message.content
+        # Try with full conversation, then progressively truncate if context is too long
+        max_retries = 3
+        current_conversation = conversation
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=current_conversation,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    max_tokens=self.max_tokens,
+                )
+                response_text = response.choices[0].message.content
+                break  # Success, exit retry loop
+            except BadRequestError as e:
+                error_msg = str(e)
+                if (
+                    "maximum context length" in error_msg
+                    or "context length" in error_msg.lower()
+                ):
+                    print(
+                        f"[WARNING] Context length exceeded (attempt {attempt + 1}/{max_retries})"
+                    )
+
+                    if attempt < max_retries - 1:
+                        # Truncate: keep system prompt (first message) and remove oldest user/assistant messages
+                        # Remove pairs from the beginning of history (after system prompt)
+                        if (
+                            len(current_conversation) > 3
+                        ):  # system + at least one exchange
+                            # Remove 2 messages at a time (user + assistant pair) to maintain coherence
+                            messages_to_remove = min(2, len(current_conversation) - 2)
+                            current_conversation = [
+                                current_conversation[0]
+                            ] + current_conversation[1 + messages_to_remove :]
+                            print(
+                                f"[INFO] Truncated conversation to {len(current_conversation)} messages, retrying..."
+                            )
+                        else:
+                            # Can't truncate further, fall through to error
+                            print(
+                                "[ERROR] Cannot truncate further, conversation too short"
+                            )
+                            return "Error: Context length exceeded and cannot be reduced. Please reset the conversation."
+                    else:
+                        print(
+                            f"[ERROR] Context length exceeded after {max_retries} truncation attempts"
+                        )
+                        return "Error: Context length exceeded after multiple truncation attempts. Please reset the conversation."
+                else:
+                    # Re-raise if it's a different BadRequestError
+                    print(f"[ERROR] OpenAI BadRequestError: {error_msg}")
+                    return f"Error: API request failed - {error_msg}"
+        else:
+            # This shouldn't be reached due to break/return in loop, but just in case
+            return "Error: Failed to get response from LLM after retries."
+
         print(f"=== vLLM Response received: {response_text[:200]}...")
 
         # Check if response contains SQL and execute via MCP if available
