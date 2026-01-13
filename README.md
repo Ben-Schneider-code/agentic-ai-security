@@ -51,7 +51,6 @@ docker run -d \
     -e HF_TOKEN="$HF_TOKEN" \
     -e RUNTIME_MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct" \
     -v huggingface_cache:/root/.cache/huggingface \
-    -v $(pwd)/results:/app/MARFT/marft/scripts/results \
     --gpus '"device=6,7"' \
     --name test-container \
     test-image
@@ -62,7 +61,6 @@ docker run -d \
 ```bash
 docker run -d \
     -e HF_TOKEN="$HF_TOKEN" \
-    -v $(pwd)/results:/app/MARFT/marft/scripts/results \
     --gpus '"device=6,7"' \
     --name test-container \
     test-image-baked
