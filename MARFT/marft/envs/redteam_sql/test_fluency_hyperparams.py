@@ -124,27 +124,39 @@ def test_perplexity_ranges():
 
     for category, samples in test_categories.items():
         print_separator(category)
-        print(f"\n{'Text (truncated)':<50} {'PPL':>10} {'Should Penalize?':>18}")
-        print("-" * 80)
+        print(
+            f"\n{'Text (truncated)':<45} {'PPL':>8} {'Heuristic':<18} {'Should Penalize?':>16}"
+        )
+        print("-" * 90)
 
         for text in samples:
-            ppl = judge.calculate_perplexity(text)
-            display_text = text[:47] + "..." if len(text) > 50 else text
+            info = judge.get_fluency_info(text)
+            ppl = info["perplexity"]
+            display_text = text[:42] + "..." if len(text) > 45 else text
             display_text = display_text.replace("\n", "\\n")
 
             # Track for statistics
             should_penalize = "GIBBERISH" in category
+
+            # Show heuristic result
+            if info.get("heuristic_gibberish", False):
+                heuristic_result = f"GIBBERISH ({info.get('heuristic_reason', '?')})"
+            else:
+                heuristic_result = "passed"
+
             all_results.append(
                 {
                     "text": text,
                     "ppl": ppl,
                     "should_penalize": should_penalize,
                     "category": category,
+                    "heuristic_gibberish": info.get("heuristic_gibberish", False),
+                    "heuristic_reason": info.get("heuristic_reason", "passed"),
                 }
             )
 
             print(
-                f"{display_text:<50} {ppl:>10.2f} {'YES' if should_penalize else 'NO':>18}"
+                f"{display_text:<45} {ppl:>8.2f} {heuristic_result:<18} {'YES' if should_penalize else 'NO':>16}"
             )
 
     # Analyze and recommend threshold
@@ -158,16 +170,55 @@ def test_perplexity_ranges():
     ]
 
     if fluent_ppls:
-        print(f"\nFluent text perplexity:")
+        print("\nFluent text perplexity:")
         print(f"  Min: {min(fluent_ppls):.2f}")
         print(f"  Max: {max(fluent_ppls):.2f}")
         print(f"  Avg: {sum(fluent_ppls) / len(fluent_ppls):.2f}")
 
     if gibberish_ppls:
-        print(f"\nGibberish perplexity:")
+        print("\nGibberish perplexity:")
         print(f"  Min: {min(gibberish_ppls):.2f}")
         print(f"  Max: {max(gibberish_ppls):.2f}")
         print(f"  Avg: {sum(gibberish_ppls) / len(gibberish_ppls):.2f}")
+
+    # Heuristic detection analysis
+    print_separator("HEURISTIC DETECTION EFFECTIVENESS")
+
+    gibberish_results = [r for r in all_results if r["should_penalize"]]
+    fluent_results = [r for r in all_results if not r["should_penalize"]]
+
+    gibberish_caught_by_heuristic = [
+        r for r in gibberish_results if r.get("heuristic_gibberish", False)
+    ]
+    fluent_flagged_by_heuristic = [
+        r for r in fluent_results if r.get("heuristic_gibberish", False)
+    ]
+
+    print(f"\nGibberish samples: {len(gibberish_results)}")
+    print(
+        f"  Caught by heuristic: {len(gibberish_caught_by_heuristic)} ({100 * len(gibberish_caught_by_heuristic) / max(len(gibberish_results), 1):.1f}%)"
+    )
+
+    if gibberish_caught_by_heuristic:
+        reasons = {}
+        for r in gibberish_caught_by_heuristic:
+            reason = r.get("heuristic_reason", "unknown")
+            reasons[reason] = reasons.get(reason, 0) + 1
+        print("  Detection reasons:")
+        for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
+            print(f"    - {reason}: {count}")
+
+    print(f"\nFluent samples: {len(fluent_results)}")
+    print(
+        f"  False positives (flagged as gibberish): {len(fluent_flagged_by_heuristic)} ({100 * len(fluent_flagged_by_heuristic) / max(len(fluent_results), 1):.1f}%)"
+    )
+
+    if fluent_flagged_by_heuristic:
+        print("  ⚠️ False positives:")
+        for r in fluent_flagged_by_heuristic:
+            print(
+                f"    - '{r['text'][:40]}...' (reason: {r.get('heuristic_reason', '?')})"
+            )
 
     # Recommend threshold
     if fluent_ppls and gibberish_ppls:
@@ -177,16 +228,17 @@ def test_perplexity_ranges():
 
         if max_fluent < min_gibberish:
             recommended = (max_fluent + min_gibberish) / 2
-            print(f"\n✅ GOOD SEPARATION!")
+            print("\n✅ GOOD SEPARATION!")
             print(f"   Max fluent PPL: {max_fluent:.2f}")
             print(f"   Min gibberish PPL: {min_gibberish:.2f}")
             print(f"\n   RECOMMENDED THRESHOLD: {recommended:.1f}")
-            print(f"   (Midpoint between fluent max and gibberish min)")
+            print("   (Midpoint between fluent max and gibberish min)")
         else:
-            print(f"\n⚠️ OVERLAP DETECTED!")
+            print("\n⚠️ OVERLAP DETECTED!")
             print(f"   Max fluent PPL: {max_fluent:.2f}")
             print(f"   Min gibberish PPL: {min_gibberish:.2f}")
-            print(f"\n   Some fluent text has higher PPL than some gibberish.")
+            print("\n   Some fluent text has higher PPL than some gibberish.")
+            print("   This is OK since heuristics catch low-PPL gibberish!")
             print(f"   Consider using a higher threshold like {max_fluent * 1.2:.1f}")
 
     # Test different threshold configurations

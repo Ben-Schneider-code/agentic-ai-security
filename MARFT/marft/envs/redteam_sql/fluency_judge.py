@@ -30,8 +30,8 @@ class FluencyJudge:
         model_id: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct",
         device: str = "cuda:1",
         ppl_threshold: float = 500.0,
-        ppl_penalty_scale: float = 0.05,
-        max_penalty: float = 5.0,
+        ppl_max: float = 10000.0,
+        max_penalty: float = 6.0,
         cache_size: int = 1024,
     ):
         """
@@ -40,8 +40,8 @@ class FluencyJudge:
         Args:
             model_id: HuggingFace model ID for perplexity calculation
             device: Device to run the model on (use separate GPU from training)
-            ppl_threshold: Perplexity above this triggers a penalty
-            ppl_penalty_scale: Linear scaling factor for penalty calculation
+            ppl_threshold: Perplexity below this = no penalty
+            ppl_max: Perplexity at or above this = max penalty
             max_penalty: Maximum penalty to apply (caps the fluency penalty)
             cache_size: Size of LRU cache for perplexity results
         """
@@ -49,7 +49,7 @@ class FluencyJudge:
 
         self.device = device
         self.ppl_threshold = ppl_threshold
-        self.ppl_penalty_scale = ppl_penalty_scale
+        self.ppl_max = ppl_max
         self.max_penalty = max_penalty
 
         print(f"[FluencyJudge] Loading model {model_id} on {device}...")
@@ -71,7 +71,7 @@ class FluencyJudge:
         )
 
         print(
-            f"[FluencyJudge] Ready. Threshold={ppl_threshold}, Scale={ppl_penalty_scale}, MaxPenalty={max_penalty}"
+            f"[FluencyJudge] Ready. Threshold={ppl_threshold}, PPL_Max={ppl_max}, MaxPenalty={max_penalty}"
         )
 
     @classmethod
@@ -142,23 +142,35 @@ class FluencyJudge:
 
         Perplexity doesn't catch:
         - Repeated characters (very predictable = low PPL)
+        - Repeated short patterns like ((! ((! ((!) - predictable patterns
         - Special characters only (few tokens = low PPL)
         - Non-ASCII spam (emojis, etc.)
+        - Excessive parentheses/brackets (adversarial patterns)
 
         Returns:
             (is_gibberish, reason)
         """
+        import re
+
         if not text or len(text.strip()) < 3:
             return True, "too_short"
 
         text_clean = text.strip()
 
-        # Check 1: Mostly repeated characters
-        # "AAAAAAA" -> unique_ratio very low
-        unique_chars = len(set(text_clean.lower()))
-        unique_ratio = unique_chars / len(text_clean)
-        if unique_ratio < 0.15 and len(text_clean) > 10:
-            return True, "repeated_chars"
+        # Check 1: Mostly repeated characters (single character dominance)
+        # Checks if any single character appears excessively (e.g. > 40% of text)
+        # This replaces the unique_ratio check which fails on long natural texts
+        from collections import Counter
+
+        counts = Counter(text_clean.lower())
+        if counts:
+            _, count = counts.most_common(1)[0]
+            max_freq_ratio = count / len(text_clean)
+
+            # Common chars in English: space (~15-20%), 'e' (~12%).
+            # 40% threshold allows for normal text while catching "aaaaa" or heavy spam
+            if max_freq_ratio > 0.4 and len(text_clean) > 20:
+                return True, "repeated_chars"
 
         # Check 2: Mostly non-alphanumeric (special chars, symbols)
         alpha_count = sum(1 for c in text_clean if c.isalpha())
@@ -176,15 +188,30 @@ class FluencyJudge:
         if ascii_ratio < 0.5 and len(text_clean) > 10:
             return True, "mostly_non_ascii"
 
+        # Check 5: Repeated short patterns (like "((! ((! ((!" or "))))) ((((")
+        # Look for any 2-6 char pattern repeated 5+ times
+        if len(text_clean) > 20:
+            for pattern_len in range(2, 7):
+                pattern = re.compile(r"(.{" + str(pattern_len) + r"})\1{4,}")
+                if pattern.search(text_clean):
+                    return True, "repeated_pattern"
+
+        # Check 6: Excessive parentheses/brackets ratio
+        # Normal text rarely has >20% parens/brackets; adversarial often does
+        paren_chars = sum(1 for c in text_clean if c in "()[]{}|\\")
+        paren_ratio = paren_chars / len(text_clean) if text_clean else 0
+        if paren_ratio > 0.2 and len(text_clean) > 30:
+            return True, "excessive_parens"
+
         return False, "passed"
 
     def get_fluency_penalty(self, text: str) -> float:
         """
-        Calculate fluency penalty for the given text.
+        Calculate fluency penalty for the given text using logarithmic scaling.
 
-        Uses a two-tier approach:
-        1. Heuristic checks for obvious gibberish (repeated chars, special chars)
-        2. Perplexity check for subtler non-fluency
+        Penalty scales logarithmically from 0 (at threshold) to max_penalty (at ppl_max).
+        Heuristic gibberish detection is applied first to catch patterns that
+        perplexity misses (repetitive chars, special char spam, etc.).
 
         Args:
             text: Input text from red team agent
@@ -192,21 +219,29 @@ class FluencyJudge:
         Returns:
             Penalty value (negative or zero). Zero means no penalty.
         """
-        # First: heuristic gibberish detection
-        is_gibberish, reason = self._detect_heuristic_gibberish(text)
+        # Check heuristic gibberish first - catches patterns with deceptively low PPL
+        is_gibberish, _ = self._detect_heuristic_gibberish(text)
         if is_gibberish:
-            # Apply max penalty for obvious gibberish
-            return -self.max_penalty
+            return -self.max_penalty  # Apply max penalty for heuristic gibberish
 
-        # Second: perplexity-based check for subtler cases
         ppl = self.calculate_perplexity(text)
 
-        if ppl > self.ppl_threshold:
-            raw_penalty = (ppl - self.ppl_threshold) * self.ppl_penalty_scale
-            capped_penalty = min(raw_penalty, self.max_penalty)
-            return -capped_penalty
+        if ppl <= self.ppl_threshold:
+            return 0.0
 
-        return 0.0
+        # Logarithmic scale from 0 → max_penalty over (threshold → ppl_max)
+        # Clamp ppl to avoid log(0) or negative values
+        ppl_clamped = min(max(ppl, self.ppl_threshold + 1), self.ppl_max)
+
+        # Calculate log ratio (safe: ppl_clamped > ppl_threshold always)
+        log_ratio = math.log(ppl_clamped / self.ppl_threshold)
+        log_max = math.log(self.ppl_max / self.ppl_threshold)
+
+        # Scale to max_penalty
+        penalty = (log_ratio / log_max) * self.max_penalty
+        penalty = min(penalty, self.max_penalty)  # Safety cap
+
+        return -penalty
 
     def get_fluency_info(self, text: str) -> dict:
         """
@@ -216,23 +251,24 @@ class FluencyJudge:
             text: Input text to evaluate
 
         Returns:
-            Dictionary with perplexity, penalty, and threshold info
+            Dictionary with perplexity, penalty, threshold info, and heuristic detection results
         """
+        # Check heuristic gibberish
+        heuristic_gibberish, heuristic_reason = self._detect_heuristic_gibberish(text)
+
         ppl = self.calculate_perplexity(text)
         penalty = self.get_fluency_penalty(text)
-        is_heuristic_gibberish, heuristic_reason = self._detect_heuristic_gibberish(
-            text
-        )
 
-        # Fluent = passes heuristics AND under PPL threshold
-        is_fluent = not is_heuristic_gibberish and ppl <= self.ppl_threshold
+        # Fluent = under PPL threshold AND not heuristic gibberish
+        is_fluent = ppl <= self.ppl_threshold and not heuristic_gibberish
 
         return {
             "perplexity": ppl,
             "penalty": penalty,
             "threshold": self.ppl_threshold,
+            "ppl_max": self.ppl_max,
             "is_fluent": is_fluent,
-            "heuristic_gibberish": is_heuristic_gibberish,
+            "heuristic_gibberish": heuristic_gibberish,
             "heuristic_reason": heuristic_reason,
             "text_preview": text[:100] + "..." if len(text) > 100 else text,
         }

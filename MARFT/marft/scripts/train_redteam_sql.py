@@ -25,6 +25,7 @@ def make_train_env(all_args):
                 dataset_path=all_args.dataset_path,
                 horizon=all_args.horizon,
                 mode="train",
+                log_dir=getattr(all_args, "debug_log_dir", None),
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -46,6 +47,7 @@ def make_eval_env(all_args):
                 dataset_path=all_args.dataset_path,
                 horizon=all_args.horizon,
                 mode="test",
+                log_dir=getattr(all_args, "debug_log_dir", None),
             )
             env.seed(all_args.seed + rank * 5000)
             return env
@@ -180,6 +182,15 @@ def main(args):
     else:
         run_dir = build_run_dir(all_args)
         save_args_to_yaml(all_args, run_dir / "args.yaml")
+
+    all_args.run_dir = str(run_dir)
+    # Create debug logs directory next to logs (which is handled by runner)
+    # We want it adjacent to logs/, so inside results/
+    debug_log_dir = run_dir / "debug_logs"
+    if not debug_log_dir.exists():
+        debug_log_dir.mkdir(parents=True, exist_ok=True)
+    all_args.debug_log_dir = str(debug_log_dir)
+    print(f">>> Debug logs will be saved to: {all_args.debug_log_dir}")
 
     # seed
     print(f">>> Setting seed to {all_args.seed}")
