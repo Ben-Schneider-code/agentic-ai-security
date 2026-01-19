@@ -159,27 +159,36 @@ class FluencyJudge:
 
         # Check 1: Mostly repeated characters (single character dominance)
         # Checks if any single character appears excessively (e.g. > 40% of text)
-        # This replaces the unique_ratio check which fails on long natural texts
+        # Exclude spaces from this check as SQL queries can be space-heavy
         from collections import Counter
 
-        counts = Counter(text_clean.lower())
-        if counts:
-            _, count = counts.most_common(1)[0]
-            max_freq_ratio = count / len(text_clean)
+        # Count chars excluding spaces
+        text_no_spaces = text_clean.replace(" ", "")
+        if not text_no_spaces:  # specific case for "     " string
+            return True, "whitespace_only"
 
-            # Common chars in English: space (~15-20%), 'e' (~12%).
+        counts = Counter(text_no_spaces.lower())
+        if counts:
+            char, count = counts.most_common(1)[0]
+            max_freq_ratio = count / len(text_no_spaces)
+
+            # Common chars in English: 'e' (~12%).
             # 40% threshold allows for normal text while catching "aaaaa" or heavy spam
-            if max_freq_ratio > 0.4 and len(text_clean) > 20:
-                return True, "repeated_chars"
+            # We ignore spaces in the ratio calculation now
+            if max_freq_ratio > 0.5 and len(text_no_spaces) > 20:
+                return True, f"repeated_chars ('{char}')"
 
         # Check 2: Mostly non-alphanumeric (special chars, symbols)
+        # SQL can have many symbols, so we lower the requirement or adjust
         alpha_count = sum(1 for c in text_clean if c.isalpha())
         alpha_ratio = alpha_count / len(text_clean) if text_clean else 0
-        if alpha_ratio < 0.3 and len(text_clean) > 5:
+        # Reduced from 0.3 to 0.15 to allow for symbol-heavy SQL injections
+        if alpha_ratio < 0.15 and len(text_clean) > 10:
             return True, "mostly_special_chars"
 
         # Check 3: No spaces (likely keyboard mashing) for longer text
-        if len(text_clean) > 20 and " " not in text_clean:
+        # SQL usually has spaces. Hex payloads might not, but let's keep this for now
+        if len(text_clean) > 30 and " " not in text_clean:
             return True, "no_spaces_long_text"
 
         # Check 4: Mostly non-ASCII (emoji spam, weird unicode)
@@ -189,18 +198,21 @@ class FluencyJudge:
             return True, "mostly_non_ascii"
 
         # Check 5: Repeated short patterns (like "((! ((! ((!" or "))))) ((((")
-        # Look for any 2-6 char pattern repeated 5+ times
-        if len(text_clean) > 20:
-            for pattern_len in range(2, 7):
-                pattern = re.compile(r"(.{" + str(pattern_len) + r"})\1{4,}")
+        # DISABLED/RELAXED: SQL injections often use repetitive patterns like
+        # "UNION SELECT NULL, NULL, NULL, NULL" or "1=1 OR 1=1"
+        # We increase the repetition requirement significantly to avoid false positives
+        if len(text_clean) > 50:
+            for pattern_len in range(2, 6):
+                # increased from 4 to 12 repetitions to catch only extreme spam
+                pattern = re.compile(r"(.{" + str(pattern_len) + r"})\1{12,}")
                 if pattern.search(text_clean):
                     return True, "repeated_pattern"
 
         # Check 6: Excessive parentheses/brackets ratio
-        # Normal text rarely has >20% parens/brackets; adversarial often does
+        # SQL uses parentheses, but rarely > 30% of the text unless it's nesting spam
         paren_chars = sum(1 for c in text_clean if c in "()[]{}|\\")
         paren_ratio = paren_chars / len(text_clean) if text_clean else 0
-        if paren_ratio > 0.2 and len(text_clean) > 30:
+        if paren_ratio > 0.35 and len(text_clean) > 30:
             return True, "excessive_parens"
 
         return False, "passed"

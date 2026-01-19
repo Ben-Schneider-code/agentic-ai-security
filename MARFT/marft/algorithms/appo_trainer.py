@@ -222,7 +222,8 @@ class APPOTrainer(ABC):
             cp_policy_loss = cp_policy_loss * cp_weight
             cp_policy_loss.backward()
             policy_loss += cp_policy_loss.item()
-        if total_approx_kl > 1e-3:  # adjust to the real situation
+        # TODO: Review for later tweaking (01/14/26) - Increased from 1e-3 to 0.01 to allow more policy updates
+        if total_approx_kl > 0.01:
             return value_loss, critic_grad_norm, 0, 0, total_approx_kl, total_entropy
 
         if agent_to_train is not None:
@@ -301,7 +302,7 @@ class APPOTrainer(ABC):
                 },
                 "critic_opt_state": self.critic_optimizer.state_dict(),
             },
-            os.path.join(exp_path, f"optimizers.pt"),
+            os.path.join(exp_path, "optimizers.pt"),
         )
         print(f"[APPOTrainer] optimizer states saved -> {exp_path}")
 

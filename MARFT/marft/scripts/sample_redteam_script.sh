@@ -23,7 +23,7 @@ exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --flag train \
         --num_mini_batch 1 \
         --ppo_epoch 1 \
-        --lr 1e-6 \
+        --lr 5e-7 \
         --critic_lr 5e-5 \
         --dataset_path None \
         --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
@@ -35,4 +35,11 @@ exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --gradient_cp_steps 2 \
         --context_window 2048 \
         --max_new_tokens 512 \
-        --save_interval 1000
+        --save_interval 1000 \
+        --entropy_coef 0.05 \
+        --warmup_steps 500
+# TODO: Review for later tweaking (01/14/26)
+# - lr: Reduced from 1e-6 to 5e-7 for stability
+# - entropy_coef: Added 0.05 (default was 0.01) to prevent entropy collapse
+# - warmup_steps: Added 500 to stabilize value function before policy updates
+

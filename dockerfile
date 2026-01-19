@@ -67,6 +67,7 @@ COPY run_model_and_agents.sh /app/run_model_and_agents.sh
 RUN chmod +x /app/run_model_and_agents.sh
 COPY host_models.py /app/host_models.py
 COPY agent_loop.py .
+COPY experiment_label.txt /app/experiment_label.txt
 
 # Set environment variables for Postgres
 ENV PGHOST=localhost

@@ -26,6 +26,13 @@ def make_train_env(all_args):
                 horizon=all_args.horizon,
                 mode="train",
                 log_dir=getattr(all_args, "debug_log_dir", None),
+                # Reward config args
+                reward_decay_alpha=getattr(all_args, "reward_decay_alpha", 0.0092),
+                reward_decay_enabled=getattr(all_args, "reward_decay_enabled", True),
+                enable_fluency_penalty=getattr(
+                    all_args, "enable_fluency_penalty", True
+                ),
+                enable_fluency_bonus=getattr(all_args, "enable_fluency_bonus", False),
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -48,6 +55,13 @@ def make_eval_env(all_args):
                 horizon=all_args.horizon,
                 mode="test",
                 log_dir=getattr(all_args, "debug_log_dir", None),
+                # Reward config args
+                reward_decay_alpha=getattr(all_args, "reward_decay_alpha", 0.0092),
+                reward_decay_enabled=getattr(all_args, "reward_decay_enabled", True),
+                enable_fluency_penalty=getattr(
+                    all_args, "enable_fluency_penalty", True
+                ),
+                enable_fluency_bonus=getattr(all_args, "enable_fluency_bonus", False),
             )
             env.seed(all_args.seed + rank * 5000)
             return env
@@ -142,6 +156,17 @@ def build_run_dir(all_args):
     run_dir = run_dir / curr_run
     if not run_dir.exists():
         os.makedirs(str(run_dir))
+
+    # Check for experiment label injected during docker build
+    label_path = Path("/app/experiment_label.txt")
+    if label_path.exists():
+        try:
+            import shutil
+
+            shutil.copy(label_path, run_dir / "experiment_label.txt")
+        except Exception as e:
+            print(f"Warning: Failed to copy experiment label: {e}")
+
     print(f"Saving results to {run_dir}")
     return run_dir
 

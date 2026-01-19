@@ -92,6 +92,9 @@ class RedTeamSQLRunner:
         )
 
         for episode in range(start_episode, episodes):
+            # Set current episode on all environments for decay calculation
+            self._set_episode_on_envs(episode)
+
             total_num_steps = (
                 (episode + 1) * self.episode_length * self.n_rollout_threads
             )
@@ -158,6 +161,19 @@ class RedTeamSQLRunner:
 
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
+
+    def _set_episode_on_envs(self, episode: int):
+        """Set the current episode on all environments for decay calculation."""
+        # ShareDummyVecEnv stores environments in self.envs list
+        if hasattr(self.envs, "envs"):
+            for env in self.envs.envs:
+                if hasattr(env, "current_episode"):
+                    env.current_episode = episode
+        # Also handle eval_envs if present
+        if self.eval_envs and hasattr(self.eval_envs, "envs"):
+            for env in self.eval_envs.envs:
+                if hasattr(env, "current_episode"):
+                    env.current_episode = episode
 
     def _save_reward_plot(self, all_episodic_returns):
         """Save the episodic returns plot."""

@@ -35,5 +35,5 @@ tensorboardX
 latex2sympy2
 word2number
 
-
+bert-score
 matplotlib
