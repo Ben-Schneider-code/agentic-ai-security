@@ -324,16 +324,28 @@ def plot_training_results(run_dir: str) -> None:
         using_debug_logs = False
 
     # === Plotting ===
-    # TODO: Review for later tweaking (01/14/26) - Added 4-panel diagnostic visualization
     if using_debug_logs and diagnostic_data:
-        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
-        ax1, ax2, ax3, ax4 = axes.flatten()
+        # Increased height for 3 rows
+        fig, axes = plt.subplots(3, 2, figsize=(16, 20))
+        # Flatten and assign logical names
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+        ax_rewards = ax1
+        ax_cum_counts = ax2
+        ax_cum_pct = ax3  # New plot
+        ax_gibberish = ax4
+        ax_ppl = ax5
+        ax_unused = ax6
+
+        # Hide unused subplot
+        ax_unused.axis("off")
     else:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
-        ax3, ax4 = None, None
+        # Fallback layout
+        fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
+        ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
 
     # --- Plot 1: Rewards ---
-    ax1.plot(
+    ax_rewards.plot(
         episodes,
         rewards,
         color="#3498db",
@@ -341,7 +353,7 @@ def plot_training_results(run_dir: str) -> None:
         label="Reward per Episode",
         linewidth=1,
     )
-    ax1.plot(
+    ax_rewards.plot(
         episodes,
         cumulative_rewards,
         color="#27ae60",
@@ -354,7 +366,7 @@ def plot_training_results(run_dir: str) -> None:
     if fluent_violations:
         min_y = min(rewards) if rewards else 0
         y_pos = [min_y] * len(fluent_violations)
-        ax1.scatter(
+        ax_rewards.scatter(
             fluent_violations,
             y_pos,
             color="#2ecc71",
@@ -365,43 +377,61 @@ def plot_training_results(run_dir: str) -> None:
             edgecolor="black",
         )
 
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Reward")
-    ax1.set_title("Training Rewards and Successes")
-    ax1.legend(loc="upper left")
-    ax1.grid(True, alpha=0.3)
+    ax_rewards.set_xlabel("Episode")
+    ax_rewards.set_ylabel("Reward")
+    ax_rewards.set_title("Training Rewards and Successes")
+    ax_rewards.legend(loc="upper left")
+    ax_rewards.grid(True, alpha=0.3)
 
-    # --- Plot 2: Cumulative Outcomes ---
+    # Define colors and labels for outcome plots
+    colors = {
+        "permission_violation": "#e74c3c",  # Red
+        "honeypot_access": "#9b59b6",  # Purple
+        "sensitive_query": "#f39c12",  # Orange
+        "sql_generated": "#3498db",  # Blue
+        "sql_error": "#95a5a6",  # Gray
+        "no_sql": "#bdc3c7",  # Light Gray
+    }
+
+    labels = {
+        "permission_violation": "Permission Violation",
+        "honeypot_access": "Honeypot Access",
+        "sensitive_query": "Sensitive Query",
+        "sql_generated": "Valid SQL Generated",
+        "sql_error": "SQL Error",
+        "no_sql": "No SQL / Refusal",
+    }
+
+    # Priority order for stacking (bottom to top)
+    # Put most important/rare 'successes' at the bottom or top?
+    # Usually "No SQL" is the bulk base, so putting it at bottom might be good,
+    # but often we want the 'interesting' stuff to be visible.
+    # Let's align with the order used in 'categories' list for consistency
+    categories_order = [
+        "no_sql",
+        "sql_error",
+        "sql_generated",
+        "sensitive_query",
+        "honeypot_access",
+        "permission_violation",
+    ]
+
+    # --- Plot 2: Cumulative Outcomes (Counts) ---
     if using_debug_logs:
-        colors = {
-            "permission_violation": "#e74c3c",  # Red
-            "honeypot_access": "#9b59b6",  # Purple
-            "sensitive_query": "#f39c12",  # Orange
-            "sql_generated": "#3498db",  # Blue
-            "sql_error": "#95a5a6",  # Gray
-            "no_sql": "#bdc3c7",  # Light Gray
-        }
-
-        labels = {
-            "permission_violation": "Permission Violation",
-            "honeypot_access": "Honeypot Access",
-            "sensitive_query": "Sensitive Query",
-            "sql_generated": "Valid SQL Generated",
-            "sql_error": "SQL Error",
-            "no_sql": "No SQL / Refusal",
-        }
-
-        for cat, data_points in counts.items():
-            if data_points and data_points[-1] > 0:
-                ax2.plot(
-                    episodes,
-                    data_points,
-                    color=colors.get(cat, "black"),
-                    label=labels.get(cat, cat),
-                    linewidth=2,
-                )
+        for cat in categories_order:  # Use consistent order
+            # Check if cat is in counts (it should be)
+            if cat in counts:
+                data_points = counts[cat]
+                if data_points and data_points[-1] > 0:
+                    ax_cum_counts.plot(
+                        episodes,
+                        data_points,
+                        color=colors.get(cat, "black"),
+                        label=labels.get(cat, cat),
+                        linewidth=2,
+                    )
     else:
-        ax2.text(
+        ax_cum_counts.text(
             0.5,
             0.5,
             "Detailed outcome metrics require reward_debug.jsonl",
@@ -409,14 +439,60 @@ def plot_training_results(run_dir: str) -> None:
             va="center",
         )
 
-    ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Cumulative Count")
-    ax2.set_title("Cumulative Outcomes by Category")
-    ax2.legend(loc="upper left")
-    ax2.grid(True, alpha=0.3)
+    ax_cum_counts.set_xlabel("Episode")
+    ax_cum_counts.set_ylabel("Cumulative Count")
+    ax_cum_counts.set_title("Cumulative Outcomes by Category")
+    ax_cum_counts.legend(loc="upper left")
+    ax_cum_counts.grid(True, alpha=0.3)
 
-    # --- Plot 3: Gibberish Rate (KEY WARNING SIGN) ---
-    if ax3 is not None and diagnostic_data:
+    # --- Plot 3: Cumulative Outcomes (Percentage Stackplot) ---
+    if using_debug_logs and ax_cum_pct:
+        stack_y = []
+        stack_labels_list = []
+        stack_colors_list = []
+
+        # Ensure we have data for all episodes
+        # counts[cat] is cumulative count.
+        # But we need to ensure we iterate in a stable order.
+        # Use categories_order
+
+        for cat in categories_order:
+            if cat in counts:
+                data = np.array(counts[cat])
+                # Safety check on length
+                if len(data) == len(episodes):
+                    # Calculate percentage: count / episode_index
+                    # episodes are 1-based, so dividing by np.array(episodes) works
+                    pcts = (data / np.array(episodes)) * 100
+
+                    stack_y.append(pcts)
+                    stack_labels_list.append(labels.get(cat, cat))
+                    stack_colors_list.append(colors.get(cat, "gray"))
+
+        if stack_y:
+            try:
+                ax_cum_pct.stackplot(
+                    episodes,
+                    *stack_y,
+                    labels=stack_labels_list,
+                    colors=stack_colors_list,
+                    alpha=0.8,
+                )
+            except Exception as e:
+                print(f"Error creating stackplot: {e}")
+
+            ax_cum_pct.set_xlabel("Episode")
+            ax_cum_pct.set_ylabel("Percentage (%)")
+            ax_cum_pct.set_title("Cumulative Outcome Distribution (%)")
+            # Move legend outside or make it small, as stackplots can get crowded
+            ax_cum_pct.legend(loc="lower left", fontsize="x-small")
+            ax_cum_pct.set_ylim(0, 100)
+            ax_cum_pct.grid(True, alpha=0.3)
+            # Add margins to eliminate whitespace on sides
+            ax_cum_pct.set_xlim(min(episodes), max(episodes))
+
+    # --- Plot 4: Gibberish Rate (KEY WARNING SIGN) ---
+    if ax_gibberish is not None and diagnostic_data:
         # Compute rolling gibberish rate
         gibberish_array = np.array(diagnostic_data["is_gibberish"], dtype=float)
         window = 50
@@ -429,7 +505,7 @@ def plot_training_results(run_dir: str) -> None:
         elif len(rolling_gibberish_rate) > len(rolling_x):
             rolling_gibberish_rate = rolling_gibberish_rate[: len(rolling_x)]
 
-        ax3.plot(
+        ax_gibberish.plot(
             rolling_x,
             rolling_gibberish_rate,
             color="#e74c3c",
@@ -438,13 +514,13 @@ def plot_training_results(run_dir: str) -> None:
         )
 
         # Add danger zone shading
-        ax3.axhspan(50, 100, alpha=0.2, color="red", label="Danger Zone")
-        ax3.axhspan(25, 50, alpha=0.1, color="orange", label="Warning Zone")
+        ax_gibberish.axhspan(50, 100, alpha=0.2, color="red", label="Danger Zone")
+        ax_gibberish.axhspan(25, 50, alpha=0.1, color="orange", label="Warning Zone")
 
         # Also plot fluent rate
         fluent_array = np.array(diagnostic_data["is_fluent"], dtype=float)
         rolling_fluent_rate = compute_rolling_average(fluent_array, window) * 100
-        ax3.plot(
+        ax_gibberish.plot(
             rolling_x,
             rolling_fluent_rate[: len(rolling_x)],
             color="#27ae60",
@@ -453,15 +529,15 @@ def plot_training_results(run_dir: str) -> None:
             label=f"Fluent Rate ({window}-ep rolling avg)",
         )
 
-        ax3.set_xlabel("Episode")
-        ax3.set_ylabel("Percentage (%)")
-        ax3.set_title("⚠️ Gibberish vs Fluent Rate (Mode Collapse Indicator)")
-        ax3.legend(loc="upper right")
-        ax3.grid(True, alpha=0.3)
-        ax3.set_ylim(0, 100)
+        ax_gibberish.set_xlabel("Episode")
+        ax_gibberish.set_ylabel("Percentage (%)")
+        ax_gibberish.set_title("⚠️ Gibberish vs Fluent Rate (Mode Collapse Indicator)")
+        ax_gibberish.legend(loc="upper right")
+        ax_gibberish.grid(True, alpha=0.3)
+        ax_gibberish.set_ylim(0, 100)
 
-    # --- Plot 4: Perplexity and Fluency Penalty ---
-    if ax4 is not None and diagnostic_data:
+    # --- Plot 5: Perplexity and Fluency Penalty ---
+    if ax_ppl is not None and diagnostic_data:
         perplexity = np.array(diagnostic_data["perplexity"])
         fluency_penalty = np.array(diagnostic_data["fluency_penalty"])
 
@@ -477,27 +553,27 @@ def plot_training_results(run_dir: str) -> None:
             rolling_x = rolling_x[: len(rolling_ppl)]
 
         # Perplexity on primary y-axis
-        ax4.plot(
+        ax_ppl.plot(
             rolling_x,
             rolling_ppl[: len(rolling_x)],
             color="#9b59b6",
             linewidth=2,
             label=f"Perplexity ({window}-ep avg, capped at 2000)",
         )
-        ax4.axhline(
+        ax_ppl.axhline(
             y=500,
             color="#9b59b6",
             linestyle=":",
             alpha=0.7,
             label="PPL Threshold (500)",
         )
-        ax4.set_xlabel("Episode")
-        ax4.set_ylabel("Perplexity", color="#9b59b6")
-        ax4.tick_params(axis="y", labelcolor="#9b59b6")
+        ax_ppl.set_xlabel("Episode")
+        ax_ppl.set_ylabel("Perplexity", color="#9b59b6")
+        ax_ppl.tick_params(axis="y", labelcolor="#9b59b6")
 
         # Fluency penalty on secondary y-axis
-        ax4_twin = ax4.twinx()
-        ax4_twin.plot(
+        ax_ppl_twin = ax_ppl.twinx()
+        ax_ppl_twin.plot(
             rolling_x,
             rolling_penalty[: len(rolling_x)],
             color="#e74c3c",
@@ -505,16 +581,16 @@ def plot_training_results(run_dir: str) -> None:
             linestyle="--",
             label=f"Avg Fluency Penalty ({window}-ep)",
         )
-        ax4_twin.set_ylabel("Fluency Penalty", color="#e74c3c")
-        ax4_twin.tick_params(axis="y", labelcolor="#e74c3c")
+        ax_ppl_twin.set_ylabel("Fluency Penalty", color="#e74c3c")
+        ax_ppl_twin.tick_params(axis="y", labelcolor="#e74c3c")
 
-        ax4.set_title("Perplexity and Fluency Penalty Trends")
-        ax4.grid(True, alpha=0.3)
+        ax_ppl.set_title("Perplexity and Fluency Penalty Trends")
+        ax_ppl.grid(True, alpha=0.3)
 
         # Combined legend
-        lines1, labels1 = ax4.get_legend_handles_labels()
-        lines2, labels2 = ax4_twin.get_legend_handles_labels()
-        ax4.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+        lines1, labels1 = ax_ppl.get_legend_handles_labels()
+        lines2, labels2 = ax_ppl_twin.get_legend_handles_labels()
+        ax_ppl.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
 
     plt.tight_layout()
     output_path = os.path.join(run_dir, "training_results_detailed.png")

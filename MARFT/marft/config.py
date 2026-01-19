@@ -188,7 +188,7 @@ def get_config():
         help="Number of environment steps to train (default: 10e6).",
     )
     parser.add_argument(
-        "--horizon", type=int, default=3, help="The horizon of the rollout."
+        "--horizon", type=int, default=5, help="The horizon of the rollout."
     )
 
     # env parameters
