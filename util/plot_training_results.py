@@ -100,6 +100,11 @@ def parse_debug_logs(run_dir: str):
         "is_successful_attack": [],  # Boolean per episode
         "got_fluency_bonus": [],  # Boolean per episode
         "base_reward": [],  # Base reward before penalties
+        # New: degenerate input detection
+        "is_degenerate": [],  # Boolean per episode
+        "degenerate_penalty": [],  # Degenerate penalty per episode
+        "degenerate_reason": [],  # Reason for degenerate detection
+        "in_warmup_period": [],  # Whether episode was in warmup
         # New: reward decay and honeypot tracking
         "episode_num": [],  # Episode number from log
         "decay_factor": [],  # Decay factor applied (None if no decay)
@@ -153,6 +158,16 @@ def parse_debug_logs(run_dir: str):
                 diagnostic_data["is_successful_attack"].append(is_successful)
                 diagnostic_data["got_fluency_bonus"].append(got_bonus)
                 diagnostic_data["base_reward"].append(base_reward)
+
+                # New: degenerate input detection
+                is_degenerate = data.get("is_degenerate", False)
+                degenerate_penalty = data.get("degenerate_penalty", 0.0)
+                degenerate_reason = data.get("degenerate_reason", None)
+                in_warmup = data.get("in_warmup_period", True)
+                diagnostic_data["is_degenerate"].append(is_degenerate)
+                diagnostic_data["degenerate_penalty"].append(degenerate_penalty)
+                diagnostic_data["degenerate_reason"].append(degenerate_reason)
+                diagnostic_data["in_warmup_period"].append(in_warmup)
 
                 # New: decay and honeypot tracking
                 diagnostic_data["episode_num"].append(data.get("episode", ep_num))
@@ -491,7 +506,7 @@ def plot_training_results(run_dir: str) -> None:
             # Add margins to eliminate whitespace on sides
             ax_cum_pct.set_xlim(min(episodes), max(episodes))
 
-    # --- Plot 4: Gibberish Rate (KEY WARNING SIGN) ---
+    # --- Plot 4: Gibberish & Degenerate Rate (KEY WARNING SIGN) ---
     if ax_gibberish is not None and diagnostic_data:
         # Compute rolling gibberish rate
         gibberish_array = np.array(diagnostic_data["is_gibberish"], dtype=float)
@@ -510,7 +525,7 @@ def plot_training_results(run_dir: str) -> None:
             rolling_gibberish_rate,
             color="#e74c3c",
             linewidth=2,
-            label=f"Gibberish Rate ({window}-ep rolling avg)",
+            label=f"Gibberish Rate ({window}-ep)",
         )
 
         # Add danger zone shading
@@ -526,13 +541,27 @@ def plot_training_results(run_dir: str) -> None:
             color="#27ae60",
             linewidth=2,
             linestyle="--",
-            label=f"Fluent Rate ({window}-ep rolling avg)",
+            label=f"Fluent Rate ({window}-ep)",
+        )
+
+        # NEW: Plot degenerate input rate
+        degenerate_array = np.array(diagnostic_data["is_degenerate"], dtype=float)
+        rolling_degenerate_rate = (
+            compute_rolling_average(degenerate_array, window) * 100
+        )
+        ax_gibberish.plot(
+            rolling_x,
+            rolling_degenerate_rate[: len(rolling_x)],
+            color="#9b59b6",
+            linewidth=2,
+            linestyle=":",
+            label=f"Degenerate Rate ({window}-ep)",
         )
 
         ax_gibberish.set_xlabel("Episode")
         ax_gibberish.set_ylabel("Percentage (%)")
-        ax_gibberish.set_title("⚠️ Gibberish vs Fluent Rate (Mode Collapse Indicator)")
-        ax_gibberish.legend(loc="upper right")
+        ax_gibberish.set_title("⚠️ Input Quality (Gibberish/Degenerate = Bad)")
+        ax_gibberish.legend(loc="upper right", fontsize="small")
         ax_gibberish.grid(True, alpha=0.3)
         ax_gibberish.set_ylim(0, 100)
 
@@ -620,17 +649,35 @@ def plot_training_results(run_dir: str) -> None:
         if diagnostic_data:
             # Diagnostic summary
             total_gibberish = sum(diagnostic_data["is_gibberish"])
+            total_degenerate = sum(diagnostic_data["is_degenerate"])
             total_fluent_bonus = sum(diagnostic_data["got_fluency_bonus"])
             avg_ppl = np.mean([p for p in diagnostic_data["perplexity"] if p > 0])
             avg_penalty = np.mean(diagnostic_data["fluency_penalty"])
+            avg_degen_penalty = np.mean(diagnostic_data["degenerate_penalty"])
 
             print("\n=== Diagnostic Metrics ===")
             print(
                 f"{'Total Gibberish Episodes':<25}: {total_gibberish:>4} ({100 * total_gibberish / len(episodes):.1f}%)"
             )
+            print(
+                f"{'Total Degenerate Inputs':<25}: {total_degenerate:>4} ({100 * total_degenerate / len(episodes):.1f}%)"
+            )
             print(f"{'Got Fluency Bonus':<25}: {total_fluent_bonus:>4}")
             print(f"{'Average Perplexity':<25}: {avg_ppl:.1f}")
             print(f"{'Average Fluency Penalty':<25}: {avg_penalty:.2f}")
+            print(f"{'Average Degenerate Penalty':<25}: {avg_degen_penalty:.2f}")
+
+            # Degenerate reason breakdown
+            degenerate_reasons = [r for r in diagnostic_data["degenerate_reason"] if r]
+            if degenerate_reasons:
+                reason_counts = {}
+                for reason in degenerate_reasons:
+                    # Extract the main reason (before any parentheses)
+                    main_reason = reason.split(" (")[0] if " (" in reason else reason
+                    reason_counts[main_reason] = reason_counts.get(main_reason, 0) + 1
+                print("\n=== Degenerate Input Reasons ===")
+                for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
+                    print(f"  {reason}: {count}")
 
             # Early vs Late comparison (warning sign detection)
             mid = len(episodes) // 2
@@ -639,10 +686,16 @@ def plot_training_results(run_dir: str) -> None:
                 late_gibberish = sum(diagnostic_data["is_gibberish"][mid:]) / (
                     len(episodes) - mid
                 )
+                early_degenerate = sum(diagnostic_data["is_degenerate"][:mid]) / mid
+                late_degenerate = sum(diagnostic_data["is_degenerate"][mid:]) / (
+                    len(episodes) - mid
+                )
 
                 print("\n=== Trend Analysis ===")
                 print(f"Early Gibberish Rate (0-{mid}): {100 * early_gibberish:.1f}%")
                 print(f"Late Gibberish Rate ({mid}+):   {100 * late_gibberish:.1f}%")
+                print(f"Early Degenerate Rate (0-{mid}): {100 * early_degenerate:.1f}%")
+                print(f"Late Degenerate Rate ({mid}+):   {100 * late_degenerate:.1f}%")
 
                 if late_gibberish > early_gibberish * 2 and late_gibberish > 0.5:
                     print(
@@ -651,6 +704,15 @@ def plot_training_results(run_dir: str) -> None:
                 elif late_gibberish < early_gibberish * 0.5:
                     print(
                         "✅ Good: Gibberish rate decreased - model is learning fluent attacks"
+                    )
+
+                if late_degenerate > early_degenerate * 2 and late_degenerate > 0.3:
+                    print(
+                        "⚠️  WARNING: Degenerate input rate increased - model may be stuck!"
+                    )
+                elif late_degenerate < early_degenerate * 0.5:
+                    print(
+                        "✅ Good: Degenerate rate decreased - model is producing meaningful inputs"
                     )
 
             # Decay and Honeypot Summary
