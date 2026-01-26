@@ -6,6 +6,9 @@ echo $HF_TOKEN
 # Propagate exit code from script
 set -o pipefail
 
+# Prevent CUDA memory fragmentation (essential for long training runs)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 MODEL_SERVER_LOG=/app/model_server.log
 REDTEAM_OUTPUT_LOG=/app/redteam_output.log
 touch $MODEL_SERVER_LOG

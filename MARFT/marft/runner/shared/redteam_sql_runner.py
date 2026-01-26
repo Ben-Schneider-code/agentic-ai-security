@@ -27,15 +27,24 @@ class RedTeamSQLRunner:
         self.envs = config["envs"]
         self.eval_envs = config["eval_envs"]
 
+        # Always load profiles from the environment (dynamic generation)
+        profiles = None
+        if hasattr(self.envs, "envs") and len(self.envs.envs) > 0:
+            env = self.envs.envs[0]
+            if hasattr(env, "profiles"):
+                profiles = env.profiles
+                print(f"[Runner] Loaded {len(profiles)} profiles from environment")
+
         self.mas = MAS(
             model_path=self.all_args.model_name_or_path,
             context_window=self.all_args.context_window,
             max_new_tokens=self.all_args.max_new_tokens,
             num_agents=self.num_agents,
-            profile_path=self.all_args.profile_path,
+            profile_path=None,  # Ignore CLI arg, use dynamic profiles
             algo=self.algo,
             normalization_mode=self.all_args.normalization_mode,
             load_path=self.all_args.load_path,
+            profiles=profiles,
         )
 
         if self.algo == "APPO":
@@ -62,13 +71,62 @@ class RedTeamSQLRunner:
         # Store resume state for training loop
         self.resume_state = config.get("resume_state", None)
 
+        # Store shared honeypot set reference for state saving/loading
+        self.shared_honeypots = config.get("shared_honeypots", None)
+
+    def _sync_profiles_to_mas(self):
+        """Sync current profiles from environment to MAS.
+
+        Called before each inference to ensure MAS has up-to-date profiles
+        reflecting remaining honeypots.
+        """
+        if hasattr(self.envs, "envs") and len(self.envs.envs) > 0:
+            env = self.envs.envs[0]
+            if hasattr(env, "profiles"):
+                self.mas.update_profiles(env.profiles)
+
     def run(self):
+        """
+        Main training loop.
+
+        IMPORTANT TERMINOLOGY DISTINCTION:
+        ---------------------------------
+        - "Training Episode" (outer loop): One PPO update cycle. We collect
+          `episode_length` steps of experience, then update the policy.
+          The progress bar tracks these (e.g., "Ep 44/100").
+
+        - "Environment Episode": One red team attack attempt. This terminates when:
+          1. Terminal success (honeypot access) - early termination with reward
+          2. `horizon` steps reached - normal termination
+
+        Since episode_length >> horizon (e.g., 200 >> 5), many environment episodes
+        complete within each training episode. The `all_episodic_returns` list
+        tracks environment episodes, so it will have many more entries than the
+        training episode count shown in the progress bar.
+
+        This is expected behavior and NOT a bug.
+        """
+        # Import frozen config for max_episodes
+        from marft.envs.redteam_sql.redteam_sql_env import REWARD_CONFIG
+
         print("[Runner] Starting environment reset...")
         next_obs = self.envs.reset()
         self.buffer.obs[self.buffer.cur_batch_index, 0] = next_obs.copy()
 
-        episodes = (
+        calculated_episodes = (
             int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
+        )
+        # Cap at max_episodes from frozen config (auto-stop at 2000)
+        episodes = min(calculated_episodes, REWARD_CONFIG.max_episodes)
+        print(
+            f"[Runner] Training for {episodes} TRAINING episodes (max {REWARD_CONFIG.max_episodes})"
+        )
+        print(
+            f"[Runner] Each training episode = {self.episode_length} steps; "
+            f"environment episode horizon = {self.all_args.horizon} steps"
+        )
+        print(
+            f"[Runner] Expected ~{self.episode_length // self.all_args.horizon} environment episodes per training episode"
         )
 
         # Handle resume state
@@ -79,6 +137,13 @@ class RedTeamSQLRunner:
                 self.resume_state.get("episode", 0) + 1
             )  # Resume from next episode
             all_episodic_returns = self.resume_state.get("all_episodic_returns", [])
+            # Restore accessed honeypots to the shared set
+            resumed_honeypots = set(self.resume_state.get("accessed_honeypots", []))
+            if resumed_honeypots and self.shared_honeypots is not None:
+                self.shared_honeypots.update(resumed_honeypots)
+                print(
+                    f"[Runner] Restored {len(resumed_honeypots)} honeypots to shared tracking"
+                )
             print(
                 f"[Runner] Resuming from episode {start_episode} with {len(all_episodic_returns)} prior returns"
             )
@@ -100,6 +165,10 @@ class RedTeamSQLRunner:
             )
             for step in range(self.episode_length):
                 torch.cuda.empty_cache()
+
+                # Sync profiles before each inference to ensure latest honeypot status
+                self._sync_profiles_to_mas()
+
                 rollout_obs, actions, action_tokens, values, log_probs = (
                     self.mas.infer_for_rollout(
                         self.buffer.obs[self.buffer.cur_batch_index, step]
@@ -124,13 +193,29 @@ class RedTeamSQLRunner:
                     global_step = total_num_steps + step * self.n_rollout_threads + i
 
                     if dones[i, 0]:
+                        # Environment episode terminated - log cumulative return
                         episodic_return = infos[i]["episodic_return"]
+                        episode_length = infos[i].get("episode_length", "?")
+                        terminal_success = infos[i].get("terminal_success", False)
+
                         self.writter.add_scalar(
                             "episodic_return", episodic_return, global_step
                         )
                         all_episodic_returns.append(episodic_return)
 
-                        # Plot every 5 episodes
+                        # Log terminal successes
+                        if terminal_success:
+                            self.writter.add_scalar(
+                                "terminal_success", 1.0, global_step
+                            )
+
+                        # Log episode length for analysis
+                        if episode_length is not None and episode_length != "?":
+                            self.writter.add_scalar(
+                                "env_episode_length", episode_length, global_step
+                            )
+
+                        # Plot every 5 environment episodes
                         if len(all_episodic_returns) % 5 == 0:
                             self._save_reward_plot(all_episodic_returns)
 
@@ -187,16 +272,22 @@ class RedTeamSQLRunner:
 
     def _save_training_state(self, episode, total_num_steps, all_episodic_returns):
         """Save training state for resume capability."""
+        # Use shared honeypots set directly
+        accessed_honeypots = (
+            list(self.shared_honeypots) if self.shared_honeypots else []
+        )
+
         state = {
             "episode": episode,
             "total_num_steps": total_num_steps,
             "all_episodic_returns": all_episodic_returns,
+            "accessed_honeypots": accessed_honeypots,
         }
         state_file = os.path.join(str(self.run_dir), "training_state.json")
         with open(state_file, "w") as f:
             json.dump(state, f, indent=2)
         print(
-            f"[Runner] Training state saved: episode={episode}, steps={total_num_steps}"
+            f"[Runner] Training state saved: episode={episode}, steps={total_num_steps}, honeypots={len(accessed_honeypots)}"
         )
 
     def insert(self, data):

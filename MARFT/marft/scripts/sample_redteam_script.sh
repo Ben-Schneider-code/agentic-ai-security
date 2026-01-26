@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# export CUDA_VISIBLE_DEVICES="6,7"
+# Redteam SQL Training Script
+# Training auto-stops at 2000 episodes (set in REWARD_CONFIG.max_episodes). Feel free to configure rewards in code.
+
 echo $CUDA_VISIBLE_DEVICES
 echo HF_TOKEN:
 echo $HF_TOKEN
@@ -12,13 +14,12 @@ if [ -z "$HF_TOKEN" ]; then
 fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" &>/dev/null && pwd)
-# source "$SCRIPT_DIR/../../../.venv/bin/activate"
 
 exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --seed 10 \
         --env_name redteam_sql_env \
         --algorithm_name APPO \
-        --experiment_name sample_redteam_sql \
+        --experiment_name redteam_sql_experiment \
         --dataset_name None \
         --flag train \
         --num_mini_batch 1 \
@@ -29,17 +30,12 @@ exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
         --n_agents 1 \
         --agent_iteration_interval 1000 \
-        --profile_path $SCRIPT_DIR/profiles/redteam_sql.json \
         --n_rollout_threads 1 \
-        --episode_length 1 \
+        --episode_length 1 \ # TODO: REVIEW THIS
         --gradient_cp_steps 2 \
         --context_window 2048 \
         --max_new_tokens 512 \
         --save_interval 1000 \
         --entropy_coef 0.05 \
-        --warmup_steps 500
-# TODO: Review for later tweaking (01/14/26)
-# - lr: Reduced from 1e-6 to 5e-7 for stability
-# - entropy_coef: Added 0.05 (default was 0.01) to prevent entropy collapse
-# - warmup_steps: Added 500 to stabilize value function before policy updates
-
+        --warmup_steps 500 \
+        --horizon 5

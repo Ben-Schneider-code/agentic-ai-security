@@ -1,5 +1,7 @@
 # Red Team Reward Function Documentation
 
+> NOTE: This document is getting out-of-date regularly. Refer to code to verify.
+
 This document describes the reward calculation for the red team agent in the SQL security training environment.
 
 ## Overview

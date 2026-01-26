@@ -10,29 +10,35 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent))
 from marft.config import get_config
 from marft.envs.redteam_sql.redteam_sql_env import SQLEnv
-from marft.envs.env_wrappers import ShareSubprocVecEnv, ShareDummyVecEnv
+from marft.envs.env_wrappers import ShareDummyVecEnv
 from marft.runner.shared.redteam_sql_runner import RedTeamSQLRunner as Runner
 
 
-def make_train_env(all_args):
+def make_train_env(all_args, shared_honeypots: set = None):
+    """Create training environments with shared honeypot tracking.
+
+    Args:
+        all_args: Training arguments
+        shared_honeypots: Shared set for tracking accessed honeypots across all envs.
+                         If None, a new set is created.
+
+    Returns:
+        tuple: (vec_env, shared_honeypots_set)
+    """
+    if shared_honeypots is None:
+        shared_honeypots = set()
+
     def get_env_fn(rank):
         def init_env():
             env = SQLEnv(
                 rank=rank,
                 model_name=all_args.base_model,
                 num_agents=all_args.n_agents,
-                profile_path=all_args.profile_path,
-                dataset_path=all_args.dataset_path,
                 horizon=all_args.horizon,
                 mode="train",
+                dataset_path=all_args.dataset_path,
                 log_dir=getattr(all_args, "debug_log_dir", None),
-                # Reward config args
-                reward_decay_alpha=getattr(all_args, "reward_decay_alpha", 0.0092),
-                reward_decay_enabled=getattr(all_args, "reward_decay_enabled", True),
-                enable_fluency_penalty=getattr(
-                    all_args, "enable_fluency_penalty", True
-                ),
-                enable_fluency_bonus=getattr(all_args, "enable_fluency_bonus", False),
+                shared_honeypots=shared_honeypots,  # Pass shared set
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -40,7 +46,10 @@ def make_train_env(all_args):
         return init_env
 
     print(f"NUMBER OF ROLLOUT THREADS: {all_args.n_rollout_threads}")
-    return ShareDummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+    vec_env = ShareDummyVecEnv(
+        [get_env_fn(i) for i in range(all_args.n_rollout_threads)]
+    )
+    return vec_env, shared_honeypots
 
 
 def make_eval_env(all_args):
@@ -50,18 +59,11 @@ def make_eval_env(all_args):
                 rank=rank,
                 model_name=all_args.base_model,
                 num_agents=all_args.n_agents,
-                profile_path=all_args.profile_path,
                 dataset_path=all_args.dataset_path,
                 horizon=all_args.horizon,
                 mode="test",
                 log_dir=getattr(all_args, "debug_log_dir", None),
-                # Reward config args
-                reward_decay_alpha=getattr(all_args, "reward_decay_alpha", 0.0092),
-                reward_decay_enabled=getattr(all_args, "reward_decay_enabled", True),
-                enable_fluency_penalty=getattr(
-                    all_args, "enable_fluency_penalty", True
-                ),
-                enable_fluency_bonus=getattr(all_args, "enable_fluency_bonus", False),
+                # Reward config now uses frozen REWARD_CONFIG - no CLI args
             )
             env.seed(all_args.seed + rank * 5000)
             return env
@@ -224,8 +226,8 @@ def main(args):
     np.random.seed(all_args.seed)
 
     print(">>> Creating training environment...")
-    envs = make_train_env(all_args)
-    print(">>> Training environment created.")
+    envs, shared_honeypots = make_train_env(all_args)
+    print(">>> Training environment created with shared honeypot tracking.")
 
     config = {
         "all_args": all_args,
@@ -234,6 +236,7 @@ def main(args):
         "num_agents": envs.n_agents if envs is not None else 1,
         "run_dir": run_dir,
         "resume_state": resume_state,
+        "shared_honeypots": shared_honeypots,  # Pass to runner for state saving/loading
     }
 
     print(">>> Initializing Runner...")

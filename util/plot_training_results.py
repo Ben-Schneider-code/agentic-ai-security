@@ -340,24 +340,24 @@ def plot_training_results(run_dir: str) -> None:
 
     # === Plotting ===
     if using_debug_logs and diagnostic_data:
-        # Increased height for 3 rows
-        fig, axes = plt.subplots(3, 2, figsize=(16, 20))
+        # Increased height for 4 rows (added honeypot plots)
+        fig, axes = plt.subplots(4, 2, figsize=(16, 26))
         # Flatten and assign logical names
-        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8 = axes.flatten()
 
         ax_rewards = ax1
         ax_cum_counts = ax2
-        ax_cum_pct = ax3  # New plot
+        ax_cum_pct = ax3  # Cumulative outcome distribution
         ax_gibberish = ax4
         ax_ppl = ax5
-        ax_unused = ax6
-
-        # Hide unused subplot
-        ax_unused.axis("off")
+        ax_honeypot_cumulative = ax6  # NEW: Cumulative honeypots captured
+        ax_honeypot_bar = ax7  # NEW: Honeypot access frequency breakdown
+        ax_honeypot_timeline = ax8  # NEW: Honeypot discovery timeline
     else:
         # Fallback layout
         fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
         ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
+        ax_honeypot_cumulative, ax_honeypot_bar, ax_honeypot_timeline = None, None, None
 
     # --- Plot 1: Rewards ---
     ax_rewards.plot(
@@ -620,6 +620,258 @@ def plot_training_results(run_dir: str) -> None:
         lines1, labels1 = ax_ppl.get_legend_handles_labels()
         lines2, labels2 = ax_ppl_twin.get_legend_handles_labels()
         ax_ppl.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
+    # --- Plot 6: Cumulative Honeypots Captured ---
+    if ax_honeypot_cumulative is not None and diagnostic_data:
+        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
+
+        # Total possible honeypots (from RewardConfig):
+        #   2 tables + 9 columns + 3 order_ids + 6 guids = 20
+        TOTAL_HONEYPOTS = 20
+
+        # Build cumulative tracking data
+        cumulative_total_accesses = []
+        cumulative_unique_honeypots = []
+        seen_honeypots = set()
+        total_accesses = 0
+
+        for hp in honeypots_list:
+            if hp is not None:
+                total_accesses += 1
+                seen_honeypots.add(hp)
+            cumulative_total_accesses.append(total_accesses)
+            cumulative_unique_honeypots.append(len(seen_honeypots))
+
+        if any(cumulative_total_accesses):
+            ax_honeypot_cumulative.plot(
+                episodes,
+                cumulative_total_accesses,
+                color="#9b59b6",
+                linewidth=2,
+                label="Total Honeypot Accesses",
+            )
+            ax_honeypot_cumulative.plot(
+                episodes,
+                cumulative_unique_honeypots,
+                color="#e74c3c",
+                linewidth=2,
+                linestyle="--",
+                label="Unique Honeypots Discovered",
+            )
+
+            # Add milestone markers for each new unique honeypot
+            discovery_episodes = []
+            discovery_honeypots = []
+            seen_for_markers = set()
+            for i, hp in enumerate(honeypots_list):
+                if hp is not None and hp not in seen_for_markers:
+                    seen_for_markers.add(hp)
+                    discovery_episodes.append(i + 1)
+                    discovery_honeypots.append(len(seen_for_markers))
+
+            if discovery_episodes:
+                ax_honeypot_cumulative.scatter(
+                    discovery_episodes,
+                    discovery_honeypots,
+                    color="#2ecc71",
+                    marker="*",
+                    s=100,
+                    zorder=10,
+                    edgecolor="black",
+                    label="New Honeypot Discovered",
+                )
+
+            ax_honeypot_cumulative.set_xlabel("Episode")
+            ax_honeypot_cumulative.set_ylabel("Count")
+            ax_honeypot_cumulative.set_title("🍯 Cumulative Honeypots Captured")
+            ax_honeypot_cumulative.legend(loc="upper left")
+            ax_honeypot_cumulative.grid(True, alpha=0.3)
+
+            # Add secondary y-axis showing percentage of total honeypots
+            ax_honeypot_pct = ax_honeypot_cumulative.twinx()
+            cumulative_pct = [
+                (count / TOTAL_HONEYPOTS) * 100 for count in cumulative_unique_honeypots
+            ]
+            ax_honeypot_pct.plot(
+                episodes,
+                cumulative_pct,
+                color="#27ae60",
+                linewidth=2,
+                linestyle=":",
+                alpha=0.7,
+                label="Coverage %",
+            )
+            ax_honeypot_pct.set_ylabel("Coverage (%)", color="#27ae60")
+            ax_honeypot_pct.tick_params(axis="y", labelcolor="#27ae60")
+            ax_honeypot_pct.set_ylim(0, 100)
+
+            # Add horizontal line at 100% coverage
+            ax_honeypot_pct.axhline(y=100, color="#27ae60", linestyle="--", alpha=0.3)
+
+            # Add prominent coverage percentage annotation
+            final_unique = (
+                cumulative_unique_honeypots[-1] if cumulative_unique_honeypots else 0
+            )
+            final_pct = (final_unique / TOTAL_HONEYPOTS) * 100
+            ax_honeypot_cumulative.text(
+                0.98,
+                0.85,
+                f"Coverage: {final_pct:.1f}%\n({final_unique}/{TOTAL_HONEYPOTS} honeypots)",
+                transform=ax_honeypot_cumulative.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                fontweight="bold",
+                bbox=dict(
+                    boxstyle="round",
+                    facecolor="lightgreen",
+                    alpha=0.8,
+                    edgecolor="green",
+                ),
+            )
+        else:
+            ax_honeypot_cumulative.text(
+                0.5,
+                0.5,
+                "No honeypots captured yet",
+                ha="center",
+                va="center",
+                fontsize=14,
+                color="gray",
+            )
+            ax_honeypot_cumulative.set_title("🍯 Cumulative Honeypots Captured")
+            ax_honeypot_cumulative.axis("off")
+
+    # --- Plot 7: Honeypot Access Frequency Bar Chart ---
+    if ax_honeypot_bar is not None and diagnostic_data:
+        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
+        honeypots_accessed = [h for h in honeypots_list if h is not None]
+
+        if honeypots_accessed:
+            # Count frequency of each honeypot
+            honeypot_counts = {}
+            for hp in honeypots_accessed:
+                honeypot_counts[hp] = honeypot_counts.get(hp, 0) + 1
+
+            # Sort by count (descending)
+            sorted_honeypots = sorted(honeypot_counts.items(), key=lambda x: -x[1])
+            hp_names = [hp for hp, _ in sorted_honeypots]
+            hp_counts = [count for _, count in sorted_honeypots]
+
+            # Use a color gradient based on count
+            max_count = max(hp_counts) if hp_counts else 1
+            colors_bar = [
+                plt.cm.Purples(0.3 + 0.7 * (count / max_count)) for count in hp_counts
+            ]
+
+            bars = ax_honeypot_bar.barh(
+                hp_names, hp_counts, color=colors_bar, edgecolor="black"
+            )
+
+            # Add count labels on bars
+            for bar, count in zip(bars, hp_counts):
+                ax_honeypot_bar.text(
+                    bar.get_width() + 0.1,
+                    bar.get_y() + bar.get_height() / 2,
+                    str(count),
+                    va="center",
+                    fontsize=9,
+                )
+
+            ax_honeypot_bar.set_xlabel("Access Count")
+            ax_honeypot_bar.set_ylabel("Honeypot")
+            ax_honeypot_bar.set_title("Honeypot Access Frequency")
+            ax_honeypot_bar.grid(True, alpha=0.3, axis="x")
+            ax_honeypot_bar.invert_yaxis()  # Highest count at top
+        else:
+            ax_honeypot_bar.text(
+                0.5,
+                0.5,
+                "No honeypots accessed yet",
+                ha="center",
+                va="center",
+                fontsize=14,
+                color="gray",
+            )
+            ax_honeypot_bar.set_title("Honeypot Access Frequency")
+            ax_honeypot_bar.axis("off")
+
+    # --- Plot 8: Honeypot Discovery Timeline ---
+    if ax_honeypot_timeline is not None and diagnostic_data:
+        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
+
+        # Build discovery timeline: when was each honeypot first accessed?
+        first_access = {}  # honeypot_id -> episode_number
+        for i, hp in enumerate(honeypots_list):
+            if hp is not None and hp not in first_access:
+                first_access[hp] = i + 1  # 1-indexed episode
+
+        if first_access:
+            # Sort by discovery order (episode number)
+            sorted_by_discovery = sorted(first_access.items(), key=lambda x: x[1])
+            hp_names = [hp for hp, _ in sorted_by_discovery]
+            discovery_episodes = [ep for _, ep in sorted_by_discovery]
+
+            # Create a timeline visualization
+            y_positions = range(len(hp_names))
+
+            # Background showing training progress
+            ax_honeypot_timeline.axvspan(
+                0, len(episodes), alpha=0.1, color="blue", label="Training Duration"
+            )
+
+            # Plot discovery points
+            ax_honeypot_timeline.scatter(
+                discovery_episodes,
+                y_positions,
+                color="#e74c3c",
+                marker="o",
+                s=150,
+                zorder=10,
+                edgecolor="black",
+                label="First Discovery",
+            )
+
+            # Add lines from y-axis to discovery point
+            for y, ep in zip(y_positions, discovery_episodes):
+                ax_honeypot_timeline.hlines(
+                    y, 0, ep, colors="#9b59b6", linestyles="--", alpha=0.5
+                )
+
+            ax_honeypot_timeline.set_yticks(list(y_positions))
+            ax_honeypot_timeline.set_yticklabels(hp_names)
+            ax_honeypot_timeline.set_xlabel("Episode")
+            ax_honeypot_timeline.set_ylabel("Honeypot")
+            ax_honeypot_timeline.set_title("🍯 Honeypot Discovery Timeline")
+            ax_honeypot_timeline.set_xlim(0, len(episodes))
+            ax_honeypot_timeline.grid(True, alpha=0.3, axis="x")
+
+            # Add annotation for discovery rate
+            total_eps = len(episodes)
+            num_discovered = len(first_access)
+            discovery_rate = num_discovered / total_eps * 100 if total_eps > 0 else 0
+            ax_honeypot_timeline.text(
+                0.98,
+                0.02,
+                f"Discovery Rate: {discovery_rate:.2f}% ({num_discovered} in {total_eps} eps)",
+                transform=ax_honeypot_timeline.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=9,
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            )
+        else:
+            ax_honeypot_timeline.text(
+                0.5,
+                0.5,
+                "No honeypots discovered yet",
+                ha="center",
+                va="center",
+                fontsize=14,
+                color="gray",
+            )
+            ax_honeypot_timeline.set_title("🍯 Honeypot Discovery Timeline")
+            ax_honeypot_timeline.axis("off")
 
     plt.tight_layout()
     output_path = os.path.join(run_dir, "training_results_detailed.png")

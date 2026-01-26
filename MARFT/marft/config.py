@@ -214,9 +214,7 @@ def get_config():
         "--max_new_tokens", type=int, default=256, help="max_new_tokens"
     )
     parser.add_argument("--n_agents", type=int, default=1)
-    parser.add_argument(
-        "--profile_path", type=str, default="agent_profiles.json", required=True
-    )
+    parser.add_argument("--profile_path", type=str, default=None, required=False)
     parser.add_argument(
         "--context_window",
         type=int,
@@ -264,7 +262,7 @@ def get_config():
 
     # replay buffer parameters
     parser.add_argument(
-        "--episode_length", type=int, default=200, help="Max length for any episode"
+        "--episode_length", type=int, default=10, help="Max length for any episode"
     )
 
     # network parameters

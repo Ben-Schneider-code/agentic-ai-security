@@ -117,9 +117,18 @@ class FluencyJudge:
             loss = outputs.loss.item()
             perplexity = math.exp(loss)
 
+            # Explicitly clear GPU cache after inference to prevent memory buildup
+            del inputs, outputs
+            torch.cuda.empty_cache()
+
             # Cap perplexity to avoid numerical issues
             return min(perplexity, 10000.0)
 
+        except torch.cuda.OutOfMemoryError:
+            # OOM recovery: clear cache and return high perplexity
+            print("[FluencyJudge] CUDA OOM - clearing cache and returning high PPL")
+            torch.cuda.empty_cache()
+            return 500.0  # Return threshold perplexity on OOM
         except Exception as e:
             print(f"[FluencyJudge] Error calculating perplexity: {e}")
             return 500.0  # Return high perplexity on error

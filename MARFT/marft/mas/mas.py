@@ -22,13 +22,14 @@ class MAS(ABC):
         context_window: int,
         max_new_tokens: int,
         num_agents: int,
-        profile_path: str | os.PathLike,
+        profile_path: str | os.PathLike = None,
         algo: str = "APPO",
         normalization_mode: str = "sum",
         load_path: str = None,
         load_in_4bit: bool = False,
         bf16: bool = True,
         device_map=None,
+        profiles: list[dict] = None,
         **kwargs,
     ):
         self.algo = algo
@@ -38,7 +39,13 @@ class MAS(ABC):
 
         self.context_window = context_window
         self.max_new_tokens = max_new_tokens
-        self.profiles = load_profiles(profile_path)
+
+        if profiles is not None:
+            self.profiles = profiles
+        elif profile_path is not None:
+            self.profiles = load_profiles(profile_path)
+        else:
+            raise ValueError("Either profile_path or profiles must be provided to MAS.")
 
         # Assign devices for agents
         # Force agents to use the second GPU (logical 1) because vLLM is on logical 0
@@ -71,6 +78,13 @@ class MAS(ABC):
         start_time = time.time()
         self.critic = self._init_critic(model_path, load_path).to(self.device)
         print(f"[Profiling] Critic Initialization took {time.time() - start_time:.2f}s")
+
+    def update_profiles(self, profiles: list[dict]):
+        """Update agent profiles dynamically (e.g., for per-episode prompt generation)."""
+        self.profiles = profiles
+        for i, agent in enumerate(self.agents):
+            if i < len(profiles):
+                agent.profile = profiles[i]
 
     def _init_agents(
         self,
