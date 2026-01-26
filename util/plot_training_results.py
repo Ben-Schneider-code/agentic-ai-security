@@ -79,6 +79,7 @@ def parse_debug_logs(run_dir: str):
     categories = [
         "permission_violation",
         "honeypot_access",
+        "repeated_honeypot",
         "sensitive_query",
         "sql_generated",
         "sql_error",
@@ -194,6 +195,8 @@ def parse_debug_logs(run_dir: str):
 
                 elif tier == "honeypot_access":
                     category = "honeypot_access"
+                elif tier == "repeated_honeypot":
+                    category = "repeated_honeypot"
                 elif tier == "sensitive_query":
                     category = "sensitive_query"
                 elif tier == "sql_generated":
@@ -402,6 +405,7 @@ def plot_training_results(run_dir: str) -> None:
     colors = {
         "permission_violation": "#e74c3c",  # Red
         "honeypot_access": "#9b59b6",  # Purple
+        "repeated_honeypot": "#f1c40f",  # Yellow/Gold
         "sensitive_query": "#f39c12",  # Orange
         "sql_generated": "#3498db",  # Blue
         "sql_error": "#95a5a6",  # Gray
@@ -411,6 +415,7 @@ def plot_training_results(run_dir: str) -> None:
     labels = {
         "permission_violation": "Permission Violation",
         "honeypot_access": "Honeypot Access",
+        "repeated_honeypot": "Repeated Honeypot",
         "sensitive_query": "Sensitive Query",
         "sql_generated": "Valid SQL Generated",
         "sql_error": "SQL Error",
@@ -427,6 +432,7 @@ def plot_training_results(run_dir: str) -> None:
         "sql_error",
         "sql_generated",
         "sensitive_query",
+        "repeated_honeypot",
         "honeypot_access",
         "permission_violation",
     ]
