@@ -171,12 +171,10 @@ class RedTeamSQLRunner:
             total_num_steps = (
                 (episode + 1) * self.episode_length * self.n_rollout_threads
             )
+            # Clear GPU cache once per training episode (not every step - expensive sync)
+            torch.cuda.empty_cache()
+
             for step in range(self.episode_length):
-                torch.cuda.empty_cache()
-
-                # Sync profiles before each inference to ensure latest honeypot status
-                self._sync_profiles_to_mas()
-
                 rollout_obs, actions, action_tokens, values, log_probs = (
                     self.mas.infer_for_rollout(
                         self.buffer.obs[self.buffer.cur_batch_index, step]
@@ -223,9 +221,12 @@ class RedTeamSQLRunner:
                                 "env_episode_length", episode_length, global_step
                             )
 
-                        # Plot every 5 environment episodes
-                        if len(all_episodic_returns) % 5 == 0:
-                            self._save_reward_plot(all_episodic_returns)
+                        # Sync profiles after episode reset (honeypots may have been accessed)
+                        self._sync_profiles_to_mas()
+
+                        # Plotting disabled - raw data saved via TensorBoard/debug logs
+                        # if len(all_episodic_returns) % 5 == 0:
+                        #     self._save_reward_plot(all_episodic_returns)
 
             self.before_update()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
