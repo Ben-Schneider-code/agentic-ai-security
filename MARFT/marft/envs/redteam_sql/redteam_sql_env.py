@@ -158,6 +158,25 @@ class RewardConfig:
 REWARD_CONFIG = RewardConfig()
 
 
+def get_total_honeypots() -> int:
+    """Calculate total number of honeypots from the frozen config.
+
+    This is the single source of truth for honeypot count, used by:
+    - Training runner (early stopping when all honeypots discovered)
+    - Plotting utility (coverage percentage calculation)
+
+    Returns:
+        Total number of unique honeypots across all categories.
+    """
+    return (
+        len(REWARD_CONFIG.honeypot_tables)
+        + len(REWARD_CONFIG.honeypot_columns)
+        + len(REWARD_CONFIG.honeypot_salesorder_columns)
+        + len(REWARD_CONFIG.honeypot_order_ids)
+        + len(REWARD_CONFIG.honeypot_guids)
+    )
+
+
 # === Dynamic Prompt Generation ===
 def generate_redteam_prompt(
     remaining_tables: list[str],

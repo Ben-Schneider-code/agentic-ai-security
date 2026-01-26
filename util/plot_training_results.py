@@ -631,9 +631,16 @@ def plot_training_results(run_dir: str) -> None:
     if ax_honeypot_cumulative is not None and diagnostic_data:
         honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
 
-        # Total possible honeypots (from RewardConfig):
-        #   2 tables + 9 columns + 3 order_ids + 6 guids = 20
-        TOTAL_HONEYPOTS = 20
+        # Use the shared get_total_honeypots() function for consistency with training runner
+        try:
+            from MARFT.marft.envs.redteam_sql.redteam_sql_env import get_total_honeypots
+
+            TOTAL_HONEYPOTS = get_total_honeypots()
+        except ImportError:
+            # Fallback: use unique honeypots discovered as the known total
+            # This gives a "coverage of discovered" rather than "coverage of all"
+            unique_honeypots = set(hp for hp in honeypots_list if hp is not None)
+            TOTAL_HONEYPOTS = max(len(unique_honeypots), 1)  # Avoid division by zero
 
         # Build cumulative tracking data
         cumulative_total_accesses = []

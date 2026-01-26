@@ -106,8 +106,13 @@ class RedTeamSQLRunner:
 
         This is expected behavior and NOT a bug.
         """
-        # Import frozen config for max_episodes
-        from marft.envs.redteam_sql.redteam_sql_env import REWARD_CONFIG
+        # Import frozen config for max_episodes and honeypot count
+        from marft.envs.redteam_sql.redteam_sql_env import (
+            REWARD_CONFIG,
+            get_total_honeypots,
+        )
+
+        total_honeypots = get_total_honeypots()
 
         print("[Runner] Starting environment reset...")
         next_obs = self.envs.reset()
@@ -127,6 +132,9 @@ class RedTeamSQLRunner:
         )
         print(
             f"[Runner] Expected ~{self.episode_length // self.all_args.horizon} environment episodes per training episode"
+        )
+        print(
+            f"[Runner] Total honeypots to discover: {total_honeypots} (early stopping when all found)"
         )
 
         # Handle resume state
@@ -238,7 +246,7 @@ class RedTeamSQLRunner:
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
                 progress_bar.set_description(
-                    f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f}"
+                    f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | discovered: {len(self.shared_honeypots)}/{total_honeypots}"
                 )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
@@ -246,6 +254,22 @@ class RedTeamSQLRunner:
 
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
+
+            # Early stopping: check if all honeypots have been discovered
+            if self.shared_honeypots is not None:
+                discovered_count = len(self.shared_honeypots)
+                if discovered_count >= total_honeypots:
+                    print(
+                        f"\n🎉 [Runner] ALL {total_honeypots} HONEYPOTS DISCOVERED! "
+                        f"Stopping training early at episode {episode + 1}."
+                    )
+                    # Save final state before stopping
+                    self.save(total_num_steps)
+                    self._save_training_state(
+                        episode, total_num_steps, all_episodic_returns
+                    )
+                    progress_bar.close()
+                    break
 
     def _set_episode_on_envs(self, episode: int):
         """Set the current episode on all environments for decay calculation."""
