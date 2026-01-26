@@ -21,6 +21,7 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
+import yaml
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 # Import evaluation metric functions
@@ -631,16 +632,36 @@ def plot_training_results(run_dir: str) -> None:
     if ax_honeypot_cumulative is not None and diagnostic_data:
         honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
 
-        # Use the shared get_total_honeypots() function for consistency with training runner
-        try:
-            from MARFT.marft.envs.redteam_sql.redteam_sql_env import get_total_honeypots
+        # Try to load total honeypots from saved reward_config.yaml first
+        TOTAL_HONEYPOTS = None
+        reward_config_path = os.path.join(run_dir, "reward_config.yaml")
+        if os.path.exists(reward_config_path):
+            try:
+                with open(reward_config_path, "r") as f:
+                    config = yaml.safe_load(f)
+                    if "total_honeypots" in config:
+                        TOTAL_HONEYPOTS = config["total_honeypots"]
+                        print(
+                            f"Loaded TOTAL_HONEYPOTS={TOTAL_HONEYPOTS} from reward_config.yaml"
+                        )
+            except Exception as e:
+                print(f"Failed to load reward_config.yaml: {e}")
 
-            TOTAL_HONEYPOTS = get_total_honeypots()
-        except ImportError:
-            # Fallback: use unique honeypots discovered as the known total
-            # This gives a "coverage of discovered" rather than "coverage of all"
-            unique_honeypots = set(hp for hp in honeypots_list if hp is not None)
-            TOTAL_HONEYPOTS = max(len(unique_honeypots), 1)  # Avoid division by zero
+        if TOTAL_HONEYPOTS is None:
+            # Use the shared get_total_honeypots() function for consistency with training runner
+            try:
+                from MARFT.marft.envs.redteam_sql.redteam_sql_env import (
+                    get_total_honeypots,
+                )
+
+                TOTAL_HONEYPOTS = get_total_honeypots()
+            except ImportError:
+                # Fallback: use unique honeypots discovered as the known total
+                # This gives a "coverage of discovered" rather than "coverage of all"
+                unique_honeypots = set(hp for hp in honeypots_list if hp is not None)
+                TOTAL_HONEYPOTS = max(
+                    len(unique_honeypots), 1
+                )  # Avoid division by zero
 
         # Build cumulative tracking data
         cumulative_total_accesses = []

@@ -9,7 +9,11 @@ import yaml
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent))
 from marft.config import get_config
-from marft.envs.redteam_sql.redteam_sql_env import SQLEnv
+from marft.envs.redteam_sql.redteam_sql_env import (
+    SQLEnv,
+    REWARD_CONFIG,
+    get_total_honeypots,
+)
 from marft.envs.env_wrappers import ShareDummyVecEnv
 from marft.runner.shared.redteam_sql_runner import RedTeamSQLRunner as Runner
 
@@ -85,6 +89,18 @@ def save_args_to_yaml(args, filename="args.yaml"):
     """Save argparse arguments to a YAML file."""
     with open(filename, "w") as f:
         yaml.dump(vars(args), f, default_flow_style=False, sort_keys=False)
+
+
+def save_reward_config_to_yaml(run_dir):
+    """Save immutable reward config to YAML for reproducibility."""
+    import dataclasses
+
+    config_dict = dataclasses.asdict(REWARD_CONFIG)
+    # Add computed properties that aren't fields in the dataclass
+    config_dict["total_honeypots"] = get_total_honeypots()
+
+    with open(run_dir / "reward_config.yaml", "w") as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
 def find_latest_checkpoint(run_dir):
@@ -209,6 +225,7 @@ def main(args):
     else:
         run_dir = build_run_dir(all_args)
         save_args_to_yaml(all_args, run_dir / "args.yaml")
+        save_reward_config_to_yaml(run_dir)
 
     all_args.run_dir = str(run_dir)
     # Create debug logs directory next to logs (which is handled by runner)
