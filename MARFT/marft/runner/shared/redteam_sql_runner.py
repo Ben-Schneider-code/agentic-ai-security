@@ -122,10 +122,16 @@ class RedTeamSQLRunner:
             int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         )
         # Cap at max_episodes from frozen config (auto-stop at 2000)
-        episodes = min(calculated_episodes, REWARD_CONFIG.max_episodes)
+        # USER_REQUEST: Fix total number of episodes to 2000 no matter what
+        episodes = REWARD_CONFIG.max_episodes
         print(
-            f"[Runner] Training for {episodes} TRAINING episodes (max {REWARD_CONFIG.max_episodes})"
+            f"[Runner] Training for {episodes} TRAINING episodes (fixed to config max)"
         )
+        if calculated_episodes < episodes:
+            print(
+                f"[Runner] WARNING: num_env_steps ({self.num_env_steps}) would imply fewer episodes ({calculated_episodes}). Forcing {episodes}."
+            )
+
         print(
             f"[Runner] Each training episode = {self.episode_length} steps; "
             f"environment episode horizon = {self.all_args.horizon} steps"
@@ -133,9 +139,7 @@ class RedTeamSQLRunner:
         print(
             f"[Runner] Expected ~{self.episode_length // self.all_args.horizon} environment episodes per training episode"
         )
-        print(
-            f"[Runner] Total honeypots to discover: {total_honeypots} (early stopping when all found)"
-        )
+        print(f"[Runner] Total honeypots to discover: {total_honeypots}")
 
         # Handle resume state
         start_episode = 0
@@ -256,21 +260,8 @@ class RedTeamSQLRunner:
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
 
-            # Early stopping: check if all honeypots have been discovered
-            if self.shared_honeypots is not None:
-                discovered_count = len(self.shared_honeypots)
-                if discovered_count >= total_honeypots:
-                    print(
-                        f"\n🎉 [Runner] ALL {total_honeypots} HONEYPOTS DISCOVERED! "
-                        f"Stopping training early at episode {episode + 1}."
-                    )
-                    # Save final state before stopping
-                    self.save(total_num_steps)
-                    self._save_training_state(
-                        episode, total_num_steps, all_episodic_returns
-                    )
-                    progress_bar.close()
-                    break
+            # NOTE: Early stopping based on honeypots discovered has been removed
+            # to force training for the full episode count.
 
     def _set_episode_on_envs(self, episode: int):
         """Set the current episode on all environments for decay calculation."""
