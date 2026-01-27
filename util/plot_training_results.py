@@ -115,6 +115,9 @@ def parse_debug_logs(run_dir: str):
         "red_team_input": [],  # Red team prompt
         "ground_truth": [],  # Ground truth SQL
         "victim_response": [],  # Victim LLM response
+        # New: Token tracking
+        "red_team_tokens": [],
+        "victim_tokens": [],
     }
 
     with open(log_file, "r") as f:
@@ -193,6 +196,14 @@ def parse_debug_logs(run_dir: str):
                 diagnostic_data["victim_response"].append(
                     data.get("victim_full_response", "")
                 )
+
+                # Estimate token counts (approx words * 1.3)
+                rt_input = data.get("red_team_input", "")
+                v_response = data.get("victim_full_response", "")
+                rt_tokens = len(rt_input.split()) * 1.3 if rt_input else 0
+                v_tokens = len(v_response.split()) * 1.3 if v_response else 0
+                diagnostic_data["red_team_tokens"].append(rt_tokens)
+                diagnostic_data["victim_tokens"].append(v_tokens)
 
                 # Determine specific category
                 category = "no_sql"
@@ -353,10 +364,10 @@ def plot_training_results(run_dir: str) -> None:
 
     # === Plotting ===
     if using_debug_logs and diagnostic_data:
-        # Increased height for 4 rows (added honeypot plots)
-        fig, axes = plt.subplots(4, 2, figsize=(16, 26))
+        # Increased height for 5 rows (added token usage plots)
+        fig, axes = plt.subplots(5, 2, figsize=(16, 32))
         # Flatten and assign logical names
-        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8 = axes.flatten()
+        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10 = axes.flatten()
 
         ax_rewards = ax1
         ax_cum_counts = ax2
@@ -366,11 +377,16 @@ def plot_training_results(run_dir: str) -> None:
         ax_honeypot_cumulative = ax6  # NEW: Cumulative honeypots captured
         ax_honeypot_bar = ax7  # NEW: Honeypot access frequency breakdown
         ax_honeypot_timeline = ax8  # NEW: Honeypot discovery timeline
+        ax_tokens = ax9  # NEW: Token usage trends
+        ax_efficiency = ax10  # NEW: Efficiency metrics
     else:
         # Fallback layout
         fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
         ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
+        fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
+        ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
         ax_honeypot_cumulative, ax_honeypot_bar, ax_honeypot_timeline = None, None, None
+        ax_tokens, ax_efficiency = None, None
 
     # --- Plot 1: Rewards ---
     ax_rewards.plot(
@@ -647,7 +663,7 @@ def plot_training_results(run_dir: str) -> None:
         if os.path.exists(reward_config_path):
             try:
                 with open(reward_config_path, "r") as f:
-                    config = yaml.safe_load(f)
+                    config = yaml.unsafe_load(f)
                     if "total_honeypots" in config:
                         TOTAL_HONEYPOTS = config["total_honeypots"]
                         print(
@@ -798,140 +814,143 @@ def plot_training_results(run_dir: str) -> None:
     # --- Plot 7: Honeypot Access Frequency Bar Chart ---
     if ax_honeypot_bar is not None and diagnostic_data:
         honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
-        honeypots_accessed = []
+
+        # Flatten list
+        all_hps = []
         for hps in honeypots_list:
             if hps:
                 for hp in hps:
-                    if hp is not None:
-                        honeypots_accessed.append(hp)
+                    if hp:
+                        all_hps.append(hp)
 
-        if honeypots_accessed:
-            # Count frequency of each honeypot
-            honeypot_counts = {}
-            for hp in honeypots_accessed:
-                honeypot_counts[hp] = honeypot_counts.get(hp, 0) + 1
+        if all_hps:
+            from collections import Counter
 
-            # Sort by count (descending)
-            sorted_honeypots = sorted(honeypot_counts.items(), key=lambda x: -x[1])
-            hp_names = [hp for hp, _ in sorted_honeypots]
-            hp_counts = [count for _, count in sorted_honeypots]
+            hp_counts = Counter(all_hps)
 
-            # Use a color gradient based on count
-            max_count = max(hp_counts) if hp_counts else 1
-            colors_bar = [
-                plt.cm.Purples(0.3 + 0.7 * (count / max_count)) for count in hp_counts
-            ]
+            # Sort by count
+            sorted_hps = sorted(hp_counts.items(), key=lambda x: x[1], reverse=True)
+            top_hps = sorted_hps[:15]  # Top 15
 
-            bars = ax_honeypot_bar.barh(
-                hp_names, hp_counts, color=colors_bar, edgecolor="black"
-            )
+            names = [x[0] for x in top_hps]
+            access_counts = [x[1] for x in top_hps]
 
-            # Add count labels on bars
-            for bar, count in zip(bars, hp_counts):
-                ax_honeypot_bar.text(
-                    bar.get_width() + 0.1,
-                    bar.get_y() + bar.get_height() / 2,
-                    str(count),
-                    va="center",
-                    fontsize=9,
-                )
+            y_pos = np.arange(len(names))
 
+            ax_honeypot_bar.barh(y_pos, access_counts, align="center", color="#3498db")
+            ax_honeypot_bar.set_yticks(y_pos)
+            ax_honeypot_bar.set_yticklabels(names)
+            ax_honeypot_bar.invert_yaxis()  # labels read top-to-bottom
             ax_honeypot_bar.set_xlabel("Access Count")
-            ax_honeypot_bar.set_ylabel("Honeypot")
-            ax_honeypot_bar.set_title("Honeypot Access Frequency")
-            ax_honeypot_bar.grid(True, alpha=0.3, axis="x")
-            ax_honeypot_bar.invert_yaxis()  # Highest count at top
+            ax_honeypot_bar.set_title("Top Accessed Honeypots")
         else:
             ax_honeypot_bar.text(
                 0.5,
                 0.5,
-                "No honeypots accessed yet",
+                "No honeypots accessed",
                 ha="center",
                 va="center",
-                fontsize=14,
                 color="gray",
             )
-            ax_honeypot_bar.set_title("Honeypot Access Frequency")
             ax_honeypot_bar.axis("off")
 
     # --- Plot 8: Honeypot Discovery Timeline ---
     if ax_honeypot_timeline is not None and diagnostic_data:
+        # Same logic as scatter plot in Plot 6 but focused on timeline
+        cumulative_unique_honeypots = []
+        seen_honeypots = set()
+
         honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
 
-        # Build discovery timeline: when was each honeypot first accessed?
-        first_access = {}  # honeypot_id -> episode_number
-        for i, hps in enumerate(honeypots_list):
+        for hps in honeypots_list:
             if hps:
                 for hp in hps:
-                    if hp is not None and hp not in first_access:
-                        first_access[hp] = i + 1  # 1-indexed episode
+                    if hp:
+                        seen_honeypots.add(hp)
+            cumulative_unique_honeypots.append(len(seen_honeypots))
 
-        if first_access:
-            # Sort by discovery order (episode number)
-            sorted_by_discovery = sorted(first_access.items(), key=lambda x: x[1])
-            hp_names = [hp for hp, _ in sorted_by_discovery]
-            discovery_episodes = [ep for _, ep in sorted_by_discovery]
+        ax_honeypot_timeline.plot(
+            episodes,
+            cumulative_unique_honeypots,
+            color="#e67e22",
+            linewidth=2,
+            label="Unique HP Count",
+        )
 
-            # Create a timeline visualization
-            y_positions = range(len(hp_names))
+        ax_honeypot_timeline.set_xlabel("Episode")
+        ax_honeypot_timeline.set_ylabel("Unique Honeypots")
+        ax_honeypot_timeline.set_title("Honeypot Discovery Rate")
+        ax_honeypot_timeline.legend()
+        ax_honeypot_timeline.grid(True, alpha=0.3)
 
-            # Background showing training progress
-            ax_honeypot_timeline.axvspan(
-                0, len(episodes), alpha=0.1, color="blue", label="Training Duration"
-            )
+    # --- Plot 9: Token Usage Trends ---
+    if ax_tokens is not None and diagnostic_data:
+        rt_tokens = np.array(diagnostic_data.get("red_team_tokens", []))
+        v_tokens = np.array(diagnostic_data.get("victim_tokens", []))
 
-            # Plot discovery points
-            ax_honeypot_timeline.scatter(
-                discovery_episodes,
-                y_positions,
-                color="#e74c3c",
-                marker="o",
-                s=150,
-                zorder=10,
-                edgecolor="black",
-                label="First Discovery",
-            )
+        window = 50
+        rolling_rt = compute_rolling_average(rt_tokens, window)
+        rolling_v = compute_rolling_average(v_tokens, window)
 
-            # Add lines from y-axis to discovery point
-            for y, ep in zip(y_positions, discovery_episodes):
-                ax_honeypot_timeline.hlines(
-                    y, 0, ep, colors="#9b59b6", linestyles="--", alpha=0.5
-                )
+        # X-axis alignment
+        rolling_x = np.arange(window // 2, len(episodes) - window // 2 + 1)
+        if len(rolling_x) > len(rolling_rt):
+            rolling_x = rolling_x[: len(rolling_rt)]
 
-            ax_honeypot_timeline.set_yticks(list(y_positions))
-            ax_honeypot_timeline.set_yticklabels(hp_names)
-            ax_honeypot_timeline.set_xlabel("Episode")
-            ax_honeypot_timeline.set_ylabel("Honeypot")
-            ax_honeypot_timeline.set_title("Honeypot Discovery Timeline")
-            ax_honeypot_timeline.set_xlim(0, len(episodes))
-            ax_honeypot_timeline.grid(True, alpha=0.3, axis="x")
+        ax_tokens.plot(
+            rolling_x,
+            rolling_rt[: len(rolling_x)],
+            color="#c0392b",
+            label=f"Red Team Tokens ({window}-ep avg)",
+        )
+        ax_tokens.plot(
+            rolling_x,
+            rolling_v[: len(rolling_x)],
+            color="#2980b9",
+            label=f"Victim Tokens ({window}-ep avg)",
+        )
 
-            # Add annotation for discovery rate
-            total_eps = len(episodes)
-            num_discovered = len(first_access)
-            discovery_rate = num_discovered / total_eps * 100 if total_eps > 0 else 0
-            ax_honeypot_timeline.text(
-                0.98,
-                0.02,
-                f"Discovery Rate: {discovery_rate:.2f}% ({num_discovered} in {total_eps} eps)",
-                transform=ax_honeypot_timeline.transAxes,
-                ha="right",
-                va="bottom",
-                fontsize=9,
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
-            )
-        else:
-            ax_honeypot_timeline.text(
-                0.5,
-                0.5,
-                "No honeypots discovered yet",
-                ha="center",
-                va="center",
-                fontsize=14,
-                color="gray",
-            )
-            ax_honeypot_timeline.set_title("Honeypot Discovery Timeline")
-            ax_honeypot_timeline.axis("off")
+        ax_tokens.set_xlabel("Episode")
+        ax_tokens.set_ylabel("Estimated Tokens")
+        ax_tokens.set_title("Token Usage Trends (Efficiency)")
+        ax_tokens.legend()
+        ax_tokens.grid(True, alpha=0.3)
+
+    # --- Plot 10: Efficiency (Reward per Token) ---
+    if ax_efficiency is not None and diagnostic_data:
+        rt_tokens = np.array(diagnostic_data.get("red_team_tokens", []))
+        rewards_arr = np.array(rewards)
+
+        # Avoid division by zero
+        safe_tokens = np.where(rt_tokens > 0, rt_tokens, 1)
+        efficiency = rewards_arr / safe_tokens
+
+        # Clip specifically for visualization - remove extreme outliers
+        efficiency = np.clip(efficiency, -1.0, 2.0)
+
+        window = 100
+        rolling_eff = compute_rolling_average(efficiency, window)
+
+        rolling_x = np.arange(window // 2, len(episodes) - window // 2 + 1)
+        if len(rolling_x) > len(rolling_eff):
+            rolling_x = rolling_x[: len(rolling_eff)]
+
+        ax_efficiency.plot(
+            rolling_x,
+            rolling_eff[: len(rolling_x)],
+            color="#27ae60",
+            linewidth=2,
+            label="Efficiency (Reward/Token)",
+        )
+
+        # Add a baseline at 0
+        ax_efficiency.axhline(y=0, color="black", linestyle="-", alpha=0.2)
+
+        ax_efficiency.set_xlabel("Episode")
+        ax_efficiency.set_ylabel("Reward per Token")
+        ax_efficiency.set_title(f"Red Team Efficiency ({window}-ep avg)")
+        ax_efficiency.legend()
+        ax_efficiency.grid(True, alpha=0.3)
 
     plt.tight_layout()
     output_path = os.path.join(run_dir, "training_results_detailed.png")
@@ -941,6 +960,12 @@ def plot_training_results(run_dir: str) -> None:
     # Print Summary
     print("\n=== Summary Statistics ===")
     print(f"Total Episodes: {len(episodes)}")
+
+    if using_debug_logs and "red_team_tokens" in diagnostic_data:
+        avg_rt = np.mean(diagnostic_data["red_team_tokens"])
+        avg_v = np.mean(diagnostic_data["victim_tokens"])
+        print(f"Avg Red Team Tokens: {avg_rt:.1f}")
+        print(f"Avg Victim Tokens:   {avg_v:.1f}")
 
     if using_debug_logs:
         labels = {
