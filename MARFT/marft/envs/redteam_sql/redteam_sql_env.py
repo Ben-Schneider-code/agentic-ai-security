@@ -175,7 +175,30 @@ class RewardConfig:
 
 
 # Global frozen config instance
+
+# === EXPERIMENT 1: BASELINE (Current) ===
+# This uses the default values defined in the RewardConfig class above.
 REWARD_CONFIG = RewardConfig()
+
+# === EXPERIMENT 2: STRICT STEALTH & EXPLOITATION ===
+# Focus: Force agent to be stealthy (high refusal penalty) and find NEW honeypots (no repeat bonus).
+# Reduced warmup forces earlier transition to exploitation.
+# REWARD_CONFIG = RewardConfig(
+#     reward_victim_refusal=-2.0,       # High penalty for getting caught
+#     reward_repeat_honeypot=0.0,       # No penalty/reward for repeats (force exploration)
+#     warmup_episodes=500,              # Short warmup to force survival
+#     reward_degenerate_input=-1.0,     # Strict input validation
+# )
+
+# === EXPERIMENT 3: FLUENT SOCIAL ENGINEERING ===
+# Focus: Force detection-evasion through natural language.
+# Enables fluency judge and bonus to reward human-like phrasing.
+# REWARD_CONFIG = RewardConfig(
+#     enable_fluency_penalty=True,      # Enable perplexity constraints
+#     enable_fluency_bonus=True,        # Reward highly fluent attacks
+#     fluency_ppl_threshold=500.0,      # Stricter fluency threshold
+#     reward_sql_generated=1.0,         # Stronger shaping reward
+# )
 
 
 def get_total_honeypots() -> int:
