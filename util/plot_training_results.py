@@ -110,7 +110,7 @@ def parse_debug_logs(run_dir: str):
         # New: reward decay and honeypot tracking
         "episode_num": [],  # Episode number from log
         "decay_factor": [],  # Decay factor applied (None if no decay)
-        "new_honeypot_accessed": [],  # Honeypot ID accessed (None if none)
+        "new_honeypots_accessed": [],  # List of Honeypot IDs accessed
         # Text fields for evaluation metrics
         "red_team_input": [],  # Red team prompt
         "ground_truth": [],  # Ground truth SQL
@@ -174,9 +174,18 @@ def parse_debug_logs(run_dir: str):
                 # New: decay and honeypot tracking
                 diagnostic_data["episode_num"].append(data.get("episode", ep_num))
                 diagnostic_data["decay_factor"].append(data.get("decay_factor"))
-                diagnostic_data["new_honeypot_accessed"].append(
-                    data.get("new_honeypot_accessed")
-                )
+
+                # Check for new list format first
+                new_hps = data.get("new_honeypots_accessed")
+                if new_hps is None:
+                    # Fallback to old format
+                    old_hp = data.get("new_honeypot_accessed")
+                    if old_hp:
+                        new_hps = [old_hp]
+                    else:
+                        new_hps = []
+
+                diagnostic_data["new_honeypots_accessed"].append(new_hps)
 
                 # Text fields for evaluation metrics
                 diagnostic_data["red_team_input"].append(data.get("red_team_input", ""))
@@ -567,7 +576,7 @@ def plot_training_results(run_dir: str) -> None:
 
         ax_gibberish.set_xlabel("Episode")
         ax_gibberish.set_ylabel("Percentage (%)")
-        ax_gibberish.set_title("⚠️ Input Quality (Gibberish/Degenerate = Bad)")
+        ax_gibberish.set_title("Input Quality (Gibberish/Degenerate = Bad)")
         ax_gibberish.legend(loc="upper right", fontsize="small")
         ax_gibberish.grid(True, alpha=0.3)
         ax_gibberish.set_ylim(0, 100)
@@ -630,7 +639,7 @@ def plot_training_results(run_dir: str) -> None:
 
     # --- Plot 6: Cumulative Honeypots Captured ---
     if ax_honeypot_cumulative is not None and diagnostic_data:
-        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
+        honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
 
         # Try to load total honeypots from saved reward_config.yaml first
         TOTAL_HONEYPOTS = None
@@ -658,7 +667,13 @@ def plot_training_results(run_dir: str) -> None:
             except ImportError:
                 # Fallback: use unique honeypots discovered as the known total
                 # This gives a "coverage of discovered" rather than "coverage of all"
-                unique_honeypots = set(hp for hp in honeypots_list if hp is not None)
+                unique_honeypots = set()
+                for hps in honeypots_list:
+                    if hps:
+                        for hp in hps:
+                            if hp:
+                                unique_honeypots.add(hp)
+
                 TOTAL_HONEYPOTS = max(
                     len(unique_honeypots), 1
                 )  # Avoid division by zero
@@ -669,10 +684,12 @@ def plot_training_results(run_dir: str) -> None:
         seen_honeypots = set()
         total_accesses = 0
 
-        for hp in honeypots_list:
-            if hp is not None:
-                total_accesses += 1
-                seen_honeypots.add(hp)
+        for hps in honeypots_list:
+            if hps:
+                for hp in hps:
+                    if hp is not None:
+                        total_accesses += 1
+                        seen_honeypots.add(hp)
             cumulative_total_accesses.append(total_accesses)
             cumulative_unique_honeypots.append(len(seen_honeypots))
 
@@ -697,11 +714,13 @@ def plot_training_results(run_dir: str) -> None:
             discovery_episodes = []
             discovery_honeypots = []
             seen_for_markers = set()
-            for i, hp in enumerate(honeypots_list):
-                if hp is not None and hp not in seen_for_markers:
-                    seen_for_markers.add(hp)
-                    discovery_episodes.append(i + 1)
-                    discovery_honeypots.append(len(seen_for_markers))
+            for i, hps in enumerate(honeypots_list):
+                if hps:
+                    for hp in hps:
+                        if hp is not None and hp not in seen_for_markers:
+                            seen_for_markers.add(hp)
+                            discovery_episodes.append(i + 1)
+                            discovery_honeypots.append(len(seen_for_markers))
 
             if discovery_episodes:
                 ax_honeypot_cumulative.scatter(
@@ -717,7 +736,7 @@ def plot_training_results(run_dir: str) -> None:
 
             ax_honeypot_cumulative.set_xlabel("Episode")
             ax_honeypot_cumulative.set_ylabel("Count")
-            ax_honeypot_cumulative.set_title("🍯 Cumulative Honeypots Captured")
+            ax_honeypot_cumulative.set_title("Cumulative Honeypots Captured")
             ax_honeypot_cumulative.legend(loc="upper left")
             ax_honeypot_cumulative.grid(True, alpha=0.3)
 
@@ -773,13 +792,18 @@ def plot_training_results(run_dir: str) -> None:
                 fontsize=14,
                 color="gray",
             )
-            ax_honeypot_cumulative.set_title("🍯 Cumulative Honeypots Captured")
+            ax_honeypot_cumulative.set_title("Cumulative Honeypots Captured")
             ax_honeypot_cumulative.axis("off")
 
     # --- Plot 7: Honeypot Access Frequency Bar Chart ---
     if ax_honeypot_bar is not None and diagnostic_data:
-        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
-        honeypots_accessed = [h for h in honeypots_list if h is not None]
+        honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
+        honeypots_accessed = []
+        for hps in honeypots_list:
+            if hps:
+                for hp in hps:
+                    if hp is not None:
+                        honeypots_accessed.append(hp)
 
         if honeypots_accessed:
             # Count frequency of each honeypot
@@ -832,13 +856,15 @@ def plot_training_results(run_dir: str) -> None:
 
     # --- Plot 8: Honeypot Discovery Timeline ---
     if ax_honeypot_timeline is not None and diagnostic_data:
-        honeypots_list = diagnostic_data.get("new_honeypot_accessed", [])
+        honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
 
         # Build discovery timeline: when was each honeypot first accessed?
         first_access = {}  # honeypot_id -> episode_number
-        for i, hp in enumerate(honeypots_list):
-            if hp is not None and hp not in first_access:
-                first_access[hp] = i + 1  # 1-indexed episode
+        for i, hps in enumerate(honeypots_list):
+            if hps:
+                for hp in hps:
+                    if hp is not None and hp not in first_access:
+                        first_access[hp] = i + 1  # 1-indexed episode
 
         if first_access:
             # Sort by discovery order (episode number)
@@ -876,7 +902,7 @@ def plot_training_results(run_dir: str) -> None:
             ax_honeypot_timeline.set_yticklabels(hp_names)
             ax_honeypot_timeline.set_xlabel("Episode")
             ax_honeypot_timeline.set_ylabel("Honeypot")
-            ax_honeypot_timeline.set_title("🍯 Honeypot Discovery Timeline")
+            ax_honeypot_timeline.set_title("Honeypot Discovery Timeline")
             ax_honeypot_timeline.set_xlim(0, len(episodes))
             ax_honeypot_timeline.grid(True, alpha=0.3, axis="x")
 
@@ -904,7 +930,7 @@ def plot_training_results(run_dir: str) -> None:
                 fontsize=14,
                 color="gray",
             )
-            ax_honeypot_timeline.set_title("🍯 Honeypot Discovery Timeline")
+            ax_honeypot_timeline.set_title("Honeypot Discovery Timeline")
             ax_honeypot_timeline.axis("off")
 
     plt.tight_layout()
@@ -1005,9 +1031,13 @@ def plot_training_results(run_dir: str) -> None:
             decay_factors = [
                 d for d in diagnostic_data["decay_factor"] if d is not None
             ]
-            honeypots_accessed = [
-                h for h in diagnostic_data["new_honeypot_accessed"] if h is not None
-            ]
+            raw_hps = diagnostic_data["new_honeypots_accessed"]
+            honeypots_accessed = []
+            for hps in raw_hps:
+                if hps:
+                    for hp in hps:
+                        if hp is not None:
+                            honeypots_accessed.append(hp)
 
             if decay_factors or honeypots_accessed:
                 print("\n=== Reward Decay & Honeypot Tracking ===")
