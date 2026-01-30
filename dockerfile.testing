@@ -1,0 +1,11 @@
+# Start from base
+# Build base first: docker build -f dockerfile.base -t agentic-security-base .
+FROM agentic-security-base
+
+# Testing mode startup script
+COPY start_services_and_shell.sh /app/start_services_and_shell.sh
+RUN chmod +x /app/start_services_and_shell.sh
+
+# The base image copies util/, so run_conversations.py will be there if it exists in local util/
+
+CMD /app/start_services_and_shell.sh

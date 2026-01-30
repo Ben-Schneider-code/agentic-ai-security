@@ -331,7 +331,7 @@ class OfflineLLM:
             vllm_base_url: Base URL of the vLLM server (default: http://localhost:8000/v1)
             max_wait_time: Maximum time to wait for server to be ready in seconds (default: 300)
         """
-        from openai import OpenAI
+        from openai import OpenAI, AsyncOpenAI
 
         self.vllm_base_url = vllm_base_url
         self.model_name = model_name
@@ -348,6 +348,7 @@ class OfflineLLM:
 
         # Initialize OpenAI client after server is ready
         self.client = OpenAI(base_url=vllm_base_url, api_key="EMPTY")
+        self.async_client = AsyncOpenAI(base_url=vllm_base_url, api_key="EMPTY")
         print(f"Successfully connected to vLLM server at {vllm_base_url}")
 
         # Store event loop for async MCP operations (reuse instead of creating new ones)
@@ -411,7 +412,7 @@ class OfflineLLM:
         except Exception as e:
             return f"Error executing tool: {str(e)}"
 
-    def complete(
+    async def acomplete(
         self,
         history: list[Message],
         system_prompt: str = "",
@@ -419,8 +420,8 @@ class OfflineLLM:
         from openai import BadRequestError
 
         conversation = [{"role": "system", "content": system_prompt}] + history
-        print("=== OfflineLLM.complete() called ===")
-        print(f"Conversation length: {len(conversation)}")
+        # print("=== OfflineLLM.acomplete() called ===")
+        # print(f"Conversation length: {len(conversation)}")
 
         # Call vLLM server via OpenAI-compatible API with error handling for context length
         print("Calling vLLM server...")
@@ -428,10 +429,11 @@ class OfflineLLM:
         # Try with full conversation, then progressively truncate if context is too long
         max_retries = 3
         current_conversation = conversation
+        response_text = ""
 
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
+                response = await self.async_client.chat.completions.create(
                     model=self.model_name,
                     messages=current_conversation,
                     temperature=self.temperature,
@@ -492,11 +494,9 @@ class OfflineLLM:
             # Execute SQL via MCP if we found any
             if sql_code and looks_like_sql(sql_code):
                 print(f"=== Executing SQL: {sql_code}...")
-                # Use stored event loop (fast, no overhead of creating new loop)
+                # Async execution
                 try:
-                    result = self.loop.run_until_complete(
-                        self.execute_tool_call("sql", {"sql": sql_code})
-                    )
+                    result = await self.execute_tool_call("sql", {"sql": sql_code})
                     print(f"=== SQL Execution result: {result[:200]}...")
                 except Exception as e:
                     result = f"Error: Could not execute SQL query - {str(e)}"
@@ -505,6 +505,16 @@ class OfflineLLM:
 
         print("=== Returning response without SQL execution")
         return response_text
+
+    def complete(
+        self,
+        history: list[Message],
+        system_prompt: str = "",
+    ) -> str:
+        print("=== OfflineLLM.complete() called ===")
+        print(f"Conversation length: {len(history) + 1}")  # Approx length
+        # Wrapper around async implementation
+        return self.loop.run_until_complete(self.acomplete(history, system_prompt))
 
 
 # === dataset loading ===
