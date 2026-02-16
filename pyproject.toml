@@ -1,0 +1,57 @@
+[project]
+name = "agentic-ai-security"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    # Core ML dependencies
+    "numpy==1.26.3",
+    "torch",
+    "torchvision",
+    "torchaudio",
+
+    # vLLM and model dependencies
+    "transformers[torch]==4.57.3",
+    "vllm==0.6.3",
+    "lm-format-enforcer",
+    "xformers==0.0.27.post2",
+
+    # Database and server
+    "psycopg2-binary==2.9.11",
+    "gpustat==1.1.1",
+    "mcp",
+    "starlette",
+    "uvicorn",
+    "asyncpg",
+    "pyairports",
+    "requests",
+
+    # MARFT dependencies
+    "absl-py",
+    "cloudpickle",
+    "fairscale",
+    "json-repair",
+    "peft",
+    "pydantic",
+    "sentence-transformers",
+    "sentencepiece",
+    "setproctitle",
+    "tensorboard",
+    "tensorboardX",
+    "latex2sympy2",
+    "word2number",
+    "bert-score",
+    "matplotlib",
+]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu121" }]
+torchvision = [{ index = "pytorch-cu121" }]
+torchaudio = [{ index = "pytorch-cu121" }]

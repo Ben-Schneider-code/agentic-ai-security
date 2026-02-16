@@ -1,0 +1,54 @@
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: docker/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: julia
+      POSTGRES_PASSWORD: 123
+      POSTGRES_DB: msft_customers
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U julia -d msft_customers"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vllm:
+    image: vllm/vllm-openai:v0.6.3
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${HF_HOME:-/scratch/j24chung/hf_home}:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - MODEL_ID=${MODEL_ID:-meta-llama/Meta-Llama-3-8B-Instruct}
+    # Pass MODEL_ID as the model arg to vllm entrypoint
+    command: >
+      --model ${MODEL_ID:-meta-llama/Meta-Llama-3-8B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --gpu-memory-utilization 0.95
+      --trust-remote-code
+      --disable-log-requests
+      --enforce-eager
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["5", "6"]
+              # count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+
+volumes:
+  postgres:

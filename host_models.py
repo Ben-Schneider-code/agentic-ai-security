@@ -25,6 +25,7 @@ class VLLMServerManager:
         gpu_memory_utilization: float = 0.95,
         gpu_id: int = None,
         tensor_parallel_size: int = 1,
+        max_model_len: int = None,
     ):
         """Start a vLLM server with the specified model and port"""
         # Check if the model needs a fallback chat template
@@ -99,13 +100,18 @@ class VLLMServerManager:
             "--trust-remote-code",
             "--disable-log-requests",
             "--enforce-eager",  # Disables CUDA graph capture (faster startup)
-            # "--max-model-len",
-            # "8192",  # Limit context to save memory/startup time
         ]
+
+        if max_model_len is not None:
+            cmd.extend(["--max-model-len", str(max_model_len)])
 
         if template_file:
             print(f"Applying fallback chat template: {template_file}")
             cmd.extend(["--chat-template", template_file])
+
+        # For multi-GPU: disable custom all-reduce to avoid P2P/IPC issues
+        if tensor_parallel_size > 1:
+            cmd.append("--disable-custom-all-reduce")
 
         # Set up environment for GPU selection
         env = os.environ.copy()
@@ -113,8 +119,12 @@ class VLLMServerManager:
         if "HF_TOKEN" in os.environ:
             env["HF_TOKEN"] = os.environ["HF_TOKEN"]
 
-        if "HF_TOKEN" in os.environ:
-            env["HF_TOKEN"] = os.environ["HF_TOKEN"]
+        # Fix for multi-GPU: disable expandable_segments which breaks IPC sharing
+        # See: https://github.com/vllm-project/vllm/issues/6152
+        if tensor_parallel_size > 1:
+            env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
+            # Use spawn method for multiprocessing (more compatible)
+            env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         # Check available GPU count
         import torch
@@ -129,13 +139,18 @@ class VLLMServerManager:
             )
 
         elif tensor_parallel_size > 1:
-            # TP > 1: Let vLLM use multiple GPUs.
-            # We don't restrict CUDA_VISIBLE_DEVICES unless we want to partition (e.g. use GPUs 0,1 for one model and 2,3 for another).
-            # For simplicity here, if TP > 1, we assume we use the first N GPUs or all visible ones.
-            # If we are in a container with --gpus '"device=1,2"', these will be seen as 0 and 1 inside.
-            print(
-                f"Starting vLLM server on port {port} with model {model} (TP={tensor_parallel_size}, using {available_gpus} available GPUs)"
-            )
+            # TP > 1: Use multiple GPUs
+            # Check if VLLM_GPU is set to restrict which GPUs to use
+            vllm_gpu_env = os.environ.get("VLLM_GPU")
+            if vllm_gpu_env:
+                env["CUDA_VISIBLE_DEVICES"] = vllm_gpu_env
+                print(
+                    f"Starting vLLM server on port {port} with model {model} (TP={tensor_parallel_size}, CUDA_VISIBLE_DEVICES={vllm_gpu_env})"
+                )
+            else:
+                print(
+                    f"Starting vLLM server on port {port} with model {model} (TP={tensor_parallel_size}, using {available_gpus} available GPUs)"
+                )
             if available_gpus < tensor_parallel_size:
                 print(
                     f"WARNING: TP={tensor_parallel_size} requested but only {available_gpus} GPUs visible!"
@@ -322,6 +337,7 @@ def setup_model_server(
     gpu_memory_utilization: float = 0.95,
     gpu_id: Optional[int] = None,
     tensor_parallel_size: int = 1,
+    max_model_len: int = None,
     manager: Optional[VLLMServerManager] = None,
 ) -> VLLMServerManager:
     """
@@ -351,6 +367,7 @@ def setup_model_server(
         gpu_memory_utilization=gpu_memory_utilization,
         gpu_id=gpu_id,
         tensor_parallel_size=tensor_parallel_size,
+        max_model_len=max_model_len,
     )
 
     return manager
@@ -384,19 +401,28 @@ def main():
     print(f"  * Selection Source: {source}")
     print("=" * 50 + "\n")
 
-    # Setup only DB agent model for now
-    # Determine TP size based on available hardware and model needs
-    import torch
+    # ------------------------------------------------------------------
+    # GPU Selection via VLLM_GPU environment variable
+    # Example: VLLM_GPU="0,1" to use GPUs 0 and 1
+    # ------------------------------------------------------------------
+    vllm_gpu_env = os.environ.get("VLLM_GPU")
 
-    available_gpus = torch.cuda.device_count()
-
-    # Logic: If we have multiple GPUs, use them (TP=N).
-    # Especially important for 32B models which might not fit on one.
-    # Force TP=1 to save the second GPU for the training process
-    tp_size = 1
-
-    # Force GPU ID 0 (Logical) for vLLM, leaving GPU 1 for training
-    vllm_gpu_id = 0
+    if vllm_gpu_env:
+        # Parse the GPU IDs from the environment variable
+        gpu_ids = [g.strip() for g in vllm_gpu_env.split(",") if g.strip()]
+        tp_size = len(gpu_ids)
+        if tp_size == 1:
+            # Single GPU: pass the GPU ID directly so start_server sets CUDA_VISIBLE_DEVICES
+            vllm_gpu_id = int(gpu_ids[0])
+        else:
+            # Multi-GPU TP: let start_server handle via VLLM_GPU env var
+            vllm_gpu_id = None
+        print(f"VLLM_GPU set: using GPUs {gpu_ids} with tensor_parallel_size={tp_size}")
+    else:
+        # Default behavior: use GPU 0, TP=1
+        tp_size = 1
+        vllm_gpu_id = 0
+        print("VLLM_GPU not set: defaulting to GPU 0 with tensor_parallel_size=1")
 
     # Setup only DB agent model for now
     setup_model_server(
@@ -404,7 +430,6 @@ def main():
         model=runtime_model,
         port=8000,
         manager=manager,
-        # Remove hardcoded gpu_id=1 so it can use all if TP > 1
         gpu_id=vllm_gpu_id,
         tensor_parallel_size=tp_size,
     )

@@ -6,3 +6,8 @@ results-*/
 *.png
 *.jsonl
 *.json
+*.txt
+
+# Keep these tracked despite *.txt / *.json patterns
+!requirements.txt
+!uv.lock
