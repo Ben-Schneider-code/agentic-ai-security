@@ -1,0 +1,44 @@
+# Dev image: Dependencies baked in, Source code mounted at runtime
+# Build: docker build -f dockerfile.dev -t agentic-security-dev .
+# Run:   docker run -it --gpus all -v $(pwd):/app agentic-security-dev
+
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install PostgreSQL and Python (Common dependencies)
+RUN apt-get update && apt-get install -y \
+    postgresql postgresql-contrib \
+    python3 python3-pip \
+    git tmux curl vim tar ncurses-term \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sSL https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz | tar xz -C /usr/local/bin \
+    && chmod +x /usr/local/bin/zellij
+
+# Create a PostgreSQL user & database
+RUN service postgresql start && \
+    su postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD 'postgres123';\"" && \
+    su postgres -c "psql -c \"CREATE USER julia WITH PASSWORD '123';\"" && \
+    su postgres -c "psql -c \"CREATE DATABASE msft_customers OWNER julia;\""
+
+# Install Python dependencies
+# Copy to /tmp to avoid conflicting with the future volume mount at /app
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Install pyairports
+RUN pip3 install git+https://github.com/ozeliger/pyairports.git
+
+# Set environment variables for Postgres
+ENV PGHOST=localhost
+ENV PGUSER=julia
+ENV PGPASSWORD=123
+ENV PGDATABASE=msft_customers
+
+WORKDIR /app
+
+# NOTE: We do NOT copy source code here. 
+# You must mount your local repo to /app when running:
+# docker run -v $(pwd):/app ...
+
+CMD ["/bin/bash"]

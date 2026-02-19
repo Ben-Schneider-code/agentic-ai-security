@@ -59,6 +59,8 @@ COPY start_common_services.sh /app/start_common_services.sh
 RUN chmod +x /app/start_common_services.sh
 COPY host_models.py /app/host_models.py
 COPY agent_loop.py .
+COPY experiments/ /app/experiments/
+COPY start_vllm.py /app/start_vllm.py
 
 # Set environment variables for Postgres
 ENV PGHOST=localhost

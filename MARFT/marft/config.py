@@ -127,7 +127,7 @@ def get_config():
 
     # prepare parameters
     parser.add_argument(
-        "--algorithm_name", type=str, default="APPO", choices=["TPPO", "APPO"]
+        "--algorithm_name", type=str, default="APPO", choices=["TPPO", "APPO", "GRPO"]
     )
     parser.add_argument(
         "--normalization_mode",
@@ -399,6 +399,50 @@ def get_config():
     )
     parser.add_argument(
         "--huber_delta", type=float, default=10.0, help="coefficience of huber loss."
+    )
+
+    # grpo parameters
+    parser.add_argument(
+        "--group_size",
+        type=int,
+        default=8,
+        help="GRPO group size (number of episodes per prompt, default: 8)",
+    )
+    parser.add_argument(
+        "--clip_ratio_high",
+        type=float,
+        default=0.3,
+        help="GRPO asymmetric clipping upper bound (default: 0.3)",
+    )
+    parser.add_argument(
+        "--generation_temperature",
+        type=float,
+        default=0.8,
+        help="Temperature for generation during rollout (default: 0.8 for GRPO)",
+    )
+    parser.add_argument(
+        "--generation_top_k",
+        type=int,
+        default=50,
+        help="Top-k for generation during rollout (default: 50)",
+    )
+    parser.add_argument(
+        "--use_dynamic_sampling",
+        action="store_true",
+        default=True,
+        help="Enable dynamic sampling to filter zero-variance groups in GRPO",
+    )
+    parser.add_argument(
+        "--no_dynamic_sampling",
+        action="store_false",
+        dest="use_dynamic_sampling",
+        help="Disable dynamic sampling",
+    )
+    parser.add_argument(
+        "--norm_adv_by_std_in_grpo",
+        action="store_true",
+        default=False,
+        help="Normalize GRPO advantages by std (default: False, use mean-only)",
     )
 
     # run parameters

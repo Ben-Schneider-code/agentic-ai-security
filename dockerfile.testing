@@ -3,9 +3,9 @@
 FROM agentic-security-base
 
 # Testing mode startup script
-COPY start_services_and_shell.sh /app/start_services_and_shell.sh
-RUN chmod +x /app/start_services_and_shell.sh
+COPY start_testing_no_vllm.sh /app/start_testing_no_vllm.sh
+RUN chmod +x /app/start_testing_no_vllm.sh
 
 # The base image copies util/, so run_conversations.py will be there if it exists in local util/
 
-CMD /app/start_services_and_shell.sh
+CMD /app/start_testing_no_vllm.sh

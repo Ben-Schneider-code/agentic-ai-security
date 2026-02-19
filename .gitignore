@@ -11,3 +11,4 @@ results-*/
 # Keep these tracked despite *.txt / *.json patterns
 !requirements.txt
 !uv.lock
+!experiments/*

@@ -69,11 +69,16 @@ class Agent:
 
         self.base_model.enable_input_require_grads()
 
+        # Enable gradient checkpointing to reduce memory usage
+        if hasattr(self.base_model, "gradient_checkpointing_enable"):
+            self.base_model.gradient_checkpointing_enable()
+            print(f"[Agent {self.role}] Gradient checkpointing enabled")
+
         if load_path is None:
             config = LoraConfig(
-                r=8,
-                lora_alpha=16,
-                target_modules=["q_proj", "v_proj"],
+                r=32,
+                lora_alpha=64,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
                 lora_dropout=0,
                 bias="none",
                 task_type="CAUSAL_LM",

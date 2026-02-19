@@ -61,6 +61,12 @@ class RedTeamSQLRunner:
             self.buffer = TokenBuffer(
                 self.all_args, self.num_agents, self.mas.tokenizer.pad_token_id
             )
+        elif self.algo == "GRPO":
+            from marft.algorithms import GRPOTrainer
+            from marft.buffers.grpo_buffer import GRPOBuffer
+
+            self.trainer = GRPOTrainer(self.all_args, self.mas)
+            self.buffer = GRPOBuffer(self.all_args, self.num_agents)
         else:
             raise NotImplementedError
 
@@ -179,11 +185,23 @@ class RedTeamSQLRunner:
             torch.cuda.empty_cache()
 
             for step in range(self.episode_length):
-                rollout_obs, actions, action_tokens, values, log_probs = (
-                    self.mas.infer_for_rollout(
-                        self.buffer.obs[self.buffer.cur_batch_index, step]
+                # Pass generation params for GRPO (higher temperature for exploration)
+                if self.algo == "GRPO":
+                    temperature = getattr(self.all_args, 'generation_temperature', 0.8)
+                    top_k = getattr(self.all_args, 'generation_top_k', 50)
+                    rollout_obs, actions, action_tokens, values, log_probs = (
+                        self.mas.infer_for_rollout(
+                            self.buffer.obs[self.buffer.cur_batch_index, step],
+                            temperature=temperature,
+                            top_k=top_k
+                        )
                     )
-                )
+                else:
+                    rollout_obs, actions, action_tokens, values, log_probs = (
+                        self.mas.infer_for_rollout(
+                            self.buffer.obs[self.buffer.cur_batch_index, step]
+                        )
+                    )
                 next_obs, rewards, dones, infos = self.envs.step(actions)
 
                 # insert data into buffer
@@ -250,9 +268,18 @@ class RedTeamSQLRunner:
                 avg_step_reward = np.mean(
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
-                progress_bar.set_description(
-                    f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | discovered: {len(self.shared_honeypots)}/{total_honeypots}"
-                )
+
+                # GRPO-specific: log fraction of zero-variance groups
+                if self.algo == "GRPO" and "frac_reward_zero_std" in train_infos:
+                    progress_bar.set_description(
+                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
+                        f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | "
+                        f"zero_var: {train_infos['frac_reward_zero_std']:.2%}"
+                    )
+                else:
+                    progress_bar.set_description(
+                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | discovered: {len(self.shared_honeypots)}/{total_honeypots}"
+                    )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
             progress_bar.update(1)
@@ -336,10 +363,14 @@ class RedTeamSQLRunner:
     @torch.no_grad()
     def before_update(self):
         """Calculate returns for the collected data."""
-        values = self.mas.get_next_values(
-            self.buffer.obs[self.buffer.cur_batch_index, -1]
-        )
-        self.buffer.compute_gae_and_returns(values)
+        if self.algo == "GRPO":
+            # GRPO doesn't use value bootstrapping, handled in buffer
+            pass
+        else:
+            values = self.mas.get_next_values(
+                self.buffer.obs[self.buffer.cur_batch_index, -1]
+            )
+            self.buffer.compute_gae_and_returns(values)
 
     def log_train(self, train_infos, total_num_steps):
         for k, v in train_infos.items():

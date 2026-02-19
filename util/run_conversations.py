@@ -80,11 +80,54 @@ async def run_conversations(args):
         print(f"Failed to connect MCP Client: {e}")
         sys.exit(1)
 
+    # Determine model and URL
+    # Default values requested by user
+    vllm_base_url = "http://localhost:8001/v1"
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+
+    try:
+        # Try to find the student model in the registry
+        from start_vllm import read_registry
+
+        print("Checking vLLM registry for student model...")
+        registry = read_registry()
+
+        target_entry = None
+        # Priority: 'student' -> 'policy' -> search by model name
+        if "student" in registry:
+            target_entry = registry["student"]
+            print("Using 'student' model from registry.")
+        elif "policy" in registry:
+            target_entry = registry["policy"]
+            print("Using 'policy' model from registry as student.")
+        else:
+            # Fallback: search for the specific model name
+            for key, entry in registry.items():
+                if entry.get("model") == "meta-llama/Llama-3.1-8B-Instruct":
+                    target_entry = entry
+                    print(f"Found requested model under key '{key}' in registry.")
+                    break
+
+        if target_entry:
+            # Registry URLs typically don't include /v1
+            base_url = target_entry["url"]
+            if not base_url.endswith("/v1"):
+                base_url = f"{base_url}/v1"
+            vllm_base_url = base_url
+            model_name = target_entry["model"]
+
+    except Exception as e:
+        print(f"Registry lookup not fully successful (using defaults): {e}")
+
     try:
         # Initialize Victim LLM (Blue Team)
         # This connects to vLLM (default port 8000) and uses mcp_client for SQL execution
-        print("Initializing Blue Team Agent (connecting to vLLM)...")
-        victim_llm = OfflineLLM(mcp_client=mcp_client)
+        print(
+            f"Initializing Blue Team Agent (connecting to vLLM at {vllm_base_url} for model {model_name})..."
+        )
+        victim_llm = OfflineLLM(
+            model_name=model_name, mcp_client=mcp_client, vllm_base_url=vllm_base_url
+        )
         print("Blue Team Agent ready.")
 
         output_filename = (

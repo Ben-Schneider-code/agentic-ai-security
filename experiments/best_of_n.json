@@ -1,0 +1,30 @@
+{
+    "_comment": "Best-of-N experiment: attacker generates diverse attacks, victim is the blue team.",
+    "_comment2": "Adjust 'gpus' and 'model' fields to match your hardware. Models must fit in assigned GPUs.",
+    "servers": [
+        {
+            "id": "attacker",
+            "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+            "gpus": [
+                0
+            ],
+            "max_model_len": 4096,
+            "gpu_memory_utilization": 0.90,
+            "extra_args": [
+                "--dtype",
+                "auto"
+            ]
+        },
+        {
+            "id": "victim",
+            "model": "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8",
+            "gpus": [
+                1
+            ],
+            "max_model_len": 4096,
+            "gpu_memory_utilization": 0.95
+        }
+    ],
+    "base_port": 8100,
+    "host": "0.0.0.0"
+}

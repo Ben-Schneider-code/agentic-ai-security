@@ -3,3 +3,14 @@
 __pycache__/
 results/
 results-*/
+*.log
+*.png
+*.jsonl
+*.json
+*.txt
+
+# Keep these tracked despite *.txt / *.json patterns
+!requirements.txt
+!uv.lock
+
+!experiment_label.txt

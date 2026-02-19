@@ -74,10 +74,15 @@ class MAS(ABC):
 
         self.tokenizer = self.agents[0].tokenizer
 
-        print("[Profiling] Starting Critic Initialization...")
-        start_time = time.time()
-        self.critic = self._init_critic(model_path, load_path).to(self.device)
-        print(f"[Profiling] Critic Initialization took {time.time() - start_time:.2f}s")
+        # GRPO doesn't use a critic (critic-free algorithm)
+        if self.algo != "GRPO":
+            print("[Profiling] Starting Critic Initialization...")
+            start_time = time.time()
+            self.critic = self._init_critic(model_path, load_path).to(self.device)
+            print(f"[Profiling] Critic Initialization took {time.time() - start_time:.2f}s")
+        else:
+            print("[Profiling] Skipping critic initialization (GRPO is critic-free)")
+            self.critic = None
 
     def update_profiles(self, profiles: list[dict]):
         """Update agent profiles dynamically (e.g., for per-episode prompt generation)."""
@@ -129,7 +134,7 @@ class MAS(ABC):
         return critic
 
     @torch.no_grad()
-    def get_actions_sequential(self, obs: np.ndarray):
+    def get_actions_sequential(self, obs: np.ndarray, temperature: float = 0.5, top_k: int = 50):
         """
         Args:
             obs: np.ndarray of shape (rollout_threads, num_agents)
@@ -172,8 +177,8 @@ class MAS(ABC):
                 input_ids,
                 attention_mask=attn_mask,
                 do_sample=True,
-                top_k=50,
-                temperature=0.5,
+                top_k=top_k,
+                temperature=temperature,
                 max_new_tokens=self.max_new_tokens,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=self.tokenizer.pad_token_id,
@@ -347,21 +352,65 @@ class MAS(ABC):
             )
             obs_act_mask = torch.cat([obs_attn_mask, act_attn_mask], dim=-1)
 
-            with torch.no_grad():
-                rho_outputs = agent.model(
-                    input_ids=obs_act_ids, attention_mask=obs_act_mask
+            if batch_infer:
+                # Use batch inference to process in smaller chunks (saves memory)
+                with torch.no_grad():
+                    rho_logits_batch = self.batch_infer(
+                        agent.model,
+                        obs_act_ids,
+                        obs_act_mask,
+                        obs_full_lengths,
+                        act_real_lengths,
+                        infer_batch_size=8,  # Process 8 sequences at a time
+                    )
+                    rho_logits.append(rho_logits_batch.to(agent.device))
+
+                # For pi (training), also use batch inference but need gradients
+                # Process in smaller batches to reduce memory
+                pi_logits_batch = []
+                infer_batch_size = 8
+                for i in range(0, obs_act_ids.shape[0], infer_batch_size):
+                    obs_act_ids_chunk = obs_act_ids[i : i + infer_batch_size]
+                    obs_act_mask_chunk = obs_act_mask[i : i + infer_batch_size]
+                    pi_outputs = agent.model(
+                        input_ids=obs_act_ids_chunk,
+                        attention_mask=obs_act_mask_chunk,
+                        use_cache=False,  # Disable KV cache to save memory
+                    )
+                    pi_logits_chunk = self.get_slice(
+                        pi_outputs.logits, obs_full_lengths, act_real_lengths
+                    )
+                    pi_logits_batch.append(pi_logits_chunk.to(agent.device))
+                    del pi_outputs
+                pi_logits.append(torch.cat(pi_logits_batch, dim=0))
+            else:
+                # Original non-batched inference
+                with torch.no_grad():
+                    rho_outputs = agent.model(
+                        input_ids=obs_act_ids,
+                        attention_mask=obs_act_mask,
+                        use_cache=False,  # Disable KV cache to save memory
+                    )
+                    rho_logits.append(
+                        self.get_slice(
+                            rho_outputs.logits, obs_full_lengths, act_real_lengths
+                        ).to(agent.device)
+                    )
+                    # Delete full outputs to free memory
+                    del rho_outputs
+
+                pi_outputs = agent.model(
+                    input_ids=obs_act_ids,
+                    attention_mask=obs_act_mask,
+                    use_cache=False,  # Disable KV cache to save memory
                 )
-                rho_logits.append(
+                pi_logits.append(
                     self.get_slice(
-                        rho_outputs.logits, obs_full_lengths, act_real_lengths
+                        pi_outputs.logits, obs_full_lengths, act_real_lengths
                     ).to(agent.device)
                 )
-            pi_outputs = agent.model(input_ids=obs_act_ids, attention_mask=obs_act_mask)
-            pi_logits.append(
-                self.get_slice(
-                    pi_outputs.logits, obs_full_lengths, act_real_lengths
-                ).to(agent.device)
-            )
+                # Delete full outputs but keep gradients for backward pass
+                del pi_outputs
         rho_logits = torch.cat(rho_logits, dim=1)
         pi_logits = torch.cat(pi_logits, dim=1)
         return pi_logits, rho_logits
@@ -456,6 +505,8 @@ class MAS(ABC):
         pi_log_softmax = torch.log_softmax(logits, dim=-1)
         log_probs = torch.empty(logits.shape[0], logits.shape[1], device=logits.device)
         entropies = torch.empty(logits.shape[0], logits.shape[1], device=logits.device)
+
+        # Keep reference to logits for entropy calculation, will delete at the end
         for thread in range(logits.shape[0]):
             for agent_idx in range(self.num_agents):
                 if agent_to_train is not None and agent_idx != agent_to_train:
@@ -494,12 +545,21 @@ class MAS(ABC):
                     .mean()
                 )
                 entropies[thread, agent_idx if agent_to_train is None else 0] = entropy
+
+        # Delete large intermediate tensors before returning
+        del logits, pi_log_softmax
         return log_probs, entropies
 
     @torch.no_grad()
-    def infer_for_rollout(self, obs):
+    def infer_for_rollout(self, obs, temperature: float = None, top_k: int = None):
+        # Use provided temperature/top_k or defaults
+        if temperature is None:
+            temperature = 0.5  # Conservative default
+        if top_k is None:
+            top_k = 50
+
         rollout_obs, rollout_actions, rollout_action_tokens = (
-            self.get_actions_sequential(obs)
+            self.get_actions_sequential(obs, temperature=temperature, top_k=top_k)
         )
         if self.algo == "APPO":
             rollout_values = self.get_action_values(rollout_obs)
@@ -521,6 +581,16 @@ class MAS(ABC):
             rollout_values = rollout_values.float().cpu().numpy()
             rollout_action_tokens = rollout_action_tokens.int().cpu().numpy()
             rollout_log_probs = token_log_probs.float().cpu().numpy()
+        elif self.algo == "GRPO":
+            # GRPO is critic-free, no values needed
+            # Still need log probs for policy updates
+            action_log_probs, _ = self.get_joint_action_log_probs(
+                rollout_obs, rollout_action_tokens, batch_infer=False
+            )
+            # Dummy values (not used by GRPO)
+            rollout_values = np.zeros((rollout_obs.shape[0], self.num_agents, 1), dtype=np.float32)
+            rollout_action_tokens = rollout_action_tokens.int().cpu().numpy()
+            rollout_log_probs = action_log_probs.float().cpu().numpy()
         else:
             raise NotImplementedError
 
@@ -574,15 +644,18 @@ class MAS(ABC):
         os.makedirs(exp_path, exist_ok=True)
         for agent in self.agents:
             agent.model.save_pretrained(os.path.join(exp_path, agent.role))
-        self.critic.save_value_head(os.path.join(exp_path, f"value_head.pth"))
+        if self.critic is not None:
+            self.critic.save_value_head(os.path.join(exp_path, f"value_head.pth"))
         print(f"[MAS] MAS checkpoints saved → {exp_path}")
 
     def train(self):
         for agent in self.agents:
             agent.train()
-        self.critic.train()
+        if self.critic is not None:
+            self.critic.train()
 
     def eval(self):
         for agent in self.agents:
             agent.eval()
-        self.critic.eval()
+        if self.critic is not None:
+            self.critic.eval()

@@ -32,6 +32,9 @@ def make_train_env(all_args, shared_honeypots: set = None):
     if shared_honeypots is None:
         shared_honeypots = set()
 
+    # Get vLLM URL from environment or use default
+    vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
+
     def get_env_fn(rank):
         def init_env():
             env = SQLEnv(
@@ -43,6 +46,8 @@ def make_train_env(all_args, shared_honeypots: set = None):
                 dataset_path=all_args.dataset_path,
                 log_dir=getattr(all_args, "debug_log_dir", None),
                 shared_honeypots=shared_honeypots,  # Pass shared set
+                vllm_base_url=vllm_url,
+                max_tokens=all_args.max_new_tokens,
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -57,6 +62,9 @@ def make_train_env(all_args, shared_honeypots: set = None):
 
 
 def make_eval_env(all_args):
+    # Get vLLM URL from environment or use default
+    vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
+
     def get_env_fn(rank):
         def init_env():
             env = SQLEnv(
@@ -67,6 +75,8 @@ def make_eval_env(all_args):
                 horizon=all_args.horizon,
                 mode="test",
                 log_dir=getattr(all_args, "debug_log_dir", None),
+                vllm_base_url=vllm_url,
+                max_tokens=all_args.max_new_tokens,
                 # Reward config now uses frozen REWARD_CONFIG - no CLI args
             )
             env.seed(all_args.seed + rank * 5000)
@@ -81,7 +91,8 @@ def make_eval_env(all_args):
 
 def parse_args(args, parser):
     all_args = parser.parse_known_args(args)[0]
-    all_args.base_model = Path(all_args.model_name_or_path).parts[-1]
+    # Use full model identifier for vLLM (not just last path component)
+    all_args.base_model = all_args.model_name_or_path
     return all_args
 
 
