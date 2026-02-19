@@ -28,7 +28,7 @@ exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --critic_lr 5e-5 \
         --dataset_path None \
         --model_name_or_path meta-llama/Meta-Llama-3-8B-Instruct \
-        --n_agents 1 \
+        --n_agents 2 \
         --agent_iteration_interval 1000 \
         --n_rollout_threads 1 \
         --episode_length 1 \ # TODO: REVIEW THIS
