@@ -31,7 +31,7 @@ exec python3 $SCRIPT_DIR/train_redteam_sql.py \
         --n_agents 2 \
         --agent_iteration_interval 1000 \
         --n_rollout_threads 1 \
-        --episode_length 1 \ # TODO: REVIEW THIS
+        --episode_length 2 \ # TODO: REVIEW THIS
         --gradient_cp_steps 2 \
         --context_window 2048 \
         --max_new_tokens 512 \
