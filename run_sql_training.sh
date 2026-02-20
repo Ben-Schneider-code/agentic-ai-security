@@ -14,11 +14,13 @@ echo "========================================"
 REGISTRY_PATH="/tmp/vllm_registry.json"
 
 if [ -f "$REGISTRY_PATH" ]; then
-    # Verify registry has student entry and is accessible
-    if python3 -c "import json; reg = json.load(open('$REGISTRY_PATH')); exit(0 if 'student' in reg else 1)" 2>/dev/null; then
+    # Verify registry has student and coach entries and is accessible
+    if python3 -c "import json; reg = json.load(open('$REGISTRY_PATH')); exit(0 if 'student' in reg and 'coach' in reg else 1)" 2>/dev/null; then
         echo "vLLM services already running (registry found), using existing instances"
         STUDENT_VLLM_URL=$(python3 -c "import json; reg = json.load(open('$REGISTRY_PATH')); print(reg['student']['url'])")/v1
+        COACH_VLLM_URL=$(python3 -c "import json; reg = json.load(open('$REGISTRY_PATH')); print(reg['coach']['url'])")/v1
         export STUDENT_VLLM_URL
+        export COACH_VLLM_URL
     else
         echo "Registry file exists but invalid, starting services..."
         source /app/start_rft_services.sh
@@ -44,6 +46,7 @@ echo "========================================"
 echo "Starting SQL Training"
 echo "========================================"
 echo "Student URL: $STUDENT_VLLM_URL"
+echo "Coach URL:   $COACH_VLLM_URL"
 echo ""
 
 cd /app/MARFT
@@ -76,6 +79,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
 #         --horizon 5 \
 #         --group_size 8 \
 #         --generation_temperature 0.8
+# NOTE: Retrospective Trajectory Harvesting not finished for GRPO
 python3 marft/scripts/train_redteam_sql.py \
         --seed 10 \
         --env_name redteam_sql_env \
@@ -92,14 +96,16 @@ python3 marft/scripts/train_redteam_sql.py \
         --n_agents 1 \
         --agent_iteration_interval 1000 \
         --n_rollout_threads 1 \
-        --episode_length 1 \ # TODO: REVIEW THIS
+        --episode_length 1 \
         --gradient_cp_steps 2 \
         --context_window 2048 \
         --max_new_tokens 512 \
         --save_interval 1000 \
         --entropy_coef 0.05 \
         --warmup_steps 500 \
-        --horizon 5
+        --horizon 5 \
+        --coach_vllm_url "$COACH_VLLM_URL" \
+        --coach_model_name "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 
 echo ""
 echo "========================================"

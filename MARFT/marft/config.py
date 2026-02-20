@@ -445,6 +445,38 @@ def get_config():
         help="Normalize GRPO advantages by std (default: False, use mean-only)",
     )
 
+    # trajectory harvesting parameters
+    parser.add_argument(
+        "--enable_trajectory_harvesting",
+        action="store_true",
+        default=True,
+        help="Enable Retrospective Trajectory Harvesting (oversample successful honeypot trajectories)",
+    )
+    parser.add_argument(
+        "--no_trajectory_harvesting",
+        action="store_false",
+        dest="enable_trajectory_harvesting",
+        help="Disable trajectory harvesting",
+    )
+    parser.add_argument(
+        "--oversample_factor",
+        type=int,
+        default=5,
+        help="Number of copies to inject for each successful trajectory (default: 5)",
+    )
+    parser.add_argument(
+        "--coach_vllm_url",
+        type=str,
+        default=None,
+        help="vLLM URL for 32B coach model (Phase 2 augmentation). If None, falls back to naive duplication.",
+    )
+    parser.add_argument(
+        "--coach_model_name",
+        type=str,
+        default="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        help="Coach model name for trajectory augmentation (Phase 2)",
+    )
+
     # run parameters
     parser.add_argument(
         "--use_linear_lr_decay",

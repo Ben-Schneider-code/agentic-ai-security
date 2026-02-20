@@ -444,8 +444,6 @@ class OfflineLLM:
         # print(f"Conversation length: {len(conversation)}")
 
         # Call vLLM server via OpenAI-compatible API with error handling for context length
-        print("Calling vLLM server...")
-
         # Try with full conversation, then progressively truncate if context is too long
         max_retries = 3
         current_conversation = conversation
@@ -453,18 +451,6 @@ class OfflineLLM:
 
         for attempt in range(max_retries):
             try:
-                # DEBUG: Print request details to diagnose 404 error
-                print(f"[DEBUG] vLLM Base URL: {self.vllm_base_url}")
-                print(f"[DEBUG] Model Name: {self.model_name}")
-                print(f"[DEBUG] Client base_url: {self.async_client.base_url}")
-                print(
-                    f"[DEBUG] Request endpoint: {self.async_client.base_url}/chat/completions"
-                )
-                print(f"[DEBUG] Number of messages: {len(current_conversation)}")
-                print(
-                    f"[DEBUG] Temperature: {self.temperature}, Top-p: {self.top_p}, Max tokens: {self.max_tokens}"
-                )
-
                 response = await self.async_client.chat.completions.create(
                     model=self.model_name,
                     messages=current_conversation,
@@ -568,8 +554,6 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
-        print("=== OfflineLLM.complete() called ===")
-        print(f"Conversation length: {len(history) + 1}")  # Approx length
         # Wrapper around async implementation
         return self.loop.run_until_complete(self.acomplete(history, system_prompt))
 
@@ -1428,6 +1412,16 @@ class SQLEnv:
             self.victim_state.append("assistant", response)
             actions_to_ret.append(response)
         return actions_to_ret
+
+    def get_blueteam_context(self) -> tuple[str, list]:
+        """
+        Return the Blue Team's system prompt and victim conversation history.
+        Used for lure logging during trajectory harvesting.
+
+        Returns:
+            (sql_system_prompt, victim_conversation_history)
+        """
+        return sql_system_prompt, list(self.victim_state.conversation)
 
     def _is_correct(
         self, completion, red_team_text: Optional[str] = None

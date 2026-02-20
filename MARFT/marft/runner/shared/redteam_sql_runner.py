@@ -11,6 +11,31 @@ import matplotlib.pyplot as plt
 from marft.mas import MAS
 
 
+def _log_lure(
+    log_dir: str,
+    episode: int,
+    thread_idx: int,
+    honeypot_ids: list,
+    reward: float,
+    blueteam_context: tuple,
+    red_team_actions: list,
+):
+    """Append a lure entry to lure_log.jsonl for future Blue Team training."""
+    system_prompt, victim_conversation = blueteam_context
+    entry = {
+        "episode": episode,
+        "thread": thread_idx,
+        "honeypot_ids": honeypot_ids,
+        "reward": reward,
+        "blueteam_system_prompt": system_prompt,
+        "victim_conversation": victim_conversation,
+        "red_team_actions": red_team_actions,
+    }
+    lure_path = os.path.join(log_dir, "lure_log.jsonl")
+    with open(lure_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 class RedTeamSQLRunner:
     """Runner class to perform training, evaluation. and data collection. See parent class for details."""
 
@@ -73,6 +98,31 @@ class RedTeamSQLRunner:
         self.run_dir = config["run_dir"]
         self._make_log_dir()
         self.writter = SummaryWriter(self.log_dir)
+
+        # Initialize trajectory augmenter (Phase 2) if coach URL is configured
+        self.trajectory_augmenter = None
+        coach_url = getattr(self.all_args, "coach_vllm_url", None)
+        if coach_url and self.algo == "APPO":
+            try:
+                from marft.coach import TrajectoryAugmenter
+
+                coach_model = getattr(
+                    self.all_args,
+                    "coach_model_name",
+                    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+                )
+                self.trajectory_augmenter = TrajectoryAugmenter(
+                    coach_model_name=coach_model,
+                    vllm_base_url=coach_url,
+                )
+                print(
+                    f"[Runner] Phase 2 coach augmenter initialized: {coach_model} @ {coach_url}"
+                )
+            except Exception as e:
+                print(
+                    f"[Runner] WARNING: Failed to init coach augmenter, using naive duplication: {e}"
+                )
+                self.trajectory_augmenter = None
 
         # Store resume state for training loop
         self.resume_state = config.get("resume_state", None)
@@ -184,16 +234,23 @@ class RedTeamSQLRunner:
             # Clear GPU cache once per training episode (not every step - expensive sync)
             torch.cuda.empty_cache()
 
+            # --- Trajectory Harvesting: track successful trajectories ---
+            enable_harvesting = getattr(
+                self.all_args, "enable_trajectory_harvesting", True
+            )
+            oversample_factor = getattr(self.all_args, "oversample_factor", 5)
+            harvested_trajectories = []  # list of (thread_idx, step, reward, honeypot_ids)
+
             for step in range(self.episode_length):
                 # Pass generation params for GRPO (higher temperature for exploration)
                 if self.algo == "GRPO":
-                    temperature = getattr(self.all_args, 'generation_temperature', 0.8)
-                    top_k = getattr(self.all_args, 'generation_top_k', 50)
+                    temperature = getattr(self.all_args, "generation_temperature", 0.8)
+                    top_k = getattr(self.all_args, "generation_top_k", 50)
                     rollout_obs, actions, action_tokens, values, log_probs = (
                         self.mas.infer_for_rollout(
                             self.buffer.obs[self.buffer.cur_batch_index, step],
                             temperature=temperature,
-                            top_k=top_k
+                            top_k=top_k,
                         )
                     )
                 else:
@@ -237,6 +294,52 @@ class RedTeamSQLRunner:
                                 "terminal_success", 1.0, global_step
                             )
 
+                            # === TRAJECTORY HARVESTING: capture successful trajectory ===
+                            if enable_harvesting and self.algo == "APPO":
+                                harvested_trajectories.append(
+                                    {
+                                        "thread_idx": i,
+                                        "success_step": step,
+                                        "reward": float(episodic_return),
+                                    }
+                                )
+                                print(
+                                    f"[HARVEST] Captured successful trajectory: "
+                                    f"thread={i}, step={step}, reward={episodic_return:.2f}"
+                                )
+
+                                # Log lure context for future Blue Team training
+                                try:
+                                    if hasattr(self.envs, "envs") and i < len(
+                                        self.envs.envs
+                                    ):
+                                        env = self.envs.envs[i]
+                                        if hasattr(env, "get_blueteam_context"):
+                                            bt_context = env.get_blueteam_context()
+                                            # Collect red team actions from buffer
+                                            batch = self.buffer.cur_batch_index
+                                            red_actions = []
+                                            for s in range(step + 1):
+                                                act = self.buffer.actions[
+                                                    batch, s, i, :
+                                                ]
+                                                red_actions.append(
+                                                    [str(a) for a in act]
+                                                )
+                                            _log_lure(
+                                                self.log_dir,
+                                                episode,
+                                                i,
+                                                list(self.shared_honeypots)
+                                                if self.shared_honeypots
+                                                else [],
+                                                float(episodic_return),
+                                                bt_context,
+                                                red_actions,
+                                            )
+                                except Exception as e:
+                                    print(f"[HARVEST] Warning: Failed to log lure: {e}")
+
                         # Log episode length for analysis
                         if episode_length is not None and episode_length != "?":
                             self.writter.add_scalar(
@@ -249,6 +352,159 @@ class RedTeamSQLRunner:
                         # Plotting disabled - raw data saved via TensorBoard/debug logs
                         # if len(all_episodic_returns) % 5 == 0:
                         #     self._save_reward_plot(all_episodic_returns)
+
+            # === TRAJECTORY HARVESTING: inject oversampled copies ===
+            if harvested_trajectories and enable_harvesting and self.algo == "APPO":
+                batch = self.buffer.cur_batch_index
+                total_injected = 0
+                for traj_info in harvested_trajectories:
+                    tid = traj_info["thread_idx"]
+
+                    # Phase 2: Use coach augmenter for diverse variations
+                    if self.trajectory_augmenter is not None:
+                        try:
+                            # Collect the successful action texts
+                            success_step = traj_info["success_step"]
+                            action_texts = []
+                            for s in range(self.episode_length):
+                                act = self.buffer.actions[batch, s, tid, :]
+                                action_texts.append([str(a) for a in act])
+
+                            # Generate diverse variations via 32B coach
+                            flat_actions = [
+                                acts[0] for acts in action_texts[: success_step + 1]
+                            ]
+                            augmented = self.trajectory_augmenter.augment_redteam_trajectory_sync(
+                                flat_actions, oversample_factor
+                            )
+
+                            # --- BATCHED scoring: all variations in one forward pass ---
+                            # Build padded action lists for all variations at once
+                            all_text_actions_2d = []
+                            for var_actions in augmented:
+                                padded_actions = (
+                                    list(var_actions) + flat_actions[len(var_actions) :]
+                                )
+                                while len(padded_actions) < self.episode_length:
+                                    padded_actions.append("")
+                                all_text_actions_2d.append(
+                                    [[a] * self.num_agents for a in padded_actions]
+                                )
+
+                            # Stack all variations into shape
+                            # [n_variations * episode_length, num_agents] for a single batched call
+                            n_vars = len(all_text_actions_2d)
+                            step_obs = self.buffer.obs[
+                                batch, : self.episode_length, tid, :
+                            ].copy()
+                            # Tile obs to match all variations
+                            batched_obs = np.tile(step_obs, (n_vars, 1)).reshape(
+                                n_vars * self.episode_length, self.num_agents
+                            )
+                            batched_actions = [
+                                act for var_2d in all_text_actions_2d for act in var_2d
+                            ]  # length = n_vars * episode_length
+
+                            # Single forward pass for all variations
+                            all_tokens, all_log_probs, all_value_preds = (
+                                self.mas.tokenize_and_score_actions(
+                                    batched_obs, batched_actions
+                                )
+                            )
+
+                            # Slice back per-variation and inject
+                            ep = self.episode_length
+                            for var_idx, text_actions_2d in enumerate(
+                                all_text_actions_2d
+                            ):
+                                sl = slice(var_idx * ep, (var_idx + 1) * ep)
+                                trajectory_data = {
+                                    "obs": self.buffer.obs[batch, :, tid, :].copy(),
+                                    "actions": np.array(text_actions_2d, dtype=object),
+                                    "rollout_obs": self.buffer.rollout_obs[
+                                        batch, :, tid, :
+                                    ].copy(),
+                                    "rewards": self.buffer.rewards[
+                                        batch, :, tid, :
+                                    ].copy(),
+                                    "masks": self.buffer.masks[batch, :, tid, :].copy(),
+                                    "action_tokens": all_tokens[sl],
+                                    "log_probs": all_log_probs[sl],
+                                    "value_preds": all_value_preds[sl],
+                                }
+                                inj = self.buffer.inject_successful_trajectory(
+                                    trajectory_data, 1
+                                )
+                                total_injected += inj
+
+                            print(
+                                f"[HARVEST] Phase 2: Injected {total_injected} augmented copies "
+                                f"for thread {tid} (reward={traj_info['reward']:.2f})"
+                            )
+                        except Exception as e:
+                            print(
+                                f"[HARVEST] Phase 2 augmentation failed, falling back to naive: {e}"
+                            )
+                            # Fall back to Phase 1 naive duplication
+                            trajectory_data = {
+                                "obs": self.buffer.obs[batch, :, tid, :].copy(),
+                                "actions": self.buffer.actions[batch, :, tid, :].copy(),
+                                "rollout_obs": self.buffer.rollout_obs[
+                                    batch, :, tid, :
+                                ].copy(),
+                                "rewards": self.buffer.rewards[batch, :, tid, :].copy(),
+                                "masks": self.buffer.masks[batch, :, tid, :].copy(),
+                                "action_tokens": self.buffer.action_tokens[
+                                    batch, :, tid, :, :
+                                ].copy(),
+                                "log_probs": self.buffer.action_level_log_probs[
+                                    batch, :, tid, :
+                                ].copy(),
+                                "value_preds": self.buffer.action_level_v_values[
+                                    batch, : self.episode_length, tid, :
+                                ].copy(),
+                            }
+                            injected = self.buffer.inject_successful_trajectory(
+                                trajectory_data, oversample_factor
+                            )
+                            total_injected += injected
+                    else:
+                        # Phase 1: Naive duplication
+                        trajectory_data = {
+                            "obs": self.buffer.obs[batch, :, tid, :].copy(),
+                            "actions": self.buffer.actions[batch, :, tid, :].copy(),
+                            "rollout_obs": self.buffer.rollout_obs[
+                                batch, :, tid, :
+                            ].copy(),
+                            "rewards": self.buffer.rewards[batch, :, tid, :].copy(),
+                            "masks": self.buffer.masks[batch, :, tid, :].copy(),
+                            "action_tokens": self.buffer.action_tokens[
+                                batch, :, tid, :, :
+                            ].copy(),
+                            "log_probs": self.buffer.action_level_log_probs[
+                                batch, :, tid, :
+                            ].copy(),
+                            "value_preds": self.buffer.action_level_v_values[
+                                batch, : self.episode_length, tid, :
+                            ].copy(),
+                        }
+                        injected = self.buffer.inject_successful_trajectory(
+                            trajectory_data, oversample_factor
+                        )
+                        total_injected += injected
+                        print(
+                            f"[HARVEST] Phase 1: Injected {injected}/{oversample_factor} copies "
+                            f"for thread {tid} (reward={traj_info['reward']:.2f})"
+                        )
+
+                self.writter.add_scalar(
+                    "harvest/trajectories_captured",
+                    len(harvested_trajectories),
+                    total_num_steps,
+                )
+                self.writter.add_scalar(
+                    "harvest/copies_injected", total_injected, total_num_steps
+                )
 
             self.before_update()
             train_infos = self.trainer.train(self.buffer, total_num_steps)

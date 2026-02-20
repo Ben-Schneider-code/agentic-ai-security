@@ -1,6 +1,7 @@
 import numpy as np
 from .base_buffer import BaseBuffer
 
+
 class ActionBuffer(BaseBuffer):
     """
     Buffer to store training data.
@@ -11,12 +12,38 @@ class ActionBuffer(BaseBuffer):
     def __init__(self, args, num_agents):
         super().__init__(args, num_agents)
         # action-level preservations
-        self.action_level_v_values = np.zeros((self.max_batch, self.episode_length + 1, self.n_rollout_threads, self.num_agents), dtype=np.float32)
-        self.action_level_returns = np.zeros((self.max_batch, self.episode_length, self.n_rollout_threads, self.num_agents), dtype=np.float32)
+        self.action_level_v_values = np.zeros(
+            (
+                self.max_batch,
+                self.episode_length + 1,
+                self.n_rollout_threads,
+                self.num_agents,
+            ),
+            dtype=np.float32,
+        )
+        self.action_level_returns = np.zeros(
+            (
+                self.max_batch,
+                self.episode_length,
+                self.n_rollout_threads,
+                self.num_agents,
+            ),
+            dtype=np.float32,
+        )
         self.action_level_advantages = np.zeros_like(self.action_level_returns)
         self.action_level_log_probs = np.zeros_like(self.action_level_returns)
 
-    def insert(self, next_obs, actions, rollout_obs, value_preds, rewards, masks, action_tokens, log_probs):
+    def insert(
+        self,
+        next_obs,
+        actions,
+        rollout_obs,
+        value_preds,
+        rewards,
+        masks,
+        action_tokens,
+        log_probs,
+    ):
         self.obs[self.cur_batch_index, self.step + 1] = next_obs.copy()
         self.actions[self.cur_batch_index, self.step] = actions.copy()
         self.rollout_obs[self.cur_batch_index, self.step] = rollout_obs.copy()
@@ -39,19 +66,53 @@ class ActionBuffer(BaseBuffer):
         for step in reversed(range(self.episode_length)):
             for agent in reversed(range(self.num_agents)):
                 if agent == self.num_agents - 1:
-                    delta = self.rewards[self.cur_batch_index, step, :, agent] \
-                        + self.gamma * self.action_level_v_values[self.cur_batch_index, step + 1, :, 0] * self.masks[self.cur_batch_index, step + 1, :, 0] \
-                        - self.action_level_v_values[self.cur_batch_index, step, :, agent]
-                    gae = delta + self.gamma * self.gae_lambda * self.masks[self.cur_batch_index, step + 1, :, 0] * gae
+                    delta = (
+                        self.rewards[self.cur_batch_index, step, :, agent]
+                        + self.gamma
+                        * self.action_level_v_values[
+                            self.cur_batch_index, step + 1, :, 0
+                        ]
+                        * self.masks[self.cur_batch_index, step + 1, :, 0]
+                        - self.action_level_v_values[
+                            self.cur_batch_index, step, :, agent
+                        ]
+                    )
+                    gae = (
+                        delta
+                        + self.gamma
+                        * self.gae_lambda
+                        * self.masks[self.cur_batch_index, step + 1, :, 0]
+                        * gae
+                    )
                 else:
-                    delta = self.rewards[self.cur_batch_index, step, :, agent] \
-                        + self.gamma * self.action_level_v_values[self.cur_batch_index, step, :, agent + 1] * self.masks[self.cur_batch_index, step, :, agent + 1] \
-                        - self.action_level_v_values[self.cur_batch_index, step, :, agent]
-                    gae = delta + self.gamma * self.gae_lambda * self.masks[self.cur_batch_index, step, :, agent + 1] * gae
-                self.action_level_returns[self.cur_batch_index, step, :, agent] = self.action_level_v_values[self.cur_batch_index, step, :, agent] + gae
+                    delta = (
+                        self.rewards[self.cur_batch_index, step, :, agent]
+                        + self.gamma
+                        * self.action_level_v_values[
+                            self.cur_batch_index, step, :, agent + 1
+                        ]
+                        * self.masks[self.cur_batch_index, step, :, agent + 1]
+                        - self.action_level_v_values[
+                            self.cur_batch_index, step, :, agent
+                        ]
+                    )
+                    gae = (
+                        delta
+                        + self.gamma
+                        * self.gae_lambda
+                        * self.masks[self.cur_batch_index, step, :, agent + 1]
+                        * gae
+                    )
+                self.action_level_returns[self.cur_batch_index, step, :, agent] = (
+                    self.action_level_v_values[self.cur_batch_index, step, :, agent]
+                    + gae
+                )
                 self.action_level_advantages[self.cur_batch_index, step, :, agent] = gae
-        self.cur_num_batch = self.cur_num_batch + 1 if self.cur_num_batch < self.max_batch else self.max_batch
-
+        self.cur_num_batch = (
+            self.cur_num_batch + 1
+            if self.cur_num_batch < self.max_batch
+            else self.max_batch
+        )
 
     def sample(self, num_mini_batch: int = None, mini_batch_size: int = None):
         """
@@ -69,16 +130,27 @@ class ActionBuffer(BaseBuffer):
 
         rand = np.arange(batch_size)
         np.random.shuffle(rand)
-        sampler = [rand[i * mini_batch_size : (i + 1) * mini_batch_size] for i in range(num_mini_batch)]
+        sampler = [
+            rand[i * mini_batch_size : (i + 1) * mini_batch_size]
+            for i in range(num_mini_batch)
+        ]
 
         # keep (num_agent, dim)
         obs = self.obs[:, :-1].reshape(-1, *self.obs.shape[3:])
         actions = self.actions.reshape(-1, *self.actions.shape[3:])
         rollout_obs = self.rollout_obs[:, :-1].reshape(-1, *self.rollout_obs.shape[3:])
-        value_preds = self.action_level_v_values[:, :-1].reshape(-1, *self.action_level_v_values.shape[3:])
-        returns = self.action_level_returns.reshape(-1, *self.action_level_returns.shape[3:])
-        advantages = self.action_level_advantages.reshape(-1, *self.action_level_advantages.shape[3:])
-        log_prob = self.action_level_log_probs.reshape(-1, *self.action_level_log_probs.shape[3:])
+        value_preds = self.action_level_v_values[:, :-1].reshape(
+            -1, *self.action_level_v_values.shape[3:]
+        )
+        returns = self.action_level_returns.reshape(
+            -1, *self.action_level_returns.shape[3:]
+        )
+        advantages = self.action_level_advantages.reshape(
+            -1, *self.action_level_advantages.shape[3:]
+        )
+        log_prob = self.action_level_log_probs.reshape(
+            -1, *self.action_level_log_probs.shape[3:]
+        )
         action_tokens = self.action_tokens.reshape(-1, *self.action_tokens.shape[3:])
 
         for indices in sampler:
@@ -94,4 +166,87 @@ class ActionBuffer(BaseBuffer):
             advantages_batch = advantages[indices]
             log_prob_batch = log_prob[indices]
             action_tokens_batch = action_tokens[indices]
-            yield obs_batch, action_batch, rollout_obs_batch, log_prob_batch, value_preds_batch, return_batch, advantages_batch, action_tokens_batch
+            yield (
+                obs_batch,
+                action_batch,
+                rollout_obs_batch,
+                log_prob_batch,
+                value_preds_batch,
+                return_batch,
+                advantages_batch,
+                action_tokens_batch,
+            )
+
+    def get_lowest_reward_threads(self, count: int) -> list[int]:
+        """
+        Identify the `count` rollout threads with the lowest cumulative reward
+        in the current batch. These are candidates for overwriting with
+        successful trajectory data.
+
+        Returns:
+            List of thread indices sorted by ascending total reward.
+        """
+        batch = self.cur_batch_index
+        # Sum rewards across all steps and agents for each thread
+        # rewards shape: (max_batch, episode_length, n_rollout_threads, num_agents)
+        thread_rewards = self.rewards[batch, :, :, :].sum(
+            axis=(0, 2)
+        )  # (n_rollout_threads,)
+        # Get indices of lowest-reward threads
+        sorted_indices = np.argsort(thread_rewards)
+        return sorted_indices[:count].tolist()
+
+    def inject_successful_trajectory(
+        self, trajectory_data: dict, oversample_factor: int
+    ) -> int:
+        """
+        Inject copies of a successful trajectory into the buffer by overwriting
+        the lowest-reward rollout threads.
+
+        Args:
+            trajectory_data: dict with keys matching buffer arrays, each containing
+                data for a SINGLE thread across all steps:
+                - 'obs': shape (episode_length+1, num_agents)
+                - 'actions': shape (episode_length, num_agents)
+                - 'rollout_obs': shape (episode_length+1, num_agents)
+                - 'rewards': shape (episode_length, num_agents)
+                - 'masks': shape (episode_length+1, num_agents)
+                - 'action_tokens': shape (episode_length, num_agents, max_new_tokens)
+                - 'log_probs': shape (episode_length, num_agents)
+                - 'value_preds': shape (episode_length, num_agents)
+            oversample_factor: Number of copies to inject.
+
+        Returns:
+            Number of copies actually injected (may be < oversample_factor if
+            there aren't enough threads to overwrite).
+        """
+        batch = self.cur_batch_index
+        # Don't overwrite more threads than we have (minus 1 to keep the original)
+        max_overwrites = min(oversample_factor, self.n_rollout_threads - 1)
+        if max_overwrites <= 0:
+            return 0
+
+        target_threads = self.get_lowest_reward_threads(max_overwrites)
+        injected = 0
+
+        for thread_idx in target_threads:
+            # Overwrite this thread's data with the successful trajectory
+            self.obs[batch, :, thread_idx, :] = trajectory_data["obs"].copy()
+            self.actions[batch, :, thread_idx, :] = trajectory_data["actions"].copy()
+            self.rollout_obs[batch, :, thread_idx, :] = trajectory_data[
+                "rollout_obs"
+            ].copy()
+            self.rewards[batch, :, thread_idx, :] = trajectory_data["rewards"].copy()
+            self.masks[batch, :, thread_idx, :] = trajectory_data["masks"].copy()
+            self.action_tokens[batch, :, thread_idx, :, :] = trajectory_data[
+                "action_tokens"
+            ].copy()
+            self.action_level_log_probs[batch, :, thread_idx, :] = trajectory_data[
+                "log_probs"
+            ].copy()
+            self.action_level_v_values[
+                batch, : trajectory_data["value_preds"].shape[0], thread_idx, :
+            ] = trajectory_data["value_preds"].copy()
+            injected += 1
+
+        return injected
