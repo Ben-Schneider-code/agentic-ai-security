@@ -358,6 +358,8 @@ class MAS(ABC):
 
             if batch_infer:
                 # Use batch inference to process in smaller chunks (saves memory)
+                # Use small chunk size (2) to safely fit on 80GB with 2560-token sequences
+                infer_batch_size = 2
                 with torch.no_grad():
                     rho_logits_batch = self.batch_infer(
                         agent.model,
@@ -365,24 +367,23 @@ class MAS(ABC):
                         obs_act_mask,
                         obs_full_lengths,
                         act_real_lengths,
-                        infer_batch_size=8,  # Process 8 sequences at a time
+                        infer_batch_size=infer_batch_size,
                     )
                     rho_logits.append(rho_logits_batch.to(agent.device))
 
-                # For pi (training), also use batch inference but need gradients
-                # Process in smaller batches to reduce memory
+                # For pi, also use batch inference in smaller chunks
                 pi_logits_batch = []
-                infer_batch_size = 8
                 for i in range(0, obs_act_ids.shape[0], infer_batch_size):
                     obs_act_ids_chunk = obs_act_ids[i : i + infer_batch_size]
                     obs_act_mask_chunk = obs_act_mask[i : i + infer_batch_size]
+                    act_real_lengths_chunk = act_real_lengths[i : i + infer_batch_size]
                     pi_outputs = agent.model(
                         input_ids=obs_act_ids_chunk,
                         attention_mask=obs_act_mask_chunk,
-                        use_cache=False,  # Disable KV cache to save memory
+                        use_cache=False,
                     )
                     pi_logits_chunk = self.get_slice(
-                        pi_outputs.logits, obs_full_lengths, act_real_lengths
+                        pi_outputs.logits, obs_full_lengths, act_real_lengths_chunk
                     )
                     pi_logits_batch.append(pi_logits_chunk.to(agent.device))
                     del pi_outputs
@@ -433,13 +434,14 @@ class MAS(ABC):
         for i in range(0, input_ids.shape[0], infer_batch_size):
             input_ids_batch = input_ids[i : i + infer_batch_size, :]
             attn_mask_batch = attn_mask[i : i + infer_batch_size, :]
+            act_real_lengths_batch = act_real_lengths[i : i + infer_batch_size]
             outputs = model(
                 input_ids=input_ids_batch,
                 attention_mask=attn_mask_batch,
                 return_dict=True,
             )
             logits_batch = self.get_slice(
-                outputs.logits, obs_full_lengths, act_real_lengths
+                outputs.logits, obs_full_lengths, act_real_lengths_batch
             )
             logits.append(logits_batch.clone())
         logits = torch.cat(logits, dim=0)
@@ -569,7 +571,7 @@ class MAS(ABC):
             rollout_values = self.get_action_values(rollout_obs)
             rollout_values = rollout_values.float().cpu().numpy()
             action_log_probs, _ = self.get_joint_action_log_probs(
-                rollout_obs, rollout_action_tokens, batch_infer=False
+                rollout_obs, rollout_action_tokens, batch_infer=True
             )
             rollout_action_tokens = rollout_action_tokens.int().cpu().numpy()
             rollout_log_probs = action_log_probs.float().cpu().numpy()
@@ -589,7 +591,7 @@ class MAS(ABC):
             # GRPO is critic-free, no values needed
             # Still need log probs for policy updates
             action_log_probs, _ = self.get_joint_action_log_probs(
-                rollout_obs, rollout_action_tokens, batch_infer=False
+                rollout_obs, rollout_action_tokens, batch_infer=True
             )
             # Dummy values (not used by GRPO)
             rollout_values = np.zeros(

@@ -51,8 +51,7 @@ echo ""
 
 cd /app/MARFT
 # Memory optimization flags for CUDA allocator
-# expandable_segments helps reduce fragmentation (per error message suggestion)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 # python3 marft/scripts/train_redteam_sql.py \
 #         --seed 10 \
 #         --lr 1e-6 \
@@ -87,7 +86,7 @@ python3 marft/scripts/train_redteam_sql.py \
         --experiment_name redteam_sql_experiment \
         --dataset_name None \
         --flag train \
-        --num_mini_batch 1 \
+        --num_mini_batch 10 \
         --ppo_epoch 1 \
         --lr 5e-7 \
         --critic_lr 5e-5 \
@@ -95,9 +94,9 @@ python3 marft/scripts/train_redteam_sql.py \
         --model_name_or_path meta-llama/Llama-3.1-8B-Instruct \
         --n_agents 1 \
         --agent_iteration_interval 1000 \
-        --n_rollout_threads 1 \
-        --episode_length 1 \
-        --gradient_cp_steps 2 \
+        --n_rollout_threads 8 \
+        --episode_length 10 \
+        --gradient_cp_steps 8 \
         --context_window 2048 \
         --max_new_tokens 512 \
         --save_interval 1000 \

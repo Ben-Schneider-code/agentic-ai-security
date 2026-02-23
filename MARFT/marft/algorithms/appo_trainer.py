@@ -67,25 +67,6 @@ class APPOTrainer(ABC):
         policy_loss = surr.mean() - self.entropy_coef * entropy.mean()
         return policy_loss, approx_kl
 
-    def cal_policy_loss(
-        self,
-        log_prob_infer: torch.Tensor,
-        log_prob_batch: torch.Tensor,
-        advantages_batch: torch.Tensor,
-        entropy: torch.Tensor,
-    ):
-        log_ratio = log_prob_infer - log_prob_batch
-        imp_weights = torch.exp(log_ratio)
-        approx_kl = ((imp_weights - 1) - log_ratio).mean()
-        surr1 = (
-            -torch.clamp(imp_weights, 1.0 - self.clip_param, 1.0 + self.clip_param)
-            * advantages_batch
-        )
-        surr2 = -imp_weights * advantages_batch
-        surr = torch.max(surr1, surr2)
-        policy_loss = surr.mean() - self.entropy_coef * entropy.mean()
-        return policy_loss, approx_kl
-
     def cal_value_loss(
         self,
         values_infer: torch.Tensor,
