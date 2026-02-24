@@ -111,6 +111,7 @@ def parse_debug_logs(run_dir: str):
         "episode_num": [],  # Episode number from log
         "decay_factor": [],  # Decay factor applied (None if no decay)
         "new_honeypots_accessed": [],  # List of Honeypot IDs accessed
+        "attempted_honeypots": [],  # NEW: Attempted but failed execution
         # Text fields for evaluation metrics
         "red_team_input": [],  # Red team prompt
         "ground_truth": [],  # Ground truth SQL
@@ -189,6 +190,10 @@ def parse_debug_logs(run_dir: str):
                         new_hps = []
 
                 diagnostic_data["new_honeypots_accessed"].append(new_hps)
+
+                # NEW: Track attempted but failed honeypots
+                attempted_hps = breakdown.get("attempted_but_failed_honeypots", [])
+                diagnostic_data["attempted_honeypots"].append(attempted_hps)
 
                 # Text fields for evaluation metrics
                 diagnostic_data["red_team_input"].append(data.get("red_team_input", ""))
@@ -858,29 +863,52 @@ def plot_training_results(run_dir: str) -> None:
     if ax_honeypot_timeline is not None and diagnostic_data:
         # Same logic as scatter plot in Plot 6 but focused on timeline
         cumulative_unique_honeypots = []
+        cumulative_unique_attempts = []
         seen_honeypots = set()
+        seen_attempts = set()
 
         honeypots_list = diagnostic_data.get("new_honeypots_accessed", [])
+        attempted_list = diagnostic_data.get("attempted_honeypots", [])
 
-        for hps in honeypots_list:
+        for i in range(len(episodes)):
+            hps = honeypots_list[i] if i < len(honeypots_list) else []
             if hps:
                 for hp in hps:
                     if hp:
                         seen_honeypots.add(hp)
             cumulative_unique_honeypots.append(len(seen_honeypots))
 
+            att = attempted_list[i] if i < len(attempted_list) else []
+            if att:
+                for a in att:
+                    if a:
+                        seen_attempts.add(a)
+
+            # Total unique honeypots targeted (whether successful or not)
+            targeted = seen_attempts.union(seen_honeypots)
+            cumulative_unique_attempts.append(len(targeted))
+
+        ax_honeypot_timeline.plot(
+            episodes,
+            cumulative_unique_attempts,
+            color="#95a5a6",
+            linewidth=2,
+            linestyle="--",
+            label="Targeted (Attempted or Accessed)",
+        )
+
         ax_honeypot_timeline.plot(
             episodes,
             cumulative_unique_honeypots,
-            color="#e67e22",
+            color="#2ecc71",
             linewidth=2,
-            label="Unique HP Count",
+            label="Successfully Accessed",
         )
 
         ax_honeypot_timeline.set_xlabel("Episode")
         ax_honeypot_timeline.set_ylabel("Unique Honeypots")
-        ax_honeypot_timeline.set_title("Honeypot Discovery Rate")
-        ax_honeypot_timeline.legend()
+        ax_honeypot_timeline.set_title("Honeypots Targeted vs Actual Extraction")
+        ax_honeypot_timeline.legend(loc="upper left")
         ax_honeypot_timeline.grid(True, alpha=0.3)
 
     # --- Plot 9: Token Usage Trends ---
@@ -1064,7 +1092,11 @@ def plot_training_results(run_dir: str) -> None:
                         if hp is not None:
                             honeypots_accessed.append(hp)
 
-            if decay_factors or honeypots_accessed:
+            if (
+                decay_factors
+                or honeypots_accessed
+                or any(diagnostic_data.get("attempted_honeypots", []))
+            ):
                 print("\n=== Reward Decay & Honeypot Tracking ===")
 
                 if decay_factors:
@@ -1073,9 +1105,22 @@ def plot_training_results(run_dir: str) -> None:
                     print(f"{'Avg Decay Factor':<25}: {avg_decay:.4f}")
                     print(f"{'Min Decay Factor':<25}: {min_decay:.4f}")
 
+                attempts_flattened = []
+                for att in diagnostic_data.get("attempted_honeypots", []):
+                    if att:
+                        attempts_flattened.extend(att)
+
+                if attempts_flattened:
+                    unique_attempts = set(attempts_flattened)
+                    print(
+                        f"{'Failed HP Attempts':<25}: {len(attempts_flattened):>4} ({len(unique_attempts)} unique)"
+                    )
+
                 if honeypots_accessed:
                     unique_honeypots = set(honeypots_accessed)
-                    print(f"{'Honeypots Accessed':<25}: {len(honeypots_accessed):>4}")
+                    print(
+                        f"{'Honeypots Successfully Accessed':<25}: {len(honeypots_accessed):>4}"
+                    )
                     print(f"{'Unique Honeypots':<25}: {len(unique_honeypots):>4}")
                     for hp in sorted(unique_honeypots):
                         hp_count = honeypots_accessed.count(hp)

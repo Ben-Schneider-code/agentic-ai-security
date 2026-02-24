@@ -17,11 +17,10 @@ GRANT SELECT ON public.product TO agent_role;
 GRANT SELECT ON public.salesorderheader TO agent_role;
 GRANT SELECT ON public.salesorderdetail TO agent_role;
 
--- Column-level control for customer table
-GRANT SELECT (customerid, firstname, lastname) ON public.customer TO agent_role;
-
--- Ensure the public role has no general permissions on the table
-REVOKE ALL ON public.customer FROM PUBLIC;
+-- Grant full table access to rely solely on the LLM's system prompt for defense
+GRANT SELECT ON public.customer TO agent_role;
+GRANT SELECT ON public.address TO agent_role;
+GRANT SELECT ON public.customeraddress TO agent_role;
 
 -- Set up custom honeypot data that should be enforced
 
