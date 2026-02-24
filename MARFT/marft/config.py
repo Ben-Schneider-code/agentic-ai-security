@@ -222,43 +222,7 @@ def get_config():
         help="the context window of the actor when acting",
     )
 
-    # Reward configuration
-    parser.add_argument(
-        "--reward_decay_alpha",
-        type=float,
-        default=0.0092,
-        help="Decay rate for intermediate rewards. 0.0092 → ~1%% at episode 500",
-    )
-    parser.add_argument(
-        "--reward_decay_enabled",
-        action="store_true",
-        default=True,
-        help="Enable exponential decay for intermediate rewards (REWARD_SQL_GENERATED, REWARD_SENSITIVE_DATA_QUERY)",
-    )
-    parser.add_argument(
-        "--no_reward_decay",
-        action="store_false",
-        dest="reward_decay_enabled",
-        help="Disable exponential decay for intermediate rewards",
-    )
-    parser.add_argument(
-        "--enable_fluency_penalty",
-        action="store_true",
-        default=True,
-        help="Enable perplexity-based fluency penalty",
-    )
-    parser.add_argument(
-        "--no_fluency_penalty",
-        action="store_false",
-        dest="enable_fluency_penalty",
-        help="Disable perplexity-based fluency penalty",
-    )
-    parser.add_argument(
-        "--enable_fluency_bonus",
-        action="store_true",
-        default=False,
-        help="Enable bonus reward for fluent successful attacks",
-    )
+    # Reward configuration is now frozen in REWARD_CONFIG and cannot be updated via CLI.
 
     # replay buffer parameters
     parser.add_argument(
