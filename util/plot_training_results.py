@@ -20,8 +20,54 @@ import sys
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import defaultdict
+import math
+from collections import defaultdict, Counter
 import yaml
+
+
+def compute_tfidf_cosine_similarity(texts):
+    if len(texts) < 2:
+        return 0.0
+
+    def tokenize(text):
+        if not text:
+            return []
+        return text.lower().split()
+
+    tokenized_texts = [tokenize(t) for t in texts]
+    df = Counter()
+    for tokens in tokenized_texts:
+        df.update(set(tokens))
+
+    N = len(texts)
+    vectors = []
+    for tokens in tokenized_texts:
+        counter = Counter(tokens)
+        vec = {}
+        for token, count in counter.items():
+            tf = count / len(tokens) if tokens else 0
+            idf = math.log(N / (1 + df[token])) if df[token] > 0 else 0
+            vec[token] = tf * idf
+        vectors.append(vec)
+
+    similarities = []
+    for i in range(N):
+        for j in range(i + 1, N):
+            v1, v2 = vectors[i], vectors[j]
+            dot_product = sum(v1.get(k, 0) * v2.get(k, 0) for k in v1)
+            mag1 = math.sqrt(sum(v**2 for v in v1.values()))
+            mag2 = math.sqrt(sum(v**2 for v in v2.values()))
+            if mag1 > 0 and mag2 > 0:
+                sim = dot_product / (mag1 * mag2)
+            else:
+                sim = 0.0
+            similarities.append(sim)
+
+    if not similarities:
+        return 0.0
+    return sum(similarities) / len(similarities)
+
+
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 # Import evaluation metric functions
@@ -116,6 +162,8 @@ def parse_debug_logs(run_dir: str):
         "red_team_input": [],  # Red team prompt
         "ground_truth": [],  # Ground truth SQL
         "victim_response": [],  # Victim LLM response
+        "execution_result": [],
+        "step_count": [],
         # New: Token tracking
         "red_team_tokens": [],
         "victim_tokens": [],
@@ -201,7 +249,10 @@ def parse_debug_logs(run_dir: str):
                 diagnostic_data["victim_response"].append(
                     data.get("victim_full_response", "")
                 )
-
+                diagnostic_data["execution_result"].append(
+                    data.get("execution_result", "")
+                )
+                diagnostic_data["step_count"].append(data.get("step_count", 1))
                 # Estimate token counts (approx words * 1.3)
                 rt_input = data.get("red_team_input", "")
                 v_response = data.get("victim_full_response", "")
@@ -241,6 +292,37 @@ def parse_debug_logs(run_dir: str):
 
             except json.JSONDecodeError:
                 continue
+
+    unique_episodes = sorted(list(set(diagnostic_data["episode_num"])))
+    diagnostic_data["ttr_per_episode"] = []
+    diagnostic_data["variance_per_episode"] = []
+    diagnostic_data["turns_to_success_per_episode"] = []
+
+    ep_grouped = defaultdict(list)
+    for idx, ep in enumerate(diagnostic_data["episode_num"]):
+        ep_grouped[ep].append(idx)
+
+    for ep in unique_episodes:
+        indices = ep_grouped[ep]
+        tool_calls = sum(
+            1 for idx in indices if diagnostic_data["execution_result"][idx]
+        )
+        ttr = (tool_calls / len(indices)) * 100 if indices else 0.0
+        diagnostic_data["ttr_per_episode"].append(ttr)
+
+        prompts = [diagnostic_data["red_team_input"][idx] for idx in indices]
+        sim = compute_tfidf_cosine_similarity(prompts)
+        diagnostic_data["variance_per_episode"].append(sim)
+
+        turns_to_success = None
+        for idx in indices:
+            hps = diagnostic_data["new_honeypots_accessed"][idx]
+            if hps and any(hps):
+                turns_to_success = diagnostic_data["step_count"][idx]
+                break
+        diagnostic_data["turns_to_success_per_episode"].append(turns_to_success)
+
+    diagnostic_data["unique_episodes"] = unique_episodes
 
     return episodes, rewards, counts, fluent_violations, diagnostic_data
 
@@ -369,29 +451,34 @@ def plot_training_results(run_dir: str) -> None:
 
     # === Plotting ===
     if using_debug_logs and diagnostic_data:
-        # Increased height for 5 rows (added token usage plots)
-        fig, axes = plt.subplots(5, 2, figsize=(16, 32))
-        # Flatten and assign logical names
-        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10 = axes.flatten()
+        # Increased height for 6 rows
+        fig, axes = plt.subplots(6, 2, figsize=(16, 38))
+        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10, ax11, ax12 = axes.flatten()
 
         ax_rewards = ax1
         ax_cum_counts = ax2
-        ax_cum_pct = ax3  # Cumulative outcome distribution
+        ax_cum_pct = ax3
         ax_gibberish = ax4
         ax_ppl = ax5
-        ax_honeypot_cumulative = ax6  # NEW: Cumulative honeypots captured
-        ax_honeypot_bar = ax7  # NEW: Honeypot access frequency breakdown
-        ax_honeypot_timeline = ax8  # NEW: Honeypot discovery timeline
-        ax_tokens = ax9  # NEW: Token usage trends
-        ax_efficiency = ax10  # NEW: Efficiency metrics
+        ax_honeypot_cumulative = ax6
+        ax_honeypot_bar = ax7
+        ax_honeypot_timeline = ax8
+        ax_tokens = ax9
+        ax_efficiency = ax10
+        ax_ttr = ax11
+        ax_hdr_turns = ax12
     else:
         # Fallback layout
-        fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
-        ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
-        fig, (ax_rewards, ax_cum_counts) = plt.subplots(2, 1, figsize=(14, 12))
+        fig, axes = plt.subplots(6, 2, figsize=(16, 38))
+        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10, ax11, ax12 = axes.flatten()
+        ax_rewards = ax1
+        ax_cum_counts = ax2
         ax_cum_pct, ax_gibberish, ax_ppl = None, None, None
         ax_honeypot_cumulative, ax_honeypot_bar, ax_honeypot_timeline = None, None, None
         ax_tokens, ax_efficiency = None, None
+        ax_ttr, ax_hdr_turns = None, None
+        for i in range(2, 12):
+            fig.delaxes(axes[i])
 
     # --- Plot 1: Rewards ---
     ax_rewards.plot(
@@ -979,6 +1066,122 @@ def plot_training_results(run_dir: str) -> None:
         ax_efficiency.set_title(f"Red Team Efficiency ({window}-ep avg)")
         ax_efficiency.legend()
         ax_efficiency.grid(True, alpha=0.3)
+
+    # === Plot 11: Tool-Trigger Rate (TTR) and Embedding Variance ===
+    if ax_ttr is not None and diagnostic_data and "ttr_per_episode" in diagnostic_data:
+        unique_eps = diagnostic_data["unique_episodes"]
+        ttr_arr = np.array(diagnostic_data["ttr_per_episode"])
+        var_arr = np.array(diagnostic_data["variance_per_episode"])
+
+        window = 50
+        if len(unique_eps) < window:
+            window = max(1, len(unique_eps) // 2)
+
+        rolling_ttr = compute_rolling_average(ttr_arr, window)
+        rolling_var = compute_rolling_average(var_arr, window)
+
+        rolling_eps = np.arange(window // 2, len(unique_eps) - window // 2 + 1)
+        min_len = min(len(rolling_eps), len(rolling_ttr))
+        rolling_eps = rolling_eps[:min_len]
+        rolling_ttr = rolling_ttr[:min_len]
+        rolling_var = rolling_var[:min_len]
+
+        ax_ttr.plot(
+            rolling_eps,
+            rolling_ttr,
+            color="#e67e22",
+            linewidth=2,
+            label=f"TTR % ({window}-ep avg)",
+        )
+        ax_ttr.set_xlabel("Episode")
+        ax_ttr.set_ylabel("Tool-Trigger Rate (%)", color="#e67e22")
+        ax_ttr.tick_params(axis="y", labelcolor="#e67e22")
+        ax_ttr.set_title("TTR & Intra-Episode Prompt Similarity")
+        ax_ttr.grid(True, alpha=0.3)
+        ax_ttr.set_ylim(0, 100)
+
+        ax_var_twin = ax_ttr.twinx()
+        ax_var_twin.plot(
+            rolling_eps,
+            rolling_var,
+            color="#8e44ad",
+            linewidth=2,
+            linestyle="--",
+            label=f"Prompt Similarity ({window}-ep avg)",
+        )
+        ax_var_twin.set_ylabel("Cosine Similarity", color="#8e44ad")
+        ax_var_twin.tick_params(axis="y", labelcolor="#8e44ad")
+        ax_var_twin.set_ylim(0, 1.0)
+        ax_var_twin.axhline(
+            y=0.9, color="red", linestyle=":", alpha=0.5, label="High Repetition (>0.9)"
+        )
+
+        lines1, labels1 = ax_ttr.get_legend_handles_labels()
+        lines2, labels2 = ax_var_twin.get_legend_handles_labels()
+        ax_ttr.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
+    # === Plot 12: Honeypot Discovery Rate (Turns-to-Success) ===
+    if (
+        ax_hdr_turns is not None
+        and diagnostic_data
+        and "turns_to_success_per_episode" in diagnostic_data
+    ):
+        unique_eps = np.array(diagnostic_data["unique_episodes"])
+        turns_arr = np.array(diagnostic_data["turns_to_success_per_episode"])
+
+        valid_idx = [i for i, v in enumerate(turns_arr) if v is not None]
+        valid_eps = unique_eps[valid_idx]
+        valid_turns = turns_arr[valid_idx].astype(float)
+
+        if len(valid_turns) > 0:
+            window = 10
+            if len(valid_turns) > window:
+                rolling_turns = compute_rolling_average(valid_turns, window)
+                rolling_eps_turns = valid_eps[
+                    window // 2 : len(rolling_turns) + window // 2
+                ]
+                min_len = min(len(rolling_eps_turns), len(rolling_turns))
+
+                ax_hdr_turns.scatter(
+                    valid_eps,
+                    valid_turns,
+                    alpha=0.3,
+                    color="#2ecc71",
+                    s=10,
+                    label="Turns to Hit Honeypot",
+                )
+                ax_hdr_turns.plot(
+                    rolling_eps_turns[:min_len],
+                    rolling_turns[:min_len],
+                    color="#27ae60",
+                    linewidth=3,
+                    label=f"Avg Turns ({window}-success avg)",
+                )
+
+                ax_hdr_turns.set_xlabel("Episode")
+                ax_hdr_turns.set_ylabel("Turn Number")
+                ax_hdr_turns.set_title("Honeypot Discovery Rate (Turns-to-Success)")
+                ax_hdr_turns.legend()
+                ax_hdr_turns.grid(True, alpha=0.3)
+            else:
+                ax_hdr_turns.scatter(
+                    valid_eps, valid_turns, alpha=0.8, color="#2ecc71", s=20
+                )
+                ax_hdr_turns.set_title(
+                    "Honeypot Discovery Rate (Not enough successes for avg)"
+                )
+                ax_hdr_turns.set_xlabel("Episode")
+                ax_hdr_turns.set_ylabel("Turn Number")
+        else:
+            ax_hdr_turns.text(
+                0.5,
+                0.5,
+                "No honeypots accessed to calculate turn rate",
+                ha="center",
+                va="center",
+            )
+            ax_hdr_turns.set_title("Honeypot Discovery Rate")
+            ax_hdr_turns.axis("off")
 
     plt.tight_layout()
     output_path = os.path.join(run_dir, "training_results_detailed.png")
