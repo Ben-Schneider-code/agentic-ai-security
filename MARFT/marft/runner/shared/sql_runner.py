@@ -36,7 +36,7 @@ def _log_lure(
         f.write(json.dumps(entry) + "\n")
 
 
-class RedTeamSQLRunner:
+class SQLRunner:
     """Runner class to perform training, evaluation. and data collection. See parent class for details."""
 
     def __init__(self, config):
@@ -130,6 +130,30 @@ class RedTeamSQLRunner:
         # Store shared honeypot set reference for state saving/loading
         self.shared_honeypots = config.get("shared_honeypots", None)
 
+        # Checkpointing state trackers
+        self.current_episode = 0
+        self.current_steps = 0
+        self.current_returns = []
+        self._should_stop_early = False
+
+    def graceful_stop(self):
+        """Signal to gracefully stop the training loop at the end of the current episode."""
+        self._should_stop_early = True
+
+    def emergency_save(self):
+        """Immediately save the model and training state (useful for uncaught exceptions)."""
+        print(
+            f"\n[Runner] Executing emergency save at episode {self.current_episode}, steps {self.current_steps}..."
+        )
+        try:
+            self.save(self.current_steps)
+            self._save_training_state(
+                self.current_episode, self.current_steps, self.current_returns
+            )
+            print("[Runner] Emergency save completed successfully.\n")
+        except Exception as e:
+            print(f"[Runner] WARNING: Emergency save failed: {e}\n")
+
     def _sync_profiles_to_mas(self):
         """Sync current profiles from environment to MAS.
 
@@ -162,13 +186,24 @@ class RedTeamSQLRunner:
 
         This is expected behavior and NOT a bug.
         """
-        # Import frozen config for max_episodes and honeypot count
-        from marft.envs.redteam_sql.redteam_sql_env import (
-            REWARD_CONFIG,
-            get_total_honeypots,
-        )
+        # Dynamic config detection based on env_name
+        env_name = getattr(self.all_args, "env_name", "")
+        if "blueteam" in env_name:
+            from marft.envs.blueteam_sql.blueteam_sql_env import CONFIG as REWARD_CONFIG
 
-        total_honeypots = get_total_honeypots()
+            try:
+                from marft.envs.blueteam_sql.blueteam_sql_env import get_total_honeypots
+
+                total_honeypots = get_total_honeypots()
+            except ImportError:
+                total_honeypots = 0
+        else:
+            from marft.envs.redteam_sql.redteam_sql_env import (
+                REWARD_CONFIG,
+                get_total_honeypots,
+            )
+
+            total_honeypots = get_total_honeypots()
 
         print("[Runner] Starting environment reset...")
         next_obs = self.envs.reset()
@@ -225,12 +260,18 @@ class RedTeamSQLRunner:
         )
 
         for episode in range(start_episode, episodes):
+            # Update trackers for checkpointing
+            self.current_episode = episode
+            self.current_returns = all_episodic_returns
+
             # Set current episode on all environments for decay calculation
             self._set_episode_on_envs(episode)
 
             total_num_steps = (
                 (episode + 1) * self.episode_length * self.n_rollout_threads
             )
+            self.current_steps = total_num_steps
+
             # Clear GPU cache once per training episode (not every step - expensive sync)
             torch.cuda.empty_cache()
 
@@ -511,8 +552,14 @@ class RedTeamSQLRunner:
             self.buffer.after_update()
 
             # save model and training state
-            if (episode == episodes - 1) or (
-                (episode + 1) % self.all_args.save_interval == 0
+            step_increment = self.episode_length * self.n_rollout_threads
+            if (
+                (episode == episodes - 1)
+                or (
+                    total_num_steps // self.all_args.save_interval
+                    > (total_num_steps - step_increment) // self.all_args.save_interval
+                )
+                or self._should_stop_early
             ):
                 self.save(total_num_steps)
                 self._save_training_state(
@@ -542,6 +589,12 @@ class RedTeamSQLRunner:
 
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
+
+            if self._should_stop_early:
+                print(
+                    f"\n[Runner] Graceful early stop triggered at episode {episode}. Exiting training loop."
+                )
+                break
 
             # NOTE: Early stopping based on honeypots discovered has been removed
             # to force training for the full episode count.

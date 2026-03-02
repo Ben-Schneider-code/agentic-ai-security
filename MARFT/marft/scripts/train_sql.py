@@ -1,6 +1,6 @@
-#!/usr/bin/env python
 import sys
 import os
+import signal
 import numpy as np
 from pathlib import Path
 import torch
@@ -9,17 +9,42 @@ import yaml
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent))
 from marft.config import get_config
-from marft.envs.redteam_sql.redteam_sql_env import (
-    SQLEnv,
-    REWARD_CONFIG,
-    get_total_honeypots,
-)
+
+
+def get_env_components(env_name):
+    if "blueteam" in env_name:
+        from marft.envs.blueteam_sql.blueteam_sql_env import (
+            BlueTeamSQLEnv as SQLEnv,
+            CONFIG as REWARD_CONFIG,
+        )
+
+        try:
+            from marft.envs.blueteam_sql.blueteam_sql_env import get_total_honeypots
+        except ImportError:
+
+            def get_total_honeypots():
+                return 0
+
+        return SQLEnv, REWARD_CONFIG, get_total_honeypots
+    else:
+        from marft.envs.redteam_sql.redteam_sql_env import (
+            SQLEnv,
+            REWARD_CONFIG,
+            get_total_honeypots,
+        )
+
+        return SQLEnv, REWARD_CONFIG, get_total_honeypots
+
+
 from marft.envs.env_wrappers import ShareDummyVecEnv
-from marft.runner.shared.redteam_sql_runner import RedTeamSQLRunner as Runner
+from marft.runner.shared.sql_runner import SQLRunner as Runner
 
 
 def make_train_env(all_args, shared_honeypots: set = None):
     """Create training environments with shared honeypot tracking.
+
+
+    SQLEnv, _, _ = get_env_components(all_args.env_name)
 
     Args:
         all_args: Training arguments
@@ -31,6 +56,8 @@ def make_train_env(all_args, shared_honeypots: set = None):
     """
     if shared_honeypots is None:
         shared_honeypots = set()
+
+    SQLEnv, _, _ = get_env_components(all_args.env_name)
 
     # Get vLLM URL from environment or use default
     vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
@@ -64,6 +91,8 @@ def make_train_env(all_args, shared_honeypots: set = None):
 def make_eval_env(all_args):
     # Get vLLM URL from environment or use default
     vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
+
+    SQLEnv, _, _ = get_env_components(all_args.env_name)
 
     def get_env_fn(rank):
         def init_env():
@@ -102,9 +131,11 @@ def save_args_to_yaml(args, filename="args.yaml"):
         yaml.dump(vars(args), f, default_flow_style=False, sort_keys=False)
 
 
-def save_reward_config_to_yaml(run_dir):
+def save_reward_config_to_yaml(run_dir, all_args):
     """Save immutable reward config to YAML for reproducibility."""
     import dataclasses
+
+    _, REWARD_CONFIG, get_total_honeypots = get_env_components(all_args.env_name)
 
     config_dict = dataclasses.asdict(REWARD_CONFIG)
     # Add computed properties that aren't fields in the dataclass
@@ -201,7 +232,7 @@ def build_run_dir(all_args):
 
 
 def main(args):
-    print(">>> Starting main execution of train_redteam_sql.py")
+    print(">>> Starting main execution of train_sql.py")
     parser = get_config()
     all_args = parse_args(args, parser)
     print(
@@ -236,7 +267,7 @@ def main(args):
     else:
         run_dir = build_run_dir(all_args)
         save_args_to_yaml(all_args, run_dir / "args.yaml")
-        save_reward_config_to_yaml(run_dir)
+        save_reward_config_to_yaml(run_dir, all_args)
 
     all_args.run_dir = str(run_dir)
     # Create debug logs directory next to logs (which is handled by runner)
@@ -270,18 +301,44 @@ def main(args):
     print(">>> Initializing Runner...")
     runner = Runner(config)
     print(">>> Runner initialized. Starting run() loop...")
-    runner.run()
-    print(">>> Runner run() completed.")
 
-    # post process
-    if envs is not None:
-        print(">>> Closing environments...")
-        envs.close()
+    # Setup graceful stop signal handlers
+    def signal_handler(signum, frame):
+        sig_name = (
+            signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+        )
+        print(
+            f"\n>>> Received {sig_name}. Initiating graceful shutdown at end of current episode..."
+        )
+        runner.graceful_stop()
 
-    print(">>> Exporting scalars and closing writer...")
-    runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
-    runner.writter.close()
-    print(">>> Main execution completed successfully.")
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        runner.run()
+        print(">>> Runner run() completed.")
+    except Exception as e:
+        import traceback
+
+        print("\n>>> UNEXPECTED EXCEPTION DURING TRAINING:")
+        traceback.print_exc()
+        print(">>> Triggering emergency save before crashing...")
+        runner.emergency_save()
+        raise e
+    finally:
+        # post process
+        if envs is not None:
+            print(">>> Closing environments...")
+            envs.close()
+
+        print(">>> Exporting scalars and closing writer...")
+        try:
+            runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
+            runner.writter.close()
+        except Exception as e:
+            print(f">>> Failed to close writer: {e}")
+        print(">>> Main execution completed.")
 
 
 if __name__ == "__main__":
@@ -291,7 +348,7 @@ if __name__ == "__main__":
         import traceback
 
         print("\n\n" + "=" * 50, file=sys.stderr)
-        print("CRITICAL ERROR IN TRAIN_REDTEAM_SQL.PY", file=sys.stderr)
+        print("CRITICAL ERROR IN TRAIN_SQL.PY", file=sys.stderr)
         print("=" * 50, file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         print("=" * 50 + "\n", file=sys.stderr)

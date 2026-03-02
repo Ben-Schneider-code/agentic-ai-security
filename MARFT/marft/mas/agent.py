@@ -91,7 +91,7 @@ class Agent:
             )
 
         self.model.print_trainable_parameters()
-        self.model.half()
+        self.model.bfloat16()
         self.model.to(self.device)
 
     def generate(self, *args, **kwargs):

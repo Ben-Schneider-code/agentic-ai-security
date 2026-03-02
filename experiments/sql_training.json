@@ -1,7 +1,6 @@
 {
-    "_comment": "SQL/RFT training experiment: coach generates training data, student model is fine-tuned.",
-    "_comment2": "GPU allocation: GPU 0 = coach vLLM, GPU 1 = training process (hardcoded in mas.py), GPU 2 = student vLLM, GPU 3 = unused",
-    "_comment3": "Note: Training code expects vLLM on cuda:0 and training on cuda:1, so student moved to GPU 2",
+    "_comment": "SQL/RFT training experiment base infrastructure: 32B fixed coach model.",
+    "_comment2": "GPU allocation: GPU 0 = coach vLLM",
     "servers": [
         {
             "id": "coach",
@@ -16,23 +15,9 @@
                 "--dtype",
                 "auto"
             ]
-        },
-        {
-            "id": "student",
-            "model": "meta-llama/Llama-3.1-8B-Instruct",
-            "gpus": [
-                2
-            ],
-            "port": 8001,
-            "max_model_len": 16384,
-            "gpu_memory_utilization": 0.90,
-            "extra_args": [
-                "--dtype",
-                "auto"
-            ]
         }
     ],
     "base_port": 8000,
     "host": "0.0.0.0",
-    "registry_path": "/tmp/vllm_registry.json"
+    "registry_path": "/tmp/vllm_coach_registry.json"
 }
