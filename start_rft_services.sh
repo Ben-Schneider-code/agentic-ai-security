@@ -2,7 +2,7 @@
 # Start services for RFT training
 # - Starts PostgreSQL and MCP server
 # - Starts one vLLM instance using start_vllm.py with experiments/sql_training.json:
-#   - GPU 0, Port 8000: Coach model (DeepSeek-R1-Distill-Qwen-32B) for RFT generation
+#   - GPU 0, Port 8000: Coach model (configured in experiments/sql_training.json) for RFT generation
 #   - GPU 1: Reserved for training process (hardcoded in MARFT/marft/mas/mas.py)
 
 set -e  # Exit on error
@@ -37,7 +37,8 @@ echo "✓ PostgreSQL and MCP server ready"
 echo ""
 echo "[2/2] Starting vLLM server (coach only)..."
 echo "      Config: experiments/sql_training.json"
-echo "      GPU 0: Coach model (DeepSeek-R1-Distill-Qwen-32B) on port 8000"
+_COACH_MODEL=$(python3 -c "import json; cfg = json.load(open('experiments/sql_training.json')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
+echo "      GPU 0: Coach model ($_COACH_MODEL) on port 8000"
 echo "      Logs: /tmp/vllm_logs/"
 
 # Start vLLM fleet in background

@@ -15,6 +15,11 @@ OPPONENT_LORA=""
 STUDENT_LORA=""
 HOST_ONLY=false
 
+# Read coach model name from the single source of truth
+COACH_CONFIG="experiments/sql_training.json"
+COACH_MODEL_NAME=$(python3 -c "import json; cfg = json.load(open('$COACH_CONFIG')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
+echo "Coach model (from $COACH_CONFIG): $COACH_MODEL_NAME"
+
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -157,7 +162,7 @@ if [[ "$TARGET" == "redteam" ]]; then
             --warmup_steps 500 \
             --horizon 5 \
             --coach_vllm_url "$COACH_VLLM_URL" \
-            --coach_model_name "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+            --coach_model_name "$COACH_MODEL_NAME"
 else
     python3 marft/scripts/train_sql.py \
             --seed 12 \
@@ -184,7 +189,7 @@ else
             --warmup_steps 500 \
             --horizon 1 \
             --coach_vllm_url "$COACH_VLLM_URL" \
-            --coach_model_name "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+            --coach_model_name "$COACH_MODEL_NAME"
 fi
 
 echo ""
