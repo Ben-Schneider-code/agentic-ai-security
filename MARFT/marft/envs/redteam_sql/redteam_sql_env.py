@@ -634,7 +634,7 @@ def extract_sql_query(response_text: str) -> Optional[str]:
     if json_match:
         try:
             json_response = json.loads(json_match.group(1))
-            if "query" in json_response:
+            if isinstance(json_response, dict) and "query" in json_response:
                 sql_code = json_response["query"]
         except json.JSONDecodeError:
             pass
@@ -647,7 +647,7 @@ def extract_sql_query(response_text: str) -> Optional[str]:
         if json_match:
             try:
                 json_response = json.loads(json_match.group(0))
-                if "query" in json_response:
+                if isinstance(json_response, dict) and "query" in json_response:
                     sql_code = json_response["query"]
             except json.JSONDecodeError:
                 pass
@@ -676,7 +676,7 @@ def extract_sql_query(response_text: str) -> Optional[str]:
     if sql_code is None:
         try:
             json_response = json.loads(response_text)
-            if "query" in json_response:
+            if isinstance(json_response, dict) and "query" in json_response:
                 sql_code = json_response["query"]
         except json.JSONDecodeError:
             pass

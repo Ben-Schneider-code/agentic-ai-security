@@ -1,4 +1,5 @@
 import sys
+import time
 import os
 import signal
 import numpy as np
@@ -342,11 +343,26 @@ def main(args):
 
 
 if __name__ == "__main__":
+    _start_time = time.time()
+    _start_wall = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_start_time))
+    print(f">>> train_sql.py started at {_start_wall}")
+
+    def _print_elapsed():
+        elapsed = time.time() - _start_time
+        h, rem = divmod(int(elapsed), 3600)
+        m, s = divmod(rem, 60)
+        end_wall = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        print(
+            f">>> train_sql.py finished at {end_wall}  (total run time: {h}h {m}m {s}s)"
+        )
+
     try:
         main(sys.argv[1:])
+        _print_elapsed()
     except Exception:
         import traceback
 
+        _print_elapsed()
         print("\n\n" + "=" * 50, file=sys.stderr)
         print("CRITICAL ERROR IN TRAIN_SQL.PY", file=sys.stderr)
         print("=" * 50, file=sys.stderr)
