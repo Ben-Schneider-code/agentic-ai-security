@@ -35,7 +35,7 @@ class MAS(ABC):
         self.algo = algo
         self.normalization_mode = normalization_mode
         self.num_agents = num_agents
-        self.device = "cuda:1"  # Docker container will reroute the gpus to 0, 1, 2, ...
+        self.device = "cuda:2"  # GPU 0=coach vLLM, GPU 1=opponent/student vLLM, GPU 2=training loop
 
         self.context_window = context_window
         self.max_new_tokens = max_new_tokens
@@ -48,8 +48,8 @@ class MAS(ABC):
             raise ValueError("Either profile_path or profiles must be provided to MAS.")
 
         # Assign devices for agents
-        # Force agents to use the second GPU (logical 1) because vLLM is on logical 0
-        available_devices = ["cuda:1"]
+        # Needs to match `self.device`
+        available_devices = ["cuda:2"]
         print(available_devices)
         print(self.device)
         next_dev = 0
@@ -78,7 +78,14 @@ class MAS(ABC):
         if self.algo != "GRPO":
             print("[Profiling] Starting Critic Initialization...")
             start_time = time.time()
-            self.critic = self._init_critic(model_path, load_path).to(self.device)
+            self.critic = self._init_critic(
+                model_path, load_path, load_in_4bit=load_in_4bit
+            )
+            if not getattr(self.critic, "load_in_4bit", load_in_4bit):
+                try:
+                    self.critic = self.critic.to(self.device)
+                except Exception:
+                    pass
             print(
                 f"[Profiling] Critic Initialization took {time.time() - start_time:.2f}s"
             )
@@ -118,15 +125,19 @@ class MAS(ABC):
             agents.append(agent)
         return agents
 
-    def _init_critic(self, model_path, critic_path=None):
+    def _init_critic(self, model_path, critic_path=None, load_in_4bit=False):
         if self.algo == "APPO":
             from marft.critics import ActionCritic
 
-            critic = ActionCritic(model_path, device=self.device)
+            critic = ActionCritic(
+                model_path, device=self.device, load_in_4bit=load_in_4bit
+            )
         elif self.algo == "TPPO":
             from marft.critics import TokenCritic
 
-            critic = TokenCritic(model_path, device=self.device)
+            critic = TokenCritic(
+                model_path, device=self.device, load_in_4bit=load_in_4bit
+            )
         else:
             raise NotImplementedError
         if critic_path is not None:

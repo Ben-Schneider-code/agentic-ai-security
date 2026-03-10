@@ -76,6 +76,8 @@ def make_train_env(all_args, shared_honeypots: set = None):
                 shared_honeypots=shared_honeypots,  # Pass shared set
                 vllm_base_url=vllm_url,
                 max_tokens=all_args.max_new_tokens,
+                opponent_model_name=getattr(all_args, "opponent_model_name", None),
+                opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -107,6 +109,8 @@ def make_eval_env(all_args):
                 log_dir=getattr(all_args, "debug_log_dir", None),
                 vllm_base_url=vllm_url,
                 max_tokens=all_args.max_new_tokens,
+                opponent_model_name=getattr(all_args, "opponent_model_name", None),
+                opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
                 # Reward config now uses frozen REWARD_CONFIG - no CLI args
             )
             env.seed(all_args.seed + rank * 5000)
@@ -190,11 +194,15 @@ def load_training_state(run_dir):
 
 
 def build_run_dir(all_args):
-    run_dir = (
-        Path(
+    if getattr(all_args, "results_dir", None):
+        base_path = Path(all_args.results_dir)
+    else:
+        base_path = Path(
             os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
             + "/scripts/results"
         )
+    run_dir = (
+        base_path
         / all_args.experiment_name
         / all_args.base_model
         / all_args.dataset_name
@@ -304,10 +312,17 @@ def main(args):
     print(">>> Runner initialized. Starting run() loop...")
 
     # Setup graceful stop signal handlers
+    interrupt_count = [0]
+
     def signal_handler(signum, frame):
+        interrupt_count[0] += 1
         sig_name = (
             signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
         )
+        if interrupt_count[0] >= 2:
+            print(f"\n>>> Received {sig_name} multiple times. Forcing immediate exit!")
+            raise KeyboardInterrupt(f"Forced exit from {sig_name}")
+
         print(
             f"\n>>> Received {sig_name}. Initiating graceful shutdown at end of current episode..."
         )
@@ -325,6 +340,11 @@ def main(args):
         print("\n>>> UNEXPECTED EXCEPTION DURING TRAINING:")
         traceback.print_exc()
         print(">>> Triggering emergency save before crashing...")
+        runner.emergency_save()
+        raise e
+    except KeyboardInterrupt as e:
+        print("\n>>> FORCED IMMEDIATE EXIT (KEYBOARD INTERRUPT):")
+        runner.exit_reason = "forced_exit"
         runner.emergency_save()
         raise e
     finally:

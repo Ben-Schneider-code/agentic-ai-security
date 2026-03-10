@@ -208,6 +208,18 @@ def get_config():
         "--model_name_or_path", type=str, required=True, help="Which base model to use"
     )
     parser.add_argument(
+        "--opponent_model_name",
+        type=str,
+        default=None,
+        help="Which opponent model to use (if any)",
+    )
+    parser.add_argument(
+        "--opponent_lora_path",
+        type=str,
+        default=None,
+        help="Path to the opponent LORA used",
+    )
+    parser.add_argument(
         "--load_path", type=str, default=None, help="path to the checkpoint"
     )
     parser.add_argument(
@@ -220,6 +232,12 @@ def get_config():
         type=int,
         default=2048,
         help="the context window of the actor when acting",
+    )
+    parser.add_argument(
+        "--load_in_4bit",
+        action="store_true",
+        default=False,
+        help="Whether to load base model in 4-bit precision",
     )
 
     # Reward configuration is now frozen in REWARD_CONFIG and cannot be updated via CLI.
@@ -461,6 +479,12 @@ def get_config():
         type=str,
         default=None,
         help="Path to an existing run directory to resume training from. Will auto-detect the latest checkpoint.",
+    )
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default=None,
+        help="Override base results directory (default: marft/scripts/results relative to this script).",
     )
 
     # log parameters

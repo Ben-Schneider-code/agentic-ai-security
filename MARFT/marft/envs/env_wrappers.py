@@ -225,7 +225,8 @@ class ShareDummyVecEnv(ShareVecEnv):
 
     def step_wait(self):
         results = [env.step(a) for (a, env) in zip(self.actions, self.envs)]  # type: ignore
-        obs, rews, dones, infos = map(np.array, zip(*results))
+        obs, rews, dones, infos = zip(*results)
+        obs, rews, dones = np.array(obs), np.array(rews), np.array(dones)
 
         for i, done in enumerate(dones):
             if "bool" in done.__class__.__name__:

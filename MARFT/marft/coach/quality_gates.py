@@ -101,6 +101,7 @@ class VariationQualityGate:
                 "passed": 0,
                 "rejected_semantic": 0,
                 "rejected_diversity": 0,
+                "details": [],
             }
 
         stats = {
@@ -108,6 +109,7 @@ class VariationQualityGate:
             "passed": 0,
             "rejected_semantic": 0,
             "rejected_diversity": 0,
+            "details": [],  # per-variation: {text, cosine_sim, jaccard_sim, verdict, reason}
         }
 
         # Compute embeddings if model is available
@@ -127,20 +129,52 @@ class VariationQualityGate:
 
         passed = []
         for idx, var_text in enumerate(variations):
+            cosine_sim = None
+            jaccard_sim = None
+
             # Gate 1: Semantic Equivalence (cosine similarity)
             if orig_emb is not None and var_embs is not None:
-                cosine_sim = self.cosine_similarity(orig_emb, var_embs[idx])
+                cosine_sim = round(
+                    float(self.cosine_similarity(orig_emb, var_embs[idx])), 4
+                )
                 if cosine_sim < self.min_cosine_sim:
                     stats["rejected_semantic"] += 1
+                    stats["details"].append(
+                        {
+                            "text": var_text,
+                            "cosine_sim": cosine_sim,
+                            "jaccard_sim": None,
+                            "verdict": "rejected",
+                            "reason": "semantic",
+                        }
+                    )
                     continue
             # If no embedder, skip this gate
 
             # Gate 2: Syntactic Diversity (word-level Jaccard)
-            jaccard_sim = self.word_jaccard(original, var_text)
+            jaccard_sim = round(float(self.word_jaccard(original, var_text)), 4)
             if jaccard_sim > self.max_jaccard_sim:
                 stats["rejected_diversity"] += 1
+                stats["details"].append(
+                    {
+                        "text": var_text,
+                        "cosine_sim": cosine_sim,
+                        "jaccard_sim": jaccard_sim,
+                        "verdict": "rejected",
+                        "reason": "diversity",
+                    }
+                )
                 continue
 
+            stats["details"].append(
+                {
+                    "text": var_text,
+                    "cosine_sim": cosine_sim,
+                    "jaccard_sim": jaccard_sim,
+                    "verdict": "accepted",
+                    "reason": None,
+                }
+            )
             passed.append(var_text)
 
         stats["passed"] = len(passed)

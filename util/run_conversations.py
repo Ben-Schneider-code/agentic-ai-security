@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import re
 import json
+import time
 
 # Add project root to sys.path to allow imports from project root
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +62,54 @@ def parse_conversations(file_path):
     return conversations
 
 
+def start_vllm_instance(model_name, gpus, port, max_model_len=16384, timeout=600):
+    """
+    Starts a vLLM server for the given model on the specified GPUs/port.
+    Returns the VLLMInstance (already started and health-checked).
+    Raises RuntimeError / TimeoutError on failure.
+    """
+    from start_vllm import VLLMInstance
+
+    instance = VLLMInstance(
+        server_id="blueteam",
+        model=model_name,
+        port=port,
+        gpus=gpus,
+        host="0.0.0.0",
+        gpu_memory_utilization=0.95,
+        max_model_len=max_model_len,
+    )
+
+    print(f"\n[vLLM] Starting server for model: {model_name}")
+    print(f"[vLLM]   GPUs          : {gpus}")
+    print(f"[vLLM]   Port          : {port}")
+    print(f"[vLLM]   max_model_len : {max_model_len}")
+    print("[vLLM]   Logs          : /tmp/vllm_logs/blueteam.log")
+    instance.start()
+
+    print(f"[vLLM] Waiting for server to be ready (timeout={timeout}s)...")
+    start_time = time.time()
+    poll_interval = 5
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            instance.stop()
+            raise TimeoutError(
+                f"[vLLM] Server did not become ready within {timeout}s. "
+                "Check /tmp/vllm_logs/blueteam.log for details."
+            )
+        if not instance.is_alive():
+            raise RuntimeError(
+                "[vLLM] Server process died during startup! "
+                "Check /tmp/vllm_logs/blueteam.log for details."
+            )
+        if instance.health_check():
+            print(f"[vLLM] ✓ Server ready at {instance.url}  ({elapsed:.0f}s)")
+            return instance
+        print(f"[vLLM]   Waiting... ({elapsed:.0f} / {timeout}s)")
+        time.sleep(poll_interval)
+
+
 async def run_conversations(args):
     if not os.path.exists(args.input_file):
         print(f"Error: Input file {args.input_file} not found.")
@@ -70,7 +119,28 @@ async def run_conversations(args):
     conversations = parse_conversations(args.input_file)
     print(f"Found {len(conversations)} conversations.")
 
-    # Initialize MCP Client
+    # ── vLLM lifecycle ────────────────────────────────────────────────────────
+    vllm_instance = None  # will be set if we manage the server ourselves
+
+    # Always use the explicitly provided model — no fallbacks.
+    gpus = [int(g.strip()) for g in args.gpu.split(",")]
+    port = args.port
+    vllm_base_url = f"http://localhost:{port}/v1"
+    model_name = args.model_name
+
+    try:
+        vllm_instance = start_vllm_instance(
+            model_name=model_name,
+            gpus=gpus,
+            port=port,
+            max_model_len=args.max_model_len,
+            timeout=args.vllm_timeout,
+        )
+    except (RuntimeError, TimeoutError) as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+    # ── MCP Client ────────────────────────────────────────────────────────────
     print("\nInitializing MCP Client to connect to Postgres...")
     mcp_client = MCPClient()
     try:
@@ -78,52 +148,16 @@ async def run_conversations(args):
         print("MCP Client connected.")
     except Exception as e:
         print(f"Failed to connect MCP Client: {e}")
+        if vllm_instance:
+            print("[vLLM] Stopping server due to MCP connection failure...")
+            vllm_instance.stop()
         sys.exit(1)
-
-    # Determine model and URL
-    # Default values requested by user
-    vllm_base_url = "http://localhost:8001/v1"
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
-
-    try:
-        # Try to find the student model in the registry
-        from start_vllm import read_registry
-
-        print("Checking vLLM registry for student model...")
-        registry = read_registry()
-
-        target_entry = None
-        # Priority: 'student' -> 'policy' -> search by model name
-        if "student" in registry:
-            target_entry = registry["student"]
-            print("Using 'student' model from registry.")
-        elif "policy" in registry:
-            target_entry = registry["policy"]
-            print("Using 'policy' model from registry as student.")
-        else:
-            # Fallback: search for the specific model name
-            for key, entry in registry.items():
-                if entry.get("model") == "meta-llama/Llama-3.1-8B-Instruct":
-                    target_entry = entry
-                    print(f"Found requested model under key '{key}' in registry.")
-                    break
-
-        if target_entry:
-            # Registry URLs typically don't include /v1
-            base_url = target_entry["url"]
-            if not base_url.endswith("/v1"):
-                base_url = f"{base_url}/v1"
-            vllm_base_url = base_url
-            model_name = target_entry["model"]
-
-    except Exception as e:
-        print(f"Registry lookup not fully successful (using defaults): {e}")
 
     try:
         # Initialize Victim LLM (Blue Team)
-        # This connects to vLLM (default port 8000) and uses mcp_client for SQL execution
         print(
-            f"Initializing Blue Team Agent (connecting to vLLM at {vllm_base_url} for model {model_name})..."
+            f"\nInitializing Blue Team Agent "
+            f"(vLLM at {vllm_base_url} | model: {model_name})..."
         )
         victim_llm = OfflineLLM(
             model_name=model_name, mcp_client=mcp_client, vllm_base_url=vllm_base_url
@@ -180,6 +214,7 @@ async def run_conversations(args):
 
                 record = {
                     "conversation_index": i,
+                    "model_name": model_name,
                     "red_team_input": prompt,
                     "blue_team_response": llm_response_text,
                     "execution_result": execution_result,
@@ -199,6 +234,12 @@ async def run_conversations(args):
     finally:
         print("Cleaning up MCP Client...")
         await mcp_client.cleanup()
+
+        if vllm_instance is not None:
+            print("[vLLM] Stopping managed vLLM server...")
+            vllm_instance.stop()
+            print("[vLLM] Server stopped.")
+
         print("Done.")
 
 
@@ -211,6 +252,47 @@ def main():
     )
     parser.add_argument(
         "--output_file", help="Path to the JSONL output report.", default=None
+    )
+    parser.add_argument(
+        "--model_name",
+        required=True,
+        help=(
+            "Model ID to serve. The script starts a dedicated vLLM instance for this "
+            "model and stops it when finished. "
+            "E.g. 'Snowflake/Qwen-2.5-coder-Arctic-ExCoT-32B'."
+        ),
+    )
+    parser.add_argument(
+        "--gpu",
+        help=(
+            "Comma-separated GPU index/indices to use for the managed vLLM server "
+            "(only used when --model_name is set). Default: '0'."
+        ),
+        default="0",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=(
+            "Port for the managed vLLM server "
+            "(only used when --model_name is set). Default: 8001."
+        ),
+        default=8001,
+    )
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        help=(
+            "Maximum sequence length (context window) passed to vLLM. "
+            "Reduce this if vLLM fails with a KV-cache size error. Default: 16384."
+        ),
+        default=16384,
+    )
+    parser.add_argument(
+        "--vllm_timeout",
+        type=int,
+        help="Seconds to wait for the vLLM server to become ready. Default: 600.",
+        default=600,
     )
     args = parser.parse_args()
 

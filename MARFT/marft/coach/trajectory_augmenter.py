@@ -178,7 +178,7 @@ class TrajectoryAugmenter:
         self,
         successful_actions: List[str],
         oversample_factor: int = 5,
-    ) -> List[List[str]]:
+    ):
         """
         Generate syntactically diverse variations of a successful Red Team trajectory.
 
@@ -190,17 +190,36 @@ class TrajectoryAugmenter:
             oversample_factor: Number of variations to request per action.
 
         Returns:
-            List of augmented trajectory action lists. Each inner list has the same
-            length as successful_actions. Returns up to oversample_factor trajectories.
+            Tuple of:
+              - augmented_trajectories: List of augmented trajectory action lists.
+                Each inner list has the same length as successful_actions.
+                Returns up to oversample_factor trajectories.
+              - action_details: List of per-action dicts with keys:
+                  original_action, raw_variations, stats (including gate detail records)
         """
         # Request more than needed to account for quality gate filtering
         n_request = oversample_factor * 2
 
         # Generate variations for each action in the trajectory
         per_action_variations = []
+        action_details = []  # for structured debug logging
         for action in successful_actions:
             if not action or not action.strip():
                 per_action_variations.append([action] * oversample_factor)
+                action_details.append(
+                    {
+                        "original_action": action,
+                        "raw_variations": [],
+                        "stats": {
+                            "total": 0,
+                            "passed": 0,
+                            "rejected_semantic": 0,
+                            "rejected_diversity": 0,
+                            "details": [],
+                            "padded": True,
+                        },
+                    }
+                )
                 continue
 
             prompt = REDTEAM_AUGMENTATION_PROMPT.format(
@@ -222,14 +241,32 @@ class TrajectoryAugmenter:
                 )
             else:
                 passed = []
+                stats = {
+                    "total": 0,
+                    "passed": 0,
+                    "rejected_semantic": 0,
+                    "rejected_diversity": 0,
+                    "details": [],
+                }
                 print(
                     f"[Augmenter] Action '{action[:50]}...' → no variations generated"
                 )
+
+            # Track how many slots were padded with the original
+            n_padded = max(0, oversample_factor - len(passed))
 
             # Pad with original if not enough passed
             while len(passed) < oversample_factor:
                 passed.append(action)
 
+            stats["padded"] = n_padded
+            action_details.append(
+                {
+                    "original_action": action,
+                    "raw_variations": raw_variations,
+                    "stats": stats,
+                }
+            )
             per_action_variations.append(passed[:oversample_factor])
 
         # Transpose: per-action variations → per-trajectory variations
@@ -242,13 +279,13 @@ class TrajectoryAugmenter:
             ]
             augmented_trajectories.append(trajectory)
 
-        return augmented_trajectories
+        return augmented_trajectories, action_details
 
     def augment_redteam_trajectory_sync(
         self,
         successful_actions: List[str],
         oversample_factor: int = 5,
-    ) -> List[List[str]]:
+    ):
         """Synchronous wrapper for augment_redteam_trajectory."""
         loop = self._get_loop()
         return loop.run_until_complete(

@@ -37,12 +37,29 @@ echo "✓ PostgreSQL and MCP server ready"
 echo ""
 echo "[2/2] Starting vLLM server (coach only)..."
 echo "      Config: experiments/sql_training.json"
-_COACH_MODEL=$(python3 -c "import json; cfg = json.load(open('experiments/sql_training.json')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
+# Determine coach model: OVERRIDE_COACH_MODEL env var takes precedence, else read from config
+if [[ -n "$OVERRIDE_COACH_MODEL" ]]; then
+    _COACH_MODEL="$OVERRIDE_COACH_MODEL"
+    # Write a temporary config with the overridden model so start_vllm.py uses it
+    _COACH_CONFIG=$(mktemp /tmp/sql_training_override_XXXXXX.json)
+    python3 -c "
+import json, sys
+cfg = json.load(open('experiments/sql_training.json'))
+for s in cfg['servers']:
+    if s['id'] == 'coach':
+        s['model'] = sys.argv[1]
+json.dump(cfg, open(sys.argv[2], 'w'), indent=4)
+" "$OVERRIDE_COACH_MODEL" "$_COACH_CONFIG"
+    echo "      Using temporary config with overridden coach model: $_COACH_CONFIG"
+else
+    _COACH_MODEL=$(python3 -c "import json; cfg = json.load(open('experiments/sql_training.json')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
+    _COACH_CONFIG="experiments/sql_training.json"
+fi
 echo "      GPU 0: Coach model ($_COACH_MODEL) on port 8000"
 echo "      Logs: /tmp/vllm_logs/"
 
 # Start vLLM fleet in background
-python3 start_vllm.py --config experiments/sql_training.json --timeout 600 --wait-only &
+python3 start_vllm.py --config "$_COACH_CONFIG" --timeout 600 --wait-only &
 VLLM_FLEET_PID=$!
 
 # Wait for registry to be written

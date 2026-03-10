@@ -127,7 +127,8 @@ class APPOTrainer(ABC):
                 returns,
                 advantages,
                 action_tokens,
-            )
+            ),
+            device=self.mas.device,
         )
 
         batch_size = rollout_observations.shape[0]

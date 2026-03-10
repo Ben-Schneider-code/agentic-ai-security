@@ -8,16 +8,41 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 class TokenCritic(nn.Module):
     def __init__(
-        self, model_path, device, bf16: bool = True, num_padding_at_beginning: int = 0
+        self,
+        model_path,
+        device,
+        bf16: bool = True,
+        num_padding_at_beginning: int = 0,
+        load_in_4bit: bool = False,
     ):
         super().__init__()
 
         self.device = device
+        self.load_in_4bit = load_in_4bit
+
+        if load_in_4bit:
+            from transformers import BitsAndBytesConfig
+
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.bfloat16 if bf16 else torch.float16,
+            )
+            device_map = {"": self.device}
+        else:
+            quantization_config = None
+            device_map = None
+
         self.base_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16 if bf16 else "auto",
-        ).to(self.device)
+            quantization_config=quantization_config,
+            device_map=device_map,
+        )
+        if not load_in_4bit:
+            self.base_model = self.base_model.to(self.device)
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
@@ -34,7 +59,9 @@ class TokenCritic(nn.Module):
         if hasattr(self.config, "word_embed_proj_dim"):
             # `OPT` models use word_embed_proj_dim as final output
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/opt/modeling_opt.py#L497
-            self.v_head = nn.Linear(self.config.word_embed_proj_dim, 1, bias=False)
+            self.v_head = nn.Linear(self.config.word_embed_proj_dim, 1, bias=False).to(
+                self.device
+            )
         else:
             # `gpt-neo(x)` models use `hidden_size` attribute names instead of `n_embd``
             self.config.n_embd = (
@@ -42,9 +69,11 @@ class TokenCritic(nn.Module):
                 if hasattr(self.config, "hidden_size")
                 else self.config.n_embd
             )
-            self.v_head_mlp1 = nn.Linear(self.config.n_embd, 1024, bias=False)
-            self.v_head_mlp2 = nn.Linear(1024, 512, bias=False)
-            self.v_head_mlp3 = nn.Linear(512, 1, bias=False)
+            self.v_head_mlp1 = nn.Linear(self.config.n_embd, 1024, bias=False).to(
+                self.device
+            )
+            self.v_head_mlp2 = nn.Linear(1024, 512, bias=False).to(self.device)
+            self.v_head_mlp3 = nn.Linear(512, 1, bias=False).to(self.device)
             self.relu = nn.ReLU()
         self.rwtransformer = self.base_model
         for param in self.rwtransformer.parameters():

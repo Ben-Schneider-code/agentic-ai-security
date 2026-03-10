@@ -328,6 +328,10 @@ class ServerFleet:
                 "gpus": inst.gpus,
                 "port": inst.port,
             }
+        # Merge in placeholder entries (e.g. blueteam student alias)
+        for sid, entry in getattr(self, "_placeholder_entries", {}).items():
+            if sid not in registry:
+                registry[sid] = entry
         with open(self.registry_path, "w") as f:
             json.dump(registry, f, indent=2)
         print(f"Registry written to {self.registry_path}")
@@ -418,6 +422,9 @@ def fleet_from_config(config: dict) -> ServerFleet:
     fleet = ServerFleet(registry_path=registry_path)
 
     for i, srv in enumerate(config["servers"]):
+        # Skip placeholder entries (not real servers to launch)
+        if srv.get("_skip") or "_note" in srv:
+            continue
         port = srv.get("port", base_port + i)  # auto-increment if not specified
         inst = VLLMInstance(
             server_id=srv["id"],
@@ -430,6 +437,19 @@ def fleet_from_config(config: dict) -> ServerFleet:
             extra_args=srv.get("extra_args", []),
         )
         fleet.add(inst)
+
+    # Inject placeholder entries (with _note) directly into the registry
+    # so that scripts reading the registry can resolve all server IDs.
+    fleet._placeholder_entries = {
+        srv["id"]: {
+            "url": f"http://127.0.0.1:{srv['port']}",
+            "model": srv["model"],
+            "gpus": srv["gpus"],
+            "port": srv["port"],
+        }
+        for srv in config["servers"]
+        if "_note" in srv
+    }
 
     return fleet
 

@@ -36,6 +36,68 @@ def _log_lure(
         f.write(json.dumps(entry) + "\n")
 
 
+def _log_augmentation(
+    log_dir: str,
+    episode: int,
+    thread_idx: int,
+    coach_model: str,
+    action_details: list,
+    n_injected: int,
+):
+    """Append a coach augmentation event to coach_augment_log.jsonl.
+
+    Each record stores the full per-action detail: original text, every raw
+    variation the coach generated, and the quality-gate verdict (cosine_sim,
+    jaccard_sim, accepted/rejected reason) for each one.  Existing records are
+    never modified; the file is always opened in append mode.
+
+    Schema (one JSON object per line)::
+
+        {
+          "episode": int,
+          "thread": int,
+          "timestamp": str,          # ISO-8601 UTC
+          "coach_model": str,
+          "n_injected": int,
+          "actions": [
+            {
+              "original_action": str,
+              "raw_variations": [str, ...],   # all strings returned by coach
+              "stats": {
+                "total": int,
+                "passed": int,
+                "rejected_semantic": int,
+                "rejected_diversity": int,
+                "padded": int,              # slots filled with original
+                "details": [
+                  {
+                    "text":        str,
+                    "cosine_sim":  float | null,
+                    "jaccard_sim": float | null,
+                    "verdict":     "accepted" | "rejected",
+                    "reason":      "semantic" | "diversity" | null
+                  }, ...
+                ]
+              }
+            }, ...
+          ]
+        }
+    """
+    import datetime
+
+    entry = {
+        "episode": episode,
+        "thread": thread_idx,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "coach_model": coach_model,
+        "n_injected": n_injected,
+        "actions": action_details,
+    }
+    log_path = os.path.join(log_dir, "coach_augment_log.jsonl")
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 class SQLRunner:
     """Runner class to perform training, evaluation. and data collection. See parent class for details."""
 
@@ -70,6 +132,7 @@ class SQLRunner:
             normalization_mode=self.all_args.normalization_mode,
             load_path=self.all_args.load_path,
             profiles=profiles,
+            load_in_4bit=getattr(self.all_args, "load_in_4bit", False),
         )
 
         if self.algo == "APPO":
@@ -135,9 +198,11 @@ class SQLRunner:
         self.current_steps = 0
         self.current_returns = []
         self._should_stop_early = False
+        self.exit_reason = "max_episodes_met"
 
     def graceful_stop(self):
         """Signal to gracefully stop the training loop at the end of the current episode."""
+        self.exit_reason = "forced_exit"
         self._should_stop_early = True
 
     def emergency_save(self):
@@ -150,6 +215,14 @@ class SQLRunner:
             self._save_training_state(
                 self.current_episode, self.current_steps, self.current_returns
             )
+
+            if getattr(self, "exit_reason", None) != "forced_exit":
+                self.exit_reason = "error_uncaught_exception"
+            exit_log_path = os.path.join(str(self.run_dir), "exit_reason.txt")
+            with open(exit_log_path, "w") as f:
+                f.write(self.exit_reason + "\n")
+            print(f"[Runner] Wrote exit reason '{self.exit_reason}' to {exit_log_path}")
+
             print("[Runner] Emergency save completed successfully.\n")
         except Exception as e:
             print(f"[Runner] WARNING: Emergency save failed: {e}\n")
@@ -257,6 +330,13 @@ class SQLRunner:
             desc="Training",
             position=0,
             leave=True,
+        )
+
+        self.last_honeypot_count = (
+            len(self.shared_honeypots) if self.shared_honeypots else 0
+        )
+        self.last_honeypot_step = (
+            start_episode * self.episode_length * self.n_rollout_threads
         )
 
         for episode in range(start_episode, episodes):
@@ -415,50 +495,39 @@ class SQLRunner:
                             flat_actions = [
                                 acts[0] for acts in action_texts[: success_step + 1]
                             ]
-                            augmented = self.trajectory_augmenter.augment_redteam_trajectory_sync(
-                                flat_actions, oversample_factor
+                            augmented, action_details = (
+                                self.trajectory_augmenter.augment_redteam_trajectory_sync(
+                                    flat_actions, oversample_factor
+                                )
                             )
 
-                            # --- BATCHED scoring: all variations in one forward pass ---
-                            # Build padded action lists for all variations at once
-                            all_text_actions_2d = []
+                            # --- CHUNKED scoring: one variation at a time to avoid OOM ---
+                            # GPU 2 already holds the student model + critic (~65 GB).
+                            # Scoring all variations at once causes OOM, so we process
+                            # each variation individually (episode_length items per pass).
+                            torch.cuda.empty_cache()
+
+                            step_obs = self.buffer.obs[
+                                batch, : self.episode_length, tid, :
+                            ].copy()
+
                             for var_actions in augmented:
                                 padded_actions = (
                                     list(var_actions) + flat_actions[len(var_actions) :]
                                 )
                                 while len(padded_actions) < self.episode_length:
                                     padded_actions.append("")
-                                all_text_actions_2d.append(
-                                    [[a] * self.num_agents for a in padded_actions]
+                                text_actions_2d = [
+                                    [a] * self.num_agents for a in padded_actions
+                                ]
+
+                                # Score this single variation (episode_length items)
+                                var_tokens, var_log_probs, var_value_preds = (
+                                    self.mas.tokenize_and_score_actions(
+                                        step_obs, text_actions_2d
+                                    )
                                 )
 
-                            # Stack all variations into shape
-                            # [n_variations * episode_length, num_agents] for a single batched call
-                            n_vars = len(all_text_actions_2d)
-                            step_obs = self.buffer.obs[
-                                batch, : self.episode_length, tid, :
-                            ].copy()
-                            # Tile obs to match all variations
-                            batched_obs = np.tile(step_obs, (n_vars, 1)).reshape(
-                                n_vars * self.episode_length, self.num_agents
-                            )
-                            batched_actions = [
-                                act for var_2d in all_text_actions_2d for act in var_2d
-                            ]  # length = n_vars * episode_length
-
-                            # Single forward pass for all variations
-                            all_tokens, all_log_probs, all_value_preds = (
-                                self.mas.tokenize_and_score_actions(
-                                    batched_obs, batched_actions
-                                )
-                            )
-
-                            # Slice back per-variation and inject
-                            ep = self.episode_length
-                            for var_idx, text_actions_2d in enumerate(
-                                all_text_actions_2d
-                            ):
-                                sl = slice(var_idx * ep, (var_idx + 1) * ep)
                                 trajectory_data = {
                                     "obs": self.buffer.obs[batch, :, tid, :].copy(),
                                     "actions": np.array(text_actions_2d, dtype=object),
@@ -469,9 +538,9 @@ class SQLRunner:
                                         batch, :, tid, :
                                     ].copy(),
                                     "masks": self.buffer.masks[batch, :, tid, :].copy(),
-                                    "action_tokens": all_tokens[sl],
-                                    "log_probs": all_log_probs[sl],
-                                    "value_preds": all_value_preds[sl],
+                                    "action_tokens": var_tokens,
+                                    "log_probs": var_log_probs,
+                                    "value_preds": var_value_preds,
                                 }
                                 inj = self.buffer.inject_successful_trajectory(
                                     trajectory_data, 1
@@ -482,6 +551,26 @@ class SQLRunner:
                                 f"[HARVEST] Phase 2: Injected {total_injected} augmented copies "
                                 f"for thread {tid} (reward={traj_info['reward']:.2f})"
                             )
+
+                            # Write structured debug log for this augmentation event
+                            try:
+                                coach_model_name = getattr(
+                                    self.all_args,
+                                    "coach_model_name",
+                                    "unknown",
+                                )
+                                _log_augmentation(
+                                    self.log_dir,
+                                    episode,
+                                    tid,
+                                    coach_model_name,
+                                    action_details,
+                                    total_injected,
+                                )
+                            except Exception as log_err:
+                                print(
+                                    f"[HARVEST] Warning: Failed to write coach_augment_log: {log_err}"
+                                )
                         except Exception as e:
                             print(
                                 f"[HARVEST] Phase 2 augmentation failed, falling back to naive: {e}"
@@ -551,6 +640,73 @@ class SQLRunner:
             train_infos = self.trainer.train(self.buffer, total_num_steps)
             self.buffer.after_update()
 
+            current_honeypot_count = (
+                len(self.shared_honeypots) if self.shared_honeypots else 0
+            )
+            if current_honeypot_count > self.last_honeypot_count:
+                self.last_honeypot_count = current_honeypot_count
+                self.last_honeypot_step = total_num_steps
+
+            if total_honeypots > 0:
+                if current_honeypot_count >= total_honeypots:
+                    self.exit_reason = "all_honeypots_accessed"
+                    self._should_stop_early = True
+                elif total_num_steps - self.last_honeypot_step >= 1000:
+                    self.exit_reason = "no_new_honeypot_for_1000_steps"
+                    self._should_stop_early = True
+            else:
+                # ──────────────────────────────────────────────────────────
+                # Blueteam halting logic (total_honeypots == 0 branch)
+                #
+                # NOTE: reward_neutral_sql = 0.0 (correct: let attacker SQL
+                # through without hitting a honeypot) contributes 0.0 to
+                # all_episodic_returns. With ~50% attack turns and a fraction
+                # generating neutral SQL, the rolling avg is structurally
+                # pulled below 1.0.  Threshold is set to 0.85 (not 0.90) to
+                # account for this.
+                # ──────────────────────────────────────────────────────────
+                DECISIVE_WIN_THRESHOLD = 0.85
+                DECISIVE_WIN_WINDOW = 100
+
+                if len(all_episodic_returns) >= DECISIVE_WIN_WINDOW:
+                    recent_returns = all_episodic_returns[-DECISIVE_WIN_WINDOW:]
+                    avg_return = float(np.mean(recent_returns))
+                    if avg_return >= DECISIVE_WIN_THRESHOLD:
+                        self.exit_reason = "blueteam_decisive_win"
+                        self._should_stop_early = True
+                        print(
+                            f"\n[Runner] blueteam_decisive_win: rolling-{DECISIVE_WIN_WINDOW} avg "
+                            f"= {avg_return:.4f} >= {DECISIVE_WIN_THRESHOLD} → halting."
+                        )
+
+                # Plateau logic: improvement < 0.05 over the last 2000 env-episode window
+                plateau_window = 2000
+                if (
+                    not self._should_stop_early
+                    and len(all_episodic_returns) >= plateau_window * 2
+                ):
+                    recent_avg = float(np.mean(all_episodic_returns[-plateau_window:]))
+                    past_avg = float(
+                        np.mean(
+                            all_episodic_returns[-plateau_window * 2 : -plateau_window]
+                        )
+                    )
+                    if recent_avg - past_avg < 0.05:
+                        self.exit_reason = "blueteam_plateaued"
+                        self._should_stop_early = True
+                        print(
+                            f"\n[Runner] blueteam_plateaued: recent={recent_avg:.4f} "
+                            f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < 0.05 → halting."
+                        )
+
+                # Hard step limit
+                if not self._should_stop_early and total_num_steps >= 8000:
+                    self.exit_reason = "blueteam_max_steps_reached"
+                    self._should_stop_early = True
+                    print(
+                        f"\n[Runner] blueteam_max_steps_reached: {total_num_steps} >= 8000 → halting."
+                    )
+
             # save model and training state
             step_increment = self.episode_length * self.n_rollout_threads
             if (
@@ -572,6 +728,16 @@ class SQLRunner:
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
 
+                # Compute and show blueteam decisive-win metric in progress bar
+                _n_ep = len(all_episodic_returns)
+                _dw_window = 100
+                if _n_ep >= _dw_window:
+                    _dw_avg = float(np.mean(all_episodic_returns[-_dw_window:]))
+                    _dw_str = f"dw_avg={_dw_avg:.3f}/0.85"
+                else:
+                    _dw_avg = float(np.mean(all_episodic_returns)) if _n_ep > 0 else 0.0
+                    _dw_str = f"dw_avg={_dw_avg:.3f}/0.85 ({_n_ep}<{_dw_window}ep)"
+
                 # GRPO-specific: log fraction of zero-variance groups
                 if self.algo == "GRPO" and "frac_reward_zero_std" in train_infos:
                     progress_bar.set_description(
@@ -581,7 +747,8 @@ class SQLRunner:
                     )
                 else:
                     progress_bar.set_description(
-                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | discovered: {len(self.shared_honeypots)}/{total_honeypots}"
+                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
+                        f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | {_dw_str}"
                     )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
@@ -592,12 +759,15 @@ class SQLRunner:
 
             if self._should_stop_early:
                 print(
-                    f"\n[Runner] Graceful early stop triggered at episode {episode}. Exiting training loop."
+                    f"\n[Runner] Graceful early stop triggered at episode {episode}. Reason: {self.exit_reason}. Exiting training loop."
                 )
                 break
 
-            # NOTE: Early stopping based on honeypots discovered has been removed
-            # to force training for the full episode count.
+        # Log exit reason to file once training loop breaks naturally or early
+        exit_log_path = os.path.join(str(self.run_dir), "exit_reason.txt")
+        with open(exit_log_path, "w") as f:
+            f.write(self.exit_reason + "\n")
+        print(f"[Runner] Wrote exit reason '{self.exit_reason}' to {exit_log_path}")
 
     def _set_episode_on_envs(self, episode: int):
         """Set the current episode on all environments for decay calculation."""
@@ -653,11 +823,10 @@ class SQLRunner:
             action_tokens,
             log_probs,
         ) = data
+        rewards = rewards.reshape(self.n_rollout_threads, self.num_agents)
         dones_env = np.all(dones, axis=1)
         masks = np.ones((self.n_rollout_threads, self.num_agents), dtype=np.float32)
-        masks[dones_env == True] = np.zeros(
-            ((dones_env == True).sum(), self.num_agents), dtype=np.float32
-        )
+        masks[dones_env] = 0.0
         self.buffer.insert(
             next_obs,
             actions,

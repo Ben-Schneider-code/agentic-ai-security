@@ -45,42 +45,69 @@ def main():
         "servers": [],
     }
 
-    student_extra_args = ["--dtype", "auto"]
-    if args.student_lora:
-        student_extra_args.extend([
-            "--enable-lora",
-            "--lora-modules", f"student={args.student_lora}"
-        ])
+    if args.target == "redteam":
+        # Redteam training: student vLLM on GPU 1
+        # GPU 0 = coach, GPU 1 = student vLLM (inference), GPU 2 = training loop
+        student_extra_args = ["--dtype", "auto"]
+        lora_modules = []
+        if args.student_lora:
+            lora_modules.append(f"student={args.student_lora}")
+        if args.opponent_lora:
+            lora_modules.append(f"opponent_lora={args.opponent_lora}")
 
-    student_server = {
-        "id": "student",
-        "model": args.model,
-        "gpus": [2],
-        "port": 8001,
-        "max_model_len": 4096,
-        "gpu_memory_utilization": 0.90,
-        "extra_args": student_extra_args,
-    }
-
-    config["servers"].append(student_server)
-
-    if args.target == "blueteam":
-        opponent_server = {
-            "id": "redteam",
-            "model": args.model,
-            "gpus": [3],
-            "port": 8002,
-            "max_model_len": 4096,
-            "gpu_memory_utilization": 0.90,
-            "extra_args": [
-                "--dtype",
-                "auto",
-                "--enable-lora",
-                "--lora-modules",
-                f"redteam={args.opponent_lora}",
-            ],
-        }
-        config["servers"].append(opponent_server)
+        if lora_modules:
+            student_extra_args.append("--enable-lora")
+            student_extra_args.append("--max-lora-rank")
+            student_extra_args.append("64")
+            student_extra_args.append("--lora-modules")
+            student_extra_args.extend(lora_modules)
+        config["servers"].append(
+            {
+                "id": "student",
+                "model": args.model,
+                "gpus": [1],
+                "port": 8001,
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.90,
+                "extra_args": student_extra_args,
+            }
+        )
+    else:
+        # Blueteam training: NO student vLLM — the blueteam env calls redteam vLLM
+        # directly, so the student vLLM would just waste a GPU.
+        # GPU 0 = coach, GPU 1 = redteam opponent (LoRA), GPU 2 = training loop
+        config["servers"].append(
+            {
+                "id": "redteam",
+                "model": args.model,
+                "gpus": [1],
+                "port": 8002,
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.90,
+                "extra_args": [
+                    "--dtype",
+                    "auto",
+                    "--enable-lora",
+                    "--max-lora-rank",
+                    "64",
+                    "--lora-modules",
+                    f"redteam={args.opponent_lora}",
+                ],
+            }
+        )
+        # Placeholder student entry so run_training.sh registry reads don't fail.
+        # The blueteam env ignores STUDENT_VLLM_URL and uses REDTEAM_VLLM_URL.
+        config["servers"].append(
+            {
+                "id": "student",
+                "model": args.model,
+                "gpus": [1],
+                "port": 8002,
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.90,
+                "_note": "placeholder — blueteam env uses REDTEAM_VLLM_URL, not STUDENT_VLLM_URL",
+            }
+        )
 
     out_dir = os.path.dirname(args.out_config)
     if out_dir:
