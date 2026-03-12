@@ -9,6 +9,7 @@
 #
 
 set -e
+set -o pipefail
 
 echo "========================================"
 echo "Agentic AI Security: Unified Training Runner"
@@ -110,21 +111,17 @@ ACTOR_CONFIG_PATH="/tmp/actor_vllm_config.json"
 ACTOR_REGISTRY_PATH="/tmp/vllm_actor_registry.json"
 rm -f "$ACTOR_REGISTRY_PATH"
 
-GEN_CMD="python3 util/generate_vllm_config.py --target \"$TARGET\" --out-config \"$ACTOR_CONFIG_PATH\" --model \"$BASE_MODEL\""
+GEN_CMD=(python3 util/generate_vllm_config.py --target "$TARGET" --out-config "$ACTOR_CONFIG_PATH" --model "$BASE_MODEL")
 
-if [[ -n "$OPPONENT_LORA" ]]; then
-    GEN_CMD="$GEN_CMD --opponent-lora \"$OPPONENT_LORA\""
-fi
+[[ -n "$OPPONENT_LORA" ]] && GEN_CMD+=(--opponent-lora "$OPPONENT_LORA")
+[[ -n "$STUDENT_LORA" ]] && GEN_CMD+=(--student-lora "$STUDENT_LORA")
 
-if [[ -n "$STUDENT_LORA" ]]; then
-    GEN_CMD="$GEN_CMD --student-lora \"$STUDENT_LORA\""
-fi
-
-eval $GEN_CMD
+"${GEN_CMD[@]}"
 
 echo "Starting Actor vLLM Fleet..."
 python3 start_vllm.py --config "$ACTOR_CONFIG_PATH" --timeout 600 --wait-only &
 VLLM_ACTOR_PID=$!
+trap 'kill $VLLM_ACTOR_PID 2>/dev/null || true' EXIT
 
 echo "Waiting for actor models to load..."
 TIMEOUT=660

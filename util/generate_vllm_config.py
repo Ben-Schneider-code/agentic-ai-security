@@ -8,6 +8,10 @@ import argparse
 import json
 import os
 
+MAX_LORA_RANK = 64
+DEFAULT_MAX_MODEL_LEN = 4096
+DEFAULT_GPU_MEMORY_UTIL = 0.90
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -58,7 +62,7 @@ def main():
         if lora_modules:
             student_extra_args.append("--enable-lora")
             student_extra_args.append("--max-lora-rank")
-            student_extra_args.append("64")
+            student_extra_args.append(str(MAX_LORA_RANK))
             student_extra_args.append("--lora-modules")
             student_extra_args.extend(lora_modules)
         config["servers"].append(
@@ -67,8 +71,8 @@ def main():
                 "model": args.model,
                 "gpus": [1],
                 "port": 8001,
-                "max_model_len": 4096,
-                "gpu_memory_utilization": 0.90,
+                "max_model_len": DEFAULT_MAX_MODEL_LEN,
+                "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "extra_args": student_extra_args,
             }
         )
@@ -82,14 +86,14 @@ def main():
                 "model": args.model,
                 "gpus": [1],
                 "port": 8002,
-                "max_model_len": 4096,
-                "gpu_memory_utilization": 0.90,
+                "max_model_len": DEFAULT_MAX_MODEL_LEN,
+                "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "extra_args": [
                     "--dtype",
                     "auto",
                     "--enable-lora",
                     "--max-lora-rank",
-                    "64",
+                    str(MAX_LORA_RANK),
                     "--lora-modules",
                     f"redteam={args.opponent_lora}",
                 ],
@@ -103,8 +107,8 @@ def main():
                 "model": args.model,
                 "gpus": [1],
                 "port": 8002,
-                "max_model_len": 4096,
-                "gpu_memory_utilization": 0.90,
+                "max_model_len": DEFAULT_MAX_MODEL_LEN,
+                "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "_note": "placeholder — blueteam env uses REDTEAM_VLLM_URL, not STUDENT_VLLM_URL",
             }
         )

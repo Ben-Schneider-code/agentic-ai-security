@@ -24,11 +24,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo ""
 echo "[1/3] Initializing PostgreSQL and MCP server..."
 ./script/init.sh
-
-if [ $? -ne 0 ]; then
-    echo "ERROR: Database/MCP initialization failed"
-    exit 1
-fi
 echo "✓ PostgreSQL and MCP server ready"
 
 # ============================================
@@ -61,6 +56,7 @@ echo "      Logs: /tmp/vllm_logs/"
 # Start vLLM fleet in background
 python3 start_vllm.py --config "$_COACH_CONFIG" --timeout 600 --wait-only &
 VLLM_FLEET_PID=$!
+trap 'kill $VLLM_FLEET_PID 2>/dev/null || true; [[ "$_COACH_CONFIG" == /tmp/* ]] && rm -f "$_COACH_CONFIG"' EXIT
 
 # Wait for registry to be written
 echo "Waiting for vLLM servers to initialize..."

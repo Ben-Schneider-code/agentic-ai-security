@@ -230,7 +230,7 @@ class VLLMInstance:
 
 
 class ServerFleet:
-    def __init__(self, registry_path: str = None):
+    def __init__(self, registry_path: Optional[str] = None):
         self.instances: Dict[str, VLLMInstance] = {}
         self.registry_path = registry_path or os.environ.get(
             "VLLM_REGISTRY", "/tmp/vllm_registry.json"

@@ -1,3 +1,4 @@
+import dataclasses
 import sys
 import time
 import os
@@ -138,8 +139,6 @@ def save_args_to_yaml(args, filename="args.yaml"):
 
 def save_reward_config_to_yaml(run_dir, all_args):
     """Save immutable reward config to YAML for reproducibility."""
-    import dataclasses
-
     _, REWARD_CONFIG, get_total_honeypots = get_env_components(all_args.env_name)
 
     config_dict = dataclasses.asdict(REWARD_CONFIG)
@@ -341,12 +340,12 @@ def main(args):
         traceback.print_exc()
         print(">>> Triggering emergency save before crashing...")
         runner.emergency_save()
-        raise e
-    except KeyboardInterrupt as e:
+        raise
+    except KeyboardInterrupt:
         print("\n>>> FORCED IMMEDIATE EXIT (KEYBOARD INTERRUPT):")
         runner.exit_reason = "forced_exit"
         runner.emergency_save()
-        raise e
+        raise
     finally:
         # post process
         if envs is not None:
@@ -355,7 +354,7 @@ def main(args):
 
         print(">>> Exporting scalars and closing writer...")
         try:
-            runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
+            runner.writter.export_scalars_to_json(os.path.join(runner.log_dir, "summary.json"))
             runner.writter.close()
         except Exception as e:
             print(f">>> Failed to close writer: {e}")

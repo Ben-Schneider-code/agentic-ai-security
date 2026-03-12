@@ -50,8 +50,6 @@ class MAS(ABC):
         # Assign devices for agents
         # Needs to match `self.device`
         available_devices = ["cuda:2"]
-        print(available_devices)
-        print(self.device)
         next_dev = 0
         for profile in self.profiles:
             if "device" not in profile:
@@ -84,8 +82,8 @@ class MAS(ABC):
             if not getattr(self.critic, "load_in_4bit", load_in_4bit):
                 try:
                     self.critic = self.critic.to(self.device)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[MAS] Warning: could not move critic to {self.device}: {e}")
             print(
                 f"[Profiling] Critic Initialization took {time.time() - start_time:.2f}s"
             )

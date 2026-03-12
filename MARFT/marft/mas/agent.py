@@ -37,8 +37,6 @@ class Agent:
         else:
             nf4_config = None
 
-        # print(f'SELF.DEVICE: {self.device}')
-        # print(os.environ["CUDA_VISIBLE_DEVICES"])
         if device_map is None:
             device_map = {"": self.device}
 

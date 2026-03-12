@@ -128,7 +128,7 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
             remote.send((ob, reward, done, info))
         elif cmd == "reset":
             ob = env.reset()
-            remote.send((ob))
+            remote.send(ob)
         elif cmd == "reset_task":
             ob = env.reset_task()
             remote.send(ob)

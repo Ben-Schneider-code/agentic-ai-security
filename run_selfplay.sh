@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 
 echo "========================================"
 echo "Agentic AI Security: Self-Play Orchestrator"
@@ -60,6 +61,11 @@ elif [[ -n "$CONTINUE_ITER" || -n "$CONTINUE_ROUND" ]]; then
     exit 1
 fi
 
+find_latest_checkpoint() {
+    local dir="$1"
+    find "$dir" -name "sql_agent" -type d | sort -V | tail -n 1
+}
+
 echo "Base model:      $BASE_MODEL"
 echo "Coach model:     ${COACH_MODEL:-<default from config>}"
 echo "Num iterations:  $NUM_ITERATIONS"
@@ -94,7 +100,7 @@ if [[ -n "$CONTINUE_DIR" ]]; then
             echo "ERROR: Cannot recover blue LoRA — directory not found: ${PREV_BLUE_DIR}"
             exit 1
         fi
-        BLUE_LATEST_CKPT=$(find "${PREV_BLUE_DIR}" -name "sql_agent" -type d | sort -V | tail -n 1)
+        BLUE_LATEST_CKPT=$(find_latest_checkpoint "${PREV_BLUE_DIR}")
         if [[ -z "$BLUE_LATEST_CKPT" ]]; then
             echo "ERROR: No sql_agent checkpoint found in ${PREV_BLUE_DIR}"
             exit 1
@@ -139,7 +145,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
             echo "ERROR: Cannot recover red LoRA — directory not found: ${RED_DIR}"
             exit 1
         fi
-        RED_LATEST_CKPT=$(find "${RED_DIR}" -name "sql_agent" -type d | sort -V | tail -n 1)
+        RED_LATEST_CKPT=$(find_latest_checkpoint "${RED_DIR}")
         if [[ -z "$RED_LATEST_CKPT" ]]; then
             echo "ERROR: No sql_agent checkpoint found in ${RED_DIR}!"
             exit 1
@@ -179,7 +185,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
         fi
 
         # Find the highest-step LoRA checkpoint within the known dir.
-        RED_LATEST_CKPT=$(find "${RED_DIR}" -name "sql_agent" -type d | sort -V | tail -n 1)
+        RED_LATEST_CKPT=$(find_latest_checkpoint "${RED_DIR}")
 
         if [ -z "$RED_LATEST_CKPT" ]; then
             echo "ERROR: No sql_agent checkpoint found in ${RED_DIR}!"
@@ -223,7 +229,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     echo "[Iter ${ITER}] Complete. Results at results-${ITER_ID}/"
 
     # Find the highest-step LoRA checkpoint for the blue team
-    BLUE_LATEST_CKPT=$(find "${BLUE_DIR}" -name "sql_agent" -type d | sort -V | tail -n 1)
+    BLUE_LATEST_CKPT=$(find_latest_checkpoint "${BLUE_DIR}")
     if [ -z "$BLUE_LATEST_CKPT" ]; then
         echo "ERROR: No sql_agent checkpoint found in ${BLUE_DIR}!"
         exit 1
