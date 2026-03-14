@@ -61,7 +61,7 @@ ROOT_DIR="$(pwd)"
 # If no --results-id was passed (manual run), generate a fresh one
 # and guard the whole results-{ID}/ dir.
 if [[ -z "$RESULTS_ID" ]]; then
-    RESULTS_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5)"
+    RESULTS_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5 || true)"
     RESULTS_BASE_DIR="${ROOT_DIR}/results-${RESULTS_ID}"
     if [ -d "${RESULTS_BASE_DIR}" ]; then
         echo "ERROR: Collision — ${RESULTS_BASE_DIR} already exists. Exiting."
@@ -121,7 +121,11 @@ GEN_CMD=(python3 util/generate_vllm_config.py --target "$TARGET" --out-config "$
 echo "Starting Actor vLLM Fleet..."
 python3 start_vllm.py --config "$ACTOR_CONFIG_PATH" --timeout 600 --wait-only &
 VLLM_ACTOR_PID=$!
-trap 'kill $VLLM_ACTOR_PID 2>/dev/null || true' EXIT
+if [[ "${SELFPLAY_COACH_PERSISTENT:-}" != "1" && -n "${VLLM_FLEET_PID:-}" ]]; then
+    trap 'kill $VLLM_ACTOR_PID 2>/dev/null || true; kill $VLLM_FLEET_PID 2>/dev/null || true' EXIT
+else
+    trap 'kill $VLLM_ACTOR_PID 2>/dev/null || true' EXIT
+fi
 
 echo "Waiting for actor models to load..."
 TIMEOUT=660

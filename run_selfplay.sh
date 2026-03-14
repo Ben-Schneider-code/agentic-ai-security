@@ -76,6 +76,8 @@ if [[ -n "$COACH_MODEL" ]]; then
     COACH_ARGS=(--coach-model "$COACH_MODEL")
 fi
 
+export SELFPLAY_COACH_PERSISTENT=1
+
 pkill -f start_vllm.py || true
 pkill -9 -f vllm.entrypoints || true
 sleep 5
@@ -110,7 +112,7 @@ if [[ -n "$CONTINUE_DIR" ]]; then
     fi
 else
     # --- Fresh run ---
-    SELFPLAY_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5)"
+    SELFPLAY_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5 || true)"
 fi
 
 echo "Selfplay Run ID: ${SELFPLAY_ID}"
@@ -195,7 +197,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
         echo "Using Red LoRA: ${RED_LATEST_CKPT}"
 
         # Kill actor vLLMs before Blue run (coach can stay alive)
-        pkill -f "vllm.entrypoints" || true
+        pkill -f "vllm.entrypoints.*--port 800[1-9]" || true
         rm -f /tmp/vllm_actor_registry.json
         sleep 3
     fi
@@ -238,7 +240,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     echo "Saved Blue LoRA for next iteration: ${BLUE_LATEST_CKPT}"
 
     # Kill actor vLLMs before next iteration (coach can stay alive)
-    pkill -f "vllm.entrypoints" || true
+    pkill -f "vllm.entrypoints.*--port 800[1-9]" || true
     rm -f /tmp/vllm_actor_registry.json
     sleep 3
 
@@ -252,3 +254,8 @@ echo ""
 echo "========================================"
 echo "Self-Play Alignment Complete (${NUM_ITERATIONS} iterations)."
 echo "========================================"
+
+# Full cleanup: kill coach and all remaining vLLM processes
+pkill -f start_vllm.py || true
+pkill -9 -f vllm.entrypoints || true
+rm -f /tmp/vllm_coach_registry.json /tmp/vllm_actor_registry.json

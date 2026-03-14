@@ -56,7 +56,11 @@ echo "      Logs: /tmp/vllm_logs/"
 # Start vLLM fleet in background
 python3 start_vllm.py --config "$_COACH_CONFIG" --timeout 600 --wait-only &
 VLLM_FLEET_PID=$!
-trap 'kill $VLLM_FLEET_PID 2>/dev/null || true; [[ "$_COACH_CONFIG" == /tmp/* ]] && rm -f "$_COACH_CONFIG"' EXIT
+if [[ "${SELFPLAY_COACH_PERSISTENT:-}" != "1" ]]; then
+    trap 'kill $VLLM_FLEET_PID 2>/dev/null || true; [[ "$_COACH_CONFIG" == /tmp/* ]] && rm -f "$_COACH_CONFIG"' EXIT
+else
+    trap '[[ "$_COACH_CONFIG" == /tmp/* ]] && rm -f "$_COACH_CONFIG"' EXIT
+fi
 
 # Wait for registry to be written
 echo "Waiting for vLLM servers to initialize..."
