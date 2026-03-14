@@ -32,7 +32,9 @@ class ActionCritic(nn.Module):
             device_map = {"": self.device}
         else:
             quantization_config = None
-            device_map = None
+            # Load directly onto the target device (same pattern as Agent)
+            # to avoid creating a CUDA context on GPU 0 during CPU→device transfer
+            device_map = {"": self.device}
 
         print(f"[Profiling] Critic: Loading base model from {model_path}...")
         start_time = time.time()
@@ -43,8 +45,6 @@ class ActionCritic(nn.Module):
             quantization_config=quantization_config,
             device_map=device_map,
         )
-        if not load_in_4bit:
-            self.base_model = self.base_model.to(self.device)
 
         print(
             f"[Profiling] Critic: Base model loaded in {time.time() - start_time:.2f}s"

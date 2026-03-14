@@ -32,7 +32,9 @@ class TokenCritic(nn.Module):
             device_map = {"": self.device}
         else:
             quantization_config = None
-            device_map = None
+            # Load directly onto the target device (same pattern as Agent)
+            # to avoid creating a CUDA context on GPU 0 during CPU→device transfer
+            device_map = {"": self.device}
 
         self.base_model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -41,8 +43,6 @@ class TokenCritic(nn.Module):
             quantization_config=quantization_config,
             device_map=device_map,
         )
-        if not load_in_4bit:
-            self.base_model = self.base_model.to(self.device)
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
