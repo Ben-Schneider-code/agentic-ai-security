@@ -8,14 +8,17 @@ Usage:
 Example:
     python util/plot_blueteam_results.py results-20260302-1530-abc12/blueteam/...
 
-Generated plots:
-    1. Reward per episode (rolling average) + halt-condition threshold
-    2. Precision / Recall / F1 over training (rolling window)
-    3. Outcome distribution over time (stacked area: TP, TN, FP, FN, SQL error)
-    4. Catastrophic failure rate (honeypot access on attack turns)
-    5. Benign vs Attack reward breakdown (separate rolling averages)
-    6. Turn type distribution (benign vs attack frequency check)
-    7. Decisive-win metric (rolling-100 avg vs 0.90 threshold) — NEW
+Generated plots (5 rows × 2 cols):
+    (0,0) Reward per episode (rolling average) + halt-condition threshold
+    (0,1) Precision / Recall / F1 over training (rolling window)
+    (1,0) Benign Turn Outcome Rates (TP/FN/sql_error on benign turns — utility check)
+    (1,1) Attack Turn Outcome Rates (TN/FP/neutral_sql on attack turns — defense check)
+    (2,0) Catastrophic failure rate (honeypot access on attack turns)
+    (2,1) Benign vs Attack reward breakdown (separate rolling averages)
+    (3,0) Refusal Rate by Turn Type (attack vs benign — detects degenerate refuser)
+    (3,1) Utility vs Security Composite Score (vs naive-refuser baseline)
+    (4,0) Decisive-win metric (rolling-100 avg vs 0.90 threshold)
+    (4,1) Halt condition dashboard
 """
 
 import os
@@ -209,25 +212,43 @@ def aggregate(records):
         recall_series.append(rec)
         f1_series.append(f1)
 
-    # --- Cumulative outcome counts for stacked area ---
-    outcome_labels = [
-        "true_positive",
-        "true_negative",
-        "false_positive",
-        "false_negative",
-        "neutral_sql",
-        "sql_error",
-    ]
-    running = defaultdict(int)
-    cumulative = defaultdict(list)
-    for r in records:
-        o = r.get("outcome_tier", "unknown")
-        running[o] += 1
-        for lbl in outcome_labels:
-            cumulative[lbl].append(running[lbl])
-
     # --- Catastrophic failure rate (rolling) ---
     is_catastrophic = [1.0 if o == "false_positive" else 0.0 for o in outcomes]
+
+    # --- Per-turn-type binary outcome arrays ---
+    # Benign turns
+    benign_is_tp = []
+    benign_is_fn = []
+    benign_is_sqlerr = []
+    benign_is_refusal = []
+    benign_episode_indices = []
+
+    # Attack turns
+    attack_is_tn = []
+    attack_is_fp = []
+    attack_is_neutral = []
+    attack_is_sqlerr = []
+    attack_is_refusal = []
+    attack_episode_indices = []
+
+    for i, r in enumerate(records):
+        tt = r.get("turn_type", "unknown")
+        o = r.get("outcome_tier", "unknown")
+        ep_idx = i + 1  # 1-indexed global episode
+
+        if tt == "benign":
+            benign_is_tp.append(1.0 if o == "true_positive" else 0.0)
+            benign_is_fn.append(1.0 if o == "false_negative" else 0.0)
+            benign_is_sqlerr.append(1.0 if o == "sql_error" else 0.0)
+            benign_is_refusal.append(1.0 if o == "false_negative" else 0.0)
+            benign_episode_indices.append(ep_idx)
+        elif tt == "attack":
+            attack_is_tn.append(1.0 if o == "true_negative" else 0.0)
+            attack_is_fp.append(1.0 if o == "false_positive" else 0.0)
+            attack_is_neutral.append(1.0 if o == "neutral_sql" else 0.0)
+            attack_is_sqlerr.append(1.0 if o == "sql_error" else 0.0)
+            attack_is_refusal.append(1.0 if o == "true_negative" else 0.0)
+            attack_episode_indices.append(ep_idx)
 
     return {
         "steps": steps,
@@ -239,31 +260,24 @@ def aggregate(records):
         "precision": precision_series,
         "recall": recall_series,
         "f1": f1_series,
-        "cumulative": cumulative,
         "is_catastrophic": is_catastrophic,
-        "outcome_labels": outcome_labels,
+        # Benign-turn arrays
+        "benign_is_tp": benign_is_tp,
+        "benign_is_fn": benign_is_fn,
+        "benign_is_sqlerr": benign_is_sqlerr,
+        "benign_is_refusal": benign_is_refusal,
+        "benign_episode_indices": benign_episode_indices,
+        # Attack-turn arrays
+        "attack_is_tn": attack_is_tn,
+        "attack_is_fp": attack_is_fp,
+        "attack_is_neutral": attack_is_neutral,
+        "attack_is_sqlerr": attack_is_sqlerr,
+        "attack_is_refusal": attack_is_refusal,
+        "attack_episode_indices": attack_episode_indices,
     }
 
 
 # ─────────────────────────────── Plotting ────────────────────────────────────
-
-COLORS = {
-    "true_positive": "#27ae60",  # green
-    "true_negative": "#2980b9",  # blue
-    "false_positive": "#e74c3c",  # red
-    "false_negative": "#f39c12",  # orange
-    "neutral_sql": "#95a5a6",  # grey
-    "sql_error": "#bdc3c7",  # light grey
-}
-
-LABELS = {
-    "true_positive": "True Positive (benign → SQL ✓)",
-    "true_negative": "True Negative (attack → refused ✓)",
-    "false_positive": "False Positive (attack → honeypot ✗✗✗)",
-    "false_negative": "False Negative (benign → refused ✗)",
-    "neutral_sql": "Neutral SQL (attack, no honeypot)",
-    "sql_error": "SQL Error",
-}
 
 
 def plot(run_dir: str, data: dict) -> str:
@@ -275,13 +289,13 @@ def plot(run_dir: str, data: dict) -> str:
     halt = compute_halt_status(rewards)
     dw_xs, dw_avgs = compute_decisive_win_series(rewards)
 
-    # ── Build figure: 4 rows × 2 cols ────────────────────────────────────────
-    fig, axes = plt.subplots(4, 2, figsize=(16, 24))
+    # ── Build figure: 5 rows × 2 cols ────────────────────────────────────────
+    fig, axes = plt.subplots(5, 2, figsize=(16, 30))
     fig.suptitle(
         f"Blue Team Training — {os.path.basename(run_dir)}", fontsize=14, y=0.99
     )
 
-    ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8 = axes.flatten()
+    (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10) = axes.flatten()
 
     # ── Plot 1: Reward over time ──────────────────────────────────────────────
     ax1.plot(steps, rewards, color="#3498db", alpha=0.3, linewidth=0.8, label="Reward")
@@ -313,47 +327,71 @@ def plot(run_dir: str, data: dict) -> str:
     ax2.legend(loc="lower right")
     ax2.grid(True, alpha=0.3)
 
-    # ── Plot 3: Cumulative Outcome Distribution (stacked area) ────────────────
-    stack_y, stack_colors, stack_labels = [], [], []
-    for lbl in data["outcome_labels"]:
-        arr = np.array(data["cumulative"][lbl], dtype=float)
-        if arr[-1] > 0:
-            stack_y.append(arr)
-            stack_colors.append(COLORS.get(lbl, "gray"))
-            stack_labels.append(LABELS.get(lbl, lbl))
-    if stack_y:
-        ax3.stackplot(
-            steps, *stack_y, colors=stack_colors, labels=stack_labels, alpha=0.8
-        )
-    ax3.set_title("Cumulative Outcomes (Count)")
-    ax3.set_xlabel("Episode")
-    ax3.set_ylabel("Cumulative Count")
-    ax3.legend(loc="upper left", fontsize="x-small")
+    # ── Plot 3: Benign Turn Outcome Rates — "is utility maintained?" ──────────
+    benign_eps = np.array(data["benign_episode_indices"])
+    for arr, color, label, lw in [
+        (data["benign_is_tp"], "#27ae60", "TP rate — utility (benign→SQL ✓)", 2.5),
+        (data["benign_is_fn"], "#f39c12", "FN rate — over-refusal (benign→refused ✗)", 1.5),
+        (data["benign_is_sqlerr"], "#bdc3c7", "SQL error rate", 1.0),
+    ]:
+        if len(arr) >= 2:
+            rx = rolling_x(len(arr), W)
+            ra = compute_rolling(arr, W)
+            if len(rx) == len(ra) and len(rx) > 0:
+                global_x = benign_eps[rx]
+                ax3.plot(global_x, ra * 100, color=color, linewidth=lw, label=label)
+    ax3.axhspan(80, 100, alpha=0.08, color="#27ae60", label="Healthy utility zone (80–100%)")
+    ax3.set_title("Benign Turn Outcome Rates — Is Utility Maintained?")
+    ax3.set_xlabel("Episode (global)")
+    ax3.set_ylabel("Rate (%)")
+    ax3.set_ylim(-2, 105)
+    ax3.legend(loc="lower left", fontsize="small")
     ax3.grid(True, alpha=0.3)
 
-    # ── Plot 4: Catastrophic Failure Rate ─────────────────────────────────────
+    # ── Plot 4: Attack Turn Outcome Rates — "how is it defending?" ────────────
+    attack_eps = np.array(data["attack_episode_indices"])
+    for arr, color, label, lw in [
+        (data["attack_is_tn"], "#2980b9", "TN rate — defense (attack→refused ✓)", 2.5),
+        (data["attack_is_fp"], "#e74c3c", "FP rate — catastrophic (attack→honeypot ✗)", 1.5),
+        (data["attack_is_neutral"], "#95a5a6", "Neutral SQL rate (attack→SQL, no honeypot)", 1.0),
+        (data["attack_is_sqlerr"], "#bdc3c7", "SQL error rate", 1.0),
+    ]:
+        if len(arr) >= 2:
+            rx = rolling_x(len(arr), W)
+            ra = compute_rolling(arr, W)
+            if len(rx) == len(ra) and len(rx) > 0:
+                global_x = attack_eps[rx]
+                ax4.plot(global_x, ra * 100, color=color, linewidth=lw, label=label)
+    ax4.set_title("Attack Turn Outcome Rates — How Is It Defending?")
+    ax4.set_xlabel("Episode (global)")
+    ax4.set_ylabel("Rate (%)")
+    ax4.set_ylim(-2, 105)
+    ax4.legend(loc="upper left", fontsize="small")
+    ax4.grid(True, alpha=0.3)
+
+    # ── Plot 5: Catastrophic Failure Rate ─────────────────────────────────────
     cat = data["is_catastrophic"]
     rx = rolling_x(len(steps), W)
     ra = compute_rolling(cat, W)
     if len(rx) == len(ra):
-        ax4.plot(
+        ax5.plot(
             rx,
             ra * 100,
             color="#e74c3c",
             linewidth=2,
             label=f"Catastrophic rate ({W}-ep)",
         )
-        ax4.fill_between(rx, 0, ra * 100, color="#e74c3c", alpha=0.2)
-    ax4.axhspan(10, 100, alpha=0.07, color="red", label="Danger Zone (>10%)")
-    ax4.axhspan(5, 10, alpha=0.07, color="orange", label="Warning Zone (5-10%)")
-    ax4.set_title("Catastrophic Failure Rate (Attack → Honeypot)")
-    ax4.set_xlabel("Episode")
-    ax4.set_ylabel("Rate (%)")
-    ax4.set_ylim(0, max(10, max(ra * 100) * 1.1) if len(ra) > 0 else 10)
-    ax4.legend(loc="upper right", fontsize="small")
-    ax4.grid(True, alpha=0.3)
+        ax5.fill_between(rx, 0, ra * 100, color="#e74c3c", alpha=0.2)
+    ax5.axhspan(10, 100, alpha=0.07, color="red", label="Danger Zone (>10%)")
+    ax5.axhspan(5, 10, alpha=0.07, color="orange", label="Warning Zone (5-10%)")
+    ax5.set_title("Catastrophic Failure Rate (Attack → Honeypot)")
+    ax5.set_xlabel("Episode")
+    ax5.set_ylabel("Rate (%)")
+    ax5.set_ylim(0, max(10, max(ra * 100) * 1.1) if len(ra) > 0 else 10)
+    ax5.legend(loc="upper right", fontsize="small")
+    ax5.grid(True, alpha=0.3)
 
-    # ── Plot 5: Benign vs Attack Reward ───────────────────────────────────────
+    # ── Plot 6: Benign vs Attack Reward ───────────────────────────────────────
     for arr, color, label in [
         (data["benign_rewards"], "#27ae60", "Benign turn reward"),
         (data["attack_rewards"], "#e74c3c", "Attack turn reward"),
@@ -364,48 +402,179 @@ def plot(run_dir: str, data: dict) -> str:
             if len(rx) == len(ra):
                 # re-scale x to episode space
                 x_scaled = np.linspace(1, len(steps), len(ra)).astype(int)
-                ax5.plot(x_scaled, ra, color=color, linewidth=2, label=label)
-    ax5.axhline(0, color="gray", linestyle=":", alpha=0.5)
-    ax5.set_title("Avg Reward — Benign vs Attack Turns")
-    ax5.set_xlabel("Episode (approx.)")
-    ax5.set_ylabel("Rolling Avg Reward")
-    ax5.legend(loc="upper left")
-    ax5.grid(True, alpha=0.3)
+                ax6.plot(x_scaled, ra, color=color, linewidth=2, label=label)
+    ax6.axhline(0, color="gray", linestyle=":", alpha=0.5)
+    ax6.set_title("Avg Reward — Benign vs Attack Turns")
+    ax6.set_xlabel("Episode (approx.)")
+    ax6.set_ylabel("Rolling Avg Reward")
+    ax6.legend(loc="upper left")
+    ax6.grid(True, alpha=0.3)
 
-    # ── Plot 6: Turn Type Distribution ────────────────────────────────────────
-    benign_count = data["turn_types"].count("benign")
-    attack_count = data["turn_types"].count("attack")
-    total = benign_count + attack_count or 1
-    ax6.pie(
-        [benign_count, attack_count],
-        labels=[
-            f"Benign\n{benign_count} ({benign_count / total * 100:.1f}%)",
-            f"Attack\n{attack_count} ({attack_count / total * 100:.1f}%)",
-        ],
-        colors=["#27ae60", "#e74c3c"],
-        autopct=None,
-        startangle=90,
+    # ── Plot 7: Refusal Rate by Turn Type — "refuse everything" detector ──────
+    attack_refusal_global_x = None
+    attack_refusal_ra = None
+    benign_refusal_global_x = None
+    benign_refusal_ra = None
+
+    if len(data["attack_is_refusal"]) >= 2:
+        rx = rolling_x(len(data["attack_is_refusal"]), W)
+        ra = compute_rolling(data["attack_is_refusal"], W)
+        if len(rx) == len(ra) and len(rx) > 0:
+            attack_refusal_global_x = attack_eps[rx]
+            attack_refusal_ra = ra * 100
+            ax7.plot(
+                attack_refusal_global_x,
+                attack_refusal_ra,
+                color="#2980b9",
+                linewidth=2,
+                label="Attack refusal rate (high = good ✓)",
+            )
+
+    if len(data["benign_is_refusal"]) >= 2:
+        rx = rolling_x(len(data["benign_is_refusal"]), W)
+        ra = compute_rolling(data["benign_is_refusal"], W)
+        if len(rx) == len(ra) and len(rx) > 0:
+            benign_refusal_global_x = benign_eps[rx]
+            benign_refusal_ra = ra * 100
+            ax7.plot(
+                benign_refusal_global_x,
+                benign_refusal_ra,
+                color="#f39c12",
+                linewidth=2,
+                label="Benign refusal rate (high = bad ✗)",
+            )
+
+    # Green fill where attack refusal > benign refusal (discrimination gap)
+    if (
+        attack_refusal_global_x is not None
+        and benign_refusal_global_x is not None
+        and len(attack_refusal_global_x) > 0
+        and len(benign_refusal_global_x) > 0
+    ):
+        # Interpolate both series onto a common x grid
+        x_min = max(attack_refusal_global_x[0], benign_refusal_global_x[0])
+        x_max = min(attack_refusal_global_x[-1], benign_refusal_global_x[-1])
+        if x_max > x_min:
+            common_x = np.linspace(x_min, x_max, 200)
+            attack_interp = np.interp(common_x, attack_refusal_global_x, attack_refusal_ra)
+            benign_interp = np.interp(common_x, benign_refusal_global_x, benign_refusal_ra)
+            ax7.fill_between(
+                common_x,
+                benign_interp,
+                attack_interp,
+                where=(attack_interp > benign_interp),
+                alpha=0.2,
+                color="#27ae60",
+                label="Discrimination gap (attack > benign refusal)",
+            )
+            # Annotate final gap
+            final_attack = float(np.interp(x_max, attack_refusal_global_x, attack_refusal_ra))
+            final_benign = float(np.interp(x_max, benign_refusal_global_x, benign_refusal_ra))
+            final_gap = final_attack - final_benign
+            gap_color = "#27ae60" if final_gap > 0 else "#e74c3c"
+            ax7.annotate(
+                f"Final gap: {final_gap:+.1f}%",
+                xy=(x_max, (final_attack + final_benign) / 2),
+                xytext=(-100, 0),
+                textcoords="offset points",
+                fontsize=9,
+                fontweight="bold",
+                color=gap_color,
+                arrowprops=dict(arrowstyle="->", color=gap_color),
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=gap_color, alpha=0.9),
+            )
+
+    ax7.set_title("Refusal Rate by Turn Type — Degenerate Refuser Detector\n(both lines rising = refusing everything)")
+    ax7.set_xlabel("Episode (global)")
+    ax7.set_ylabel("Refusal Rate (%)")
+    ax7.set_ylim(-2, 105)
+    ax7.legend(loc="upper left", fontsize="small")
+    ax7.grid(True, alpha=0.3)
+
+    # ── Plot 8: Utility vs Security Composite Score ────────────────────────────
+    utility_series = None
+    security_series = None
+    utility_global_x = None
+    security_global_x = None
+
+    if len(data["benign_is_tp"]) >= 2:
+        rx = rolling_x(len(data["benign_is_tp"]), W)
+        ra = compute_rolling(data["benign_is_tp"], W)
+        if len(rx) == len(ra) and len(rx) > 0:
+            utility_global_x = benign_eps[rx]
+            utility_series = ra * 100
+            ax8.plot(
+                utility_global_x,
+                utility_series,
+                color="#27ae60",
+                linewidth=2,
+                label="Utility score — TP rate on benign",
+            )
+
+    if len(data["attack_is_tn"]) >= 2:
+        rx = rolling_x(len(data["attack_is_tn"]), W)
+        ra = compute_rolling(data["attack_is_tn"], W)
+        if len(rx) == len(ra) and len(rx) > 0:
+            security_global_x = attack_eps[rx]
+            security_series = ra * 100
+            ax8.plot(
+                security_global_x,
+                security_series,
+                color="#2980b9",
+                linewidth=2,
+                label="Security score — TN rate on attack",
+            )
+
+    # Composite score on common x grid
+    if utility_global_x is not None and security_global_x is not None:
+        x_min = max(utility_global_x[0], security_global_x[0])
+        x_max = min(utility_global_x[-1], security_global_x[-1])
+        if x_max > x_min:
+            common_x = np.linspace(x_min, x_max, 300)
+            u_interp = np.interp(common_x, utility_global_x, utility_series)
+            s_interp = np.interp(common_x, security_global_x, security_series)
+            composite = (u_interp + s_interp) / 2
+            ax8.plot(
+                common_x,
+                composite,
+                color="#8e44ad",
+                linewidth=2.5,
+                linestyle="--",
+                label="Composite = (Utility + Security) / 2",
+            )
+
+    # Naive refuser baseline: refuses everything → 0% utility, 100% security → composite=50%
+    ax8.axhline(
+        50,
+        color="gray",
+        linestyle=":",
+        linewidth=1.5,
+        label="Naive refuser baseline (50% composite)",
     )
-    ax6.set_title("Turn Type Distribution")
+    ax8.set_title("Utility vs Security Composite Score\n(above dashed line = better than blind refusal)")
+    ax8.set_xlabel("Episode (global)")
+    ax8.set_ylabel("Score (%)")
+    ax8.set_ylim(-2, 105)
+    ax8.legend(loc="lower right", fontsize="small")
+    ax8.grid(True, alpha=0.3)
 
-    # ── Plot 7: Decisive-Win Metric ── NEW ─────────────────────────────────────
-    # This directly visualises the blueteam_decisive_win condition from sql_runner.py
+    # ── Plot 9: Decisive-Win Metric ────────────────────────────────────────────
     dw_color_main = "#e74c3c" if halt["decisive_win_active"] else "#2980b9"
-    ax7.plot(
+    ax9.plot(
         dw_xs + 1,  # 1-indexed to match other plots
         dw_avgs,
         color=dw_color_main,
         linewidth=2,
         label=f"Rolling avg (last {DECISIVE_WIN_WINDOW} ep)",
     )
-    ax7.axhline(
+    ax9.axhline(
         DECISIVE_WIN_THRESHOLD,
         color="#e74c3c",
         linestyle="--",
         linewidth=2,
         label=f"Halt threshold ({DECISIVE_WIN_THRESHOLD:.2f})",
     )
-    ax7.fill_between(
+    ax9.fill_between(
         dw_xs + 1,
         dw_avgs,
         DECISIVE_WIN_THRESHOLD,
@@ -414,7 +583,7 @@ def plot(run_dir: str, data: dict) -> str:
         color="#e74c3c",
         label="Above threshold (halt zone)",
     )
-    ax7.fill_between(
+    ax9.fill_between(
         dw_xs + 1,
         dw_avgs,
         DECISIVE_WIN_THRESHOLD,
@@ -431,7 +600,7 @@ def plot(run_dir: str, data: dict) -> str:
     status_str = (
         "✓ TRIGGERED" if halt["decisive_win_active"] else f"NOT YET  (need +{gap:.3f})"
     )
-    ax7.annotate(
+    ax9.annotate(
         f"Current: {final_dw:.4f}\n{status_str}",
         xy=(len(steps), final_dw),
         xytext=(-120, 20 if final_dw < DECISIVE_WIN_THRESHOLD else -35),
@@ -448,23 +617,23 @@ def plot(run_dir: str, data: dict) -> str:
         ),
     )
 
-    ax7.set_title(
+    ax9.set_title(
         f"Decisive-Win Halt Condition  (blueteam_decisive_win)\n"
         f"Halt if rolling-{DECISIVE_WIN_WINDOW} avg ≥ {DECISIVE_WIN_THRESHOLD:.2f}  |  "
         f"Window covers last {min(len(rewards), DECISIVE_WIN_WINDOW)} of {len(rewards)} episodes",
         fontsize=10,
     )
-    ax7.set_xlabel("Episode")
-    ax7.set_ylabel(f"Avg Reward (last {DECISIVE_WIN_WINDOW} ep)")
-    ax7.set_ylim(
+    ax9.set_xlabel("Episode")
+    ax9.set_ylabel(f"Avg Reward (last {DECISIVE_WIN_WINDOW} ep)")
+    ax9.set_ylim(
         min(float(np.min(dw_avgs)) - 0.05, DECISIVE_WIN_THRESHOLD - 0.15),
         max(float(np.max(dw_avgs)) + 0.05, DECISIVE_WIN_THRESHOLD + 0.05),
     )
-    ax7.legend(loc="lower right", fontsize="small")
-    ax7.grid(True, alpha=0.3)
+    ax9.legend(loc="lower right", fontsize="small")
+    ax9.grid(True, alpha=0.3)
 
-    # ── Plot 8: Halt Condition Summary Dashboard ── NEW ───────────────────────
-    ax8.axis("off")
+    # ── Plot 10: Halt Condition Summary Dashboard ──────────────────────────────
+    ax10.axis("off")
 
     n = halt["n_env_episodes"]
     approx_steps = halt["approx_total_steps"]
@@ -603,11 +772,11 @@ def plot(run_dir: str, data: dict) -> str:
 
     y = 0.97
     for text, _, fs, fw, fc in lines:
-        ax8.text(
+        ax10.text(
             0.03,
             y,
             text,
-            transform=ax8.transAxes,
+            transform=ax10.transAxes,
             fontsize=fs,
             fontweight=fw,
             color=fc,
