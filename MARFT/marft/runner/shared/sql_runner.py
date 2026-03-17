@@ -438,9 +438,14 @@ class SQLRunner:
                                         if hasattr(env, "get_blueteam_context"):
                                             bt_context = env.get_blueteam_context()
                                             # Collect red team actions from buffer
+                                            # Use episode_length to slice only the
+                                            # current env episode's steps, not all
+                                            # training-window steps 0..step.
                                             batch = self.buffer.cur_batch_index
                                             red_actions = []
-                                            for s in range(step + 1):
+                                            ep_len = episode_length if isinstance(episode_length, int) else (step + 1)
+                                            ep_start = step + 1 - ep_len
+                                            for s in range(ep_start, step + 1):
                                                 act = self.buffer.actions[
                                                     batch, s, i, :
                                                 ]
