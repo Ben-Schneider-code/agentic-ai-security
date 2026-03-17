@@ -861,7 +861,7 @@ class SQLRunner:
 
         eval_obs = self.eval_envs.reset()
         while True:
-            eval_actions, _ = self.mas.get_actions(np.concatenate(eval_obs))
+            _, eval_actions, _ = self.mas.get_actions_sequential(np.concatenate(eval_obs))
             eval_actions = np.array(np.split(eval_actions, self.n_eval_rollout_threads))
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(
                 eval_actions
