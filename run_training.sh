@@ -253,6 +253,10 @@ else
             --entropy_coef 0.05 \
             --warmup_steps 500 \
             --horizon 5 \
+            --use_eval \
+            --eval_interval 10 \
+            --eval_episodes 20 \
+            --n_eval_rollout_threads 2 \
             --coach_vllm_url "$COACH_VLLM_URL" \
             --coach_model_name "$COACH_MODEL_NAME" \
             --results_dir "${RESULTS_TEAM_DIR}" \

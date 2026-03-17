@@ -300,10 +300,16 @@ def main(args):
     envs, shared_honeypots = make_train_env(all_args)
     print(">>> Training environment created with shared honeypot tracking.")
 
+    eval_envs = None
+    if all_args.use_eval:
+        print(">>> Creating eval environments...")
+        eval_envs = make_eval_env(all_args)
+        print(">>> Eval environments created.")
+
     config = {
         "all_args": all_args,
         "envs": envs,
-        "eval_envs": None,
+        "eval_envs": eval_envs,
         "num_agents": envs.n_agents if envs is not None else 1,
         "run_dir": run_dir,
         "resume_state": resume_state,
