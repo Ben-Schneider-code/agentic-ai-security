@@ -93,7 +93,15 @@ class Agent:
         self.model.to(self.device)
 
     def generate(self, *args, **kwargs):
-        return self.model.generate(*args, **kwargs)
+        # Disable gradient checkpointing for inference - it disables KV caching
+        # and provides no benefit under torch.no_grad()
+        self.model.gradient_checkpointing_disable()
+        self.model.config.use_cache = True
+        try:
+            return self.model.generate(*args, **kwargs)
+        finally:
+            self.model.config.use_cache = False
+            self.model.gradient_checkpointing_enable()
 
     def parameters(self):
         return self.model.parameters()
