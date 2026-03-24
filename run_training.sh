@@ -228,7 +228,7 @@ if [[ "$TARGET" == "redteam" ]]; then
             $EXTRA_TRAIN_ARGS
 else
     # NOTES:
-    # - Very important that steps like horizon match redteam
+    # - horizon must match redteam — blueteam attack episodes use multi-turn red LoRA
     python3 marft/scripts/train_sql.py \
             --seed 12 \
             --env_name blueteam_sql_env \

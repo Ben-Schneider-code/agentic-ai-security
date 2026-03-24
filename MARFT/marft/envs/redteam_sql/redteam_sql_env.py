@@ -1205,6 +1205,7 @@ def judge_correct(
         "sensitive_query",
         "no_sql",
         "sql_error",
+        "blocked_attempt",
     ]:
         # These are all "failed" outcomes after warmup - apply refusal penalty if not already negative
         if base_reward >= 0:
