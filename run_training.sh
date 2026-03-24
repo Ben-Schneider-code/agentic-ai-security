@@ -247,7 +247,7 @@ else
             --n_rollout_threads 8 \
             --episode_length 10 \
             --gradient_cp_steps 8 \
-            --context_window 2048 \
+            --context_window 4096 \
             --max_new_tokens 512 \
             --save_interval 400 \
             --entropy_coef 0.05 \
