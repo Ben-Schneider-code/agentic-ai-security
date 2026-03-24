@@ -165,7 +165,8 @@ class SQLRunner:
         # Initialize trajectory augmenter (Phase 2) if coach URL is configured
         self.trajectory_augmenter = None
         coach_url = getattr(self.all_args, "coach_vllm_url", None)
-        if coach_url and self.algo == "APPO":
+        is_redteam = "blueteam" not in getattr(self.all_args, "env_name", "")
+        if coach_url and self.algo == "APPO" and is_redteam:
             try:
                 from marft.coach import TrajectoryAugmenter
 
@@ -285,8 +286,8 @@ class SQLRunner:
         calculated_episodes = (
             int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
         )
-        # Cap at max_episodes from frozen config (auto-stop at 2000)
-        # USER_REQUEST: Fix total number of episodes to 2000 no matter what
+        # Cap at max_episodes from frozen config (auto-stop at configured limit)
+        # USER_REQUEST: Fix total number of episodes to max_episodes no matter what
         episodes = REWARD_CONFIG.max_episodes
         print(
             f"[Runner] Training for {episodes} TRAINING episodes (fixed to config max)"
@@ -356,8 +357,9 @@ class SQLRunner:
             torch.cuda.empty_cache()
 
             # --- Trajectory Harvesting: track successful trajectories ---
-            enable_harvesting = getattr(
-                self.all_args, "enable_trajectory_harvesting", True
+            enable_harvesting = (
+                getattr(self.all_args, "enable_trajectory_harvesting", True)
+                and "blueteam" not in getattr(self.all_args, "env_name", "")
             )
             oversample_factor = getattr(self.all_args, "oversample_factor", 5)
             harvested_trajectories = []  # list of (thread_idx, step, reward, honeypot_ids)
@@ -401,7 +403,7 @@ class SQLRunner:
                     if dones[i, 0]:
                         # Environment episode terminated - log cumulative return
                         episodic_return = infos[i]["episodic_return"]
-                        episode_length = infos[i].get("episode_length", "?")
+                        env_episode_length = infos[i].get("episode_length", "?")
                         terminal_success = infos[i].get("terminal_success", False)
 
                         self.writter.add_scalar(
@@ -443,8 +445,8 @@ class SQLRunner:
                                             # training-window steps 0..step.
                                             batch = self.buffer.cur_batch_index
                                             red_actions = []
-                                            ep_len = episode_length if isinstance(episode_length, int) else (step + 1)
-                                            ep_start = step + 1 - ep_len
+                                            ep_len = env_episode_length if isinstance(env_episode_length, int) else (step + 1)
+                                            ep_start = max(0, step + 1 - ep_len)
                                             for s in range(ep_start, step + 1):
                                                 act = self.buffer.actions[
                                                     batch, s, i, :
@@ -452,13 +454,16 @@ class SQLRunner:
                                                 red_actions.append(
                                                     [str(a) for a in act]
                                                 )
+                                            episode_hp_ids = []
+                                            if hasattr(self.envs, "envs") and i < len(self.envs.envs):
+                                                env_i = self.envs.envs[i]
+                                                if hasattr(env_i, "episode_honeypot_ids"):
+                                                    episode_hp_ids = list(env_i.episode_honeypot_ids)
                                             _log_lure(
                                                 self.log_dir,
                                                 episode,
                                                 i,
-                                                list(self.shared_honeypots)
-                                                if self.shared_honeypots
-                                                else [],
+                                                episode_hp_ids,
                                                 float(episodic_return),
                                                 bt_context,
                                                 red_actions,
@@ -467,9 +472,9 @@ class SQLRunner:
                                     print(f"[HARVEST] Warning: Failed to log lure: {e}")
 
                         # Log episode length for analysis
-                        if episode_length is not None and episode_length != "?":
+                        if env_episode_length is not None and env_episode_length != "?":
                             self.writter.add_scalar(
-                                "env_episode_length", episode_length, global_step
+                                "env_episode_length", env_episode_length, global_step
                             )
 
                         # Sync profiles after episode reset (honeypots may have been accessed)
@@ -485,6 +490,7 @@ class SQLRunner:
                 total_injected = 0
                 for traj_info in harvested_trajectories:
                     tid = traj_info["thread_idx"]
+                    traj_injected = 0
 
                     # Phase 2: Use coach augmenter for diverse variations
                     if self.trajectory_augmenter is not None:
@@ -550,10 +556,11 @@ class SQLRunner:
                                 inj = self.buffer.inject_successful_trajectory(
                                     trajectory_data, 1
                                 )
+                                traj_injected += inj
                                 total_injected += inj
 
                             print(
-                                f"[HARVEST] Phase 2: Injected {total_injected} augmented copies "
+                                f"[HARVEST] Phase 2: Injected {traj_injected} augmented copies "
                                 f"for thread {tid} (reward={traj_info['reward']:.2f})"
                             )
 
@@ -570,7 +577,7 @@ class SQLRunner:
                                     tid,
                                     coach_model_name,
                                     action_details,
-                                    total_injected,
+                                    traj_injected,
                                 )
                             except Exception as log_err:
                                 print(
@@ -866,8 +873,7 @@ class SQLRunner:
 
         eval_obs = self.eval_envs.reset()
         while True:
-            _, eval_actions, _ = self.mas.get_actions_sequential(np.concatenate(eval_obs))
-            eval_actions = np.array(np.split(eval_actions, self.n_eval_rollout_threads))
+            _, eval_actions, _ = self.mas.get_actions_sequential(eval_obs)
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(
                 eval_actions
             )
@@ -877,7 +883,7 @@ class SQLRunner:
             for eval_i in range(self.n_eval_rollout_threads):
                 if eval_dones_env[eval_i]:
                     eval_episode += 1
-                    eval_episode_rewards.append(eval_rewards[eval_i])
+                    eval_episode_rewards.append(eval_infos[eval_i].get("episodic_return", eval_rewards[eval_i]))
 
             if eval_episode >= self.all_args.eval_episodes:
                 eval_episode_rewards = np.array(eval_episode_rewards)

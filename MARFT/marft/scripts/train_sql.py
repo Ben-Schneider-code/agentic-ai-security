@@ -1,8 +1,10 @@
 import dataclasses
+import re
 import sys
 import time
 import os
 import signal
+import random
 import numpy as np
 from pathlib import Path
 import torch
@@ -44,9 +46,6 @@ from marft.runner.shared.sql_runner import SQLRunner as Runner
 
 def make_train_env(all_args, shared_honeypots: set = None):
     """Create training environments with shared honeypot tracking.
-
-
-    SQLEnv, _, _ = get_env_components(all_args.env_name)
 
     Args:
         all_args: Training arguments
@@ -212,9 +211,9 @@ def build_run_dir(all_args):
         curr_run = "run_1"
     else:
         exst_run_nums = [
-            int(str(folder.name).split("_")[1])
+            int(m.group(1))
             for folder in run_dir.iterdir()
-            if str(folder.name).startswith("run")
+            if (m := re.match(r'^run_(\d+)', folder.name))
         ]
         if len(exst_run_nums) == 0:
             curr_run = "run_1"
@@ -295,6 +294,7 @@ def main(args):
     with torch.cuda.device(2):
         torch.cuda.manual_seed(all_args.seed)
     np.random.seed(all_args.seed)
+    random.seed(all_args.seed)
 
     print(">>> Creating training environment...")
     envs, shared_honeypots = make_train_env(all_args)
