@@ -364,6 +364,7 @@ class SQLRunner:
             oversample_factor = getattr(self.all_args, "oversample_factor", 5)
             harvested_trajectories = []  # list of (thread_idx, step, reward, honeypot_ids)
 
+            self.trainer.prep_rollout()
             for step in range(self.episode_length):
                 # Pass generation params for GRPO (higher temperature for exploration)
                 if self.algo == "GRPO":
@@ -649,6 +650,7 @@ class SQLRunner:
                 )
 
             self.before_update()
+            self.trainer.prep_training()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
             self.buffer.after_update()
 
