@@ -78,8 +78,28 @@ fi
 
 export SELFPLAY_COACH_PERSISTENT=1
 
+# Cleanup function used on both success and failure exits.
+# Uses SIGTERM (not SIGKILL) to avoid bricking GPUs with active CUDA contexts.
+cleanup_all_vllm() {
+    echo ""
+    echo "[cleanup] Stopping all vLLM processes..."
+    pkill -f start_vllm.py || true
+    # Give vLLM processes time to shut down gracefully (CUDA context teardown)
+    pkill -f vllm.entrypoints || true
+    sleep 10
+    # Check if any survived; only then escalate, with a warning
+    if pgrep -f vllm.entrypoints > /dev/null 2>&1; then
+        echo "[cleanup] WARNING: vLLM processes still alive after SIGTERM. Sending SIGKILL."
+        echo "[cleanup] This may brick a GPU. Run 'nvidia-smi --gpu-reset -i <id>' if needed."
+        pkill -9 -f vllm.entrypoints || true
+        sleep 3
+    fi
+    rm -f /tmp/vllm_coach_registry.json /tmp/vllm_actor_registry.json
+}
+trap cleanup_all_vllm EXIT
+
 pkill -f start_vllm.py || true
-pkill -9 -f vllm.entrypoints || true
+pkill -f vllm.entrypoints || true
 sleep 5
 
 BLUE_LATEST_CKPT=""
@@ -255,7 +275,4 @@ echo "========================================"
 echo "Self-Play Alignment Complete (${NUM_ITERATIONS} iterations)."
 echo "========================================"
 
-# Full cleanup: kill coach and all remaining vLLM processes
-pkill -f start_vllm.py || true
-pkill -9 -f vllm.entrypoints || true
-rm -f /tmp/vllm_coach_registry.json /tmp/vllm_actor_registry.json
+# Full cleanup handled by the EXIT trap (cleanup_all_vllm)

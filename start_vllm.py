@@ -219,13 +219,26 @@ class VLLMInstance:
 
     def stop(self):
         if self.process:
-            print(f"[{self.server_id}] Terminating PID={self.process.pid}")
+            print(f"[{self.server_id}] Terminating PID={self.process.pid} (SIGTERM, 60s timeout)")
             self.process.terminate()
             try:
-                self.process.wait(timeout=10)
+                self.process.wait(timeout=60)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+                # SIGKILL on a process with active CUDA contexts bricks the GPU
+                # (100% utilization, 0% RAM, no process visible, requires server restart).
+                # Send SIGTERM again and give it more time before resorting to SIGKILL.
+                print(f"[{self.server_id}] Still alive after 60s, sending SIGTERM again...")
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    print(
+                        f"[{self.server_id}] WARNING: Sending SIGKILL — this may brick "
+                        f"GPU(s) {self.gpus}. Run 'nvidia-smi --gpu-reset -i {self.gpus[0]}' "
+                        f"if the GPU becomes unresponsive."
+                    )
+                    self.process.kill()
+                    self.process.wait()
             self.process = None
 
 
