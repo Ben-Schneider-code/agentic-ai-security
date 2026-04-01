@@ -41,6 +41,8 @@ dependencies = [
     "word2number",
     "bert-score",
     "matplotlib",
+    "scipy",
+    "seaborn",
 ]
 
 [tool.uv]
