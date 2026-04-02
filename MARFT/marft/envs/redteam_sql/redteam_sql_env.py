@@ -2,6 +2,7 @@ import logging
 import numpy as np
 import random
 import json
+import threading
 from typing import Optional, TYPE_CHECKING
 from typing import Literal, TypedDict
 import re
@@ -626,8 +627,9 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
-        # Wrapper around async implementation
-        return self.loop.run_until_complete(self.acomplete(history, system_prompt))
+        # Thread-safe: asyncio.run() creates a fresh event loop per call,
+        # allowing concurrent invocations from ThreadPoolExecutor workers.
+        return asyncio.run(self.acomplete(history, system_prompt))
 
 
 # === SQL-specific helpers ===
@@ -977,6 +979,9 @@ def detect_degenerate_input(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+_reward_log_lock = threading.Lock()
+
+
 def judge_correct(
     extracted_groundtruth: Optional[str],
     answer: str,
@@ -1298,8 +1303,9 @@ def judge_correct(
             if context_info:
                 debug_entry.update(context_info)
 
-            with open(log_path, "a") as f:
-                f.write(json.dumps(debug_entry) + "\n")
+            with _reward_log_lock:
+                with open(log_path, "a") as f:
+                    f.write(json.dumps(debug_entry) + "\n")
         except Exception as log_error:
             print(f"[WARNING] Failed to write debug log: {log_error}")
 

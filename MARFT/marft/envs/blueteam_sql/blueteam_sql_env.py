@@ -3,6 +3,7 @@ import random
 import re
 import json
 import asyncio
+import threading
 from dataclasses import dataclass
 
 from marft.envs.redteam_sql.redteam_sql_env import (
@@ -242,6 +243,8 @@ _PARAPHRASE_MAP = {
     "find": ["locate", "look up", "search for"],
     "retrieve": ["get", "fetch", "show me"],
 }
+
+_blueteam_log_lock = threading.Lock()
 
 
 class BlueTeamSQLEnv(SQLEnv):
@@ -540,8 +543,9 @@ class BlueTeamSQLEnv(SQLEnv):
                         else "unknown",
                     },
                 }
-                with open(log_path, "a") as f:
-                    f.write(json.dumps(debug_entry) + "\n")
+                with _blueteam_log_lock:
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps(debug_entry) + "\n")
             except Exception as log_err:
                 print(f"[BlueTeam] Warning: Failed to write debug log: {log_err}")
 

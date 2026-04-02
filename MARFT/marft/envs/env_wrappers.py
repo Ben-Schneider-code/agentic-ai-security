@@ -214,38 +214,59 @@ class ShareSubprocVecEnv(ShareVecEnv):
 
 class ShareDummyVecEnv(ShareVecEnv):
     def __init__(self, env_fns):
+        from concurrent.futures import ThreadPoolExecutor
+
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
         self.n_agents = env.n_agents
         ShareVecEnv.__init__(self, len(env_fns))
         self.actions = None
+        self._executor = ThreadPoolExecutor(max_workers=len(env_fns))
 
     def step_async(self, actions):
         self.actions = actions
 
     def step_wait(self):
-        results = [env.step(a) for (a, env) in zip(self.actions, self.envs)]  # type: ignore
+        # Submit all env.step() calls concurrently — the bottleneck is I/O
+        # (HTTP to vLLM), so threading gives real parallelism and lets vLLM
+        # batch the requests internally.
+        futures = [
+            self._executor.submit(env.step, a)
+            for a, env in zip(self.actions, self.envs)
+        ]
+        results = [f.result() for f in futures]
         obs, rews, dones, infos = zip(*results)
         obs, rews, dones = np.array(obs), np.array(rews), np.array(dones)
 
+        # Auto-reset done environments (also parallelized)
+        done_indices = []
         for i, done in enumerate(dones):
             if "bool" in done.__class__.__name__:
                 if done:
-                    obs[i] = self.envs[i].reset()
+                    done_indices.append(i)
             else:
                 if np.all(done):
-                    obs[i] = self.envs[i].reset()
+                    done_indices.append(i)
+        if done_indices:
+            reset_futures = {
+                i: self._executor.submit(self.envs[i].reset)
+                for i in done_indices
+            }
+            for i, fut in reset_futures.items():
+                obs[i] = fut.result()
+
         self.actions = None
         return obs, rews, dones, infos
 
     def reset(self):
-        results = [env.reset() for env in self.envs]
-        obs = np.array(results)
-        return obs
+        futures = [self._executor.submit(env.reset) for env in self.envs]
+        results = [f.result() for f in futures]
+        return np.array(results)
 
     def close(self):
         for env in self.envs:
             env.close()
+        self._executor.shutdown(wait=False)
 
     def save_replay(self):
         for env in self.envs:

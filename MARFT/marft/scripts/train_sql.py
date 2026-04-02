@@ -5,6 +5,7 @@ import time
 import os
 import signal
 import random
+import threading
 import numpy as np
 from pathlib import Path
 import torch
@@ -44,19 +45,51 @@ from marft.envs.env_wrappers import ShareDummyVecEnv
 from marft.runner.shared.sql_runner import SQLRunner as Runner
 
 
+class ThreadSafeSet:
+    """A set wrapper that is safe for concurrent access from ThreadPoolExecutor workers."""
+
+    def __init__(self, initial=()):
+        self._set = set(initial)
+        self._lock = threading.Lock()
+
+    def add(self, item):
+        with self._lock:
+            self._set.add(item)
+
+    def update(self, items):
+        with self._lock:
+            self._set.update(items)
+
+    def __contains__(self, item):
+        with self._lock:
+            return item in self._set
+
+    def __len__(self):
+        with self._lock:
+            return len(self._set)
+
+    def __iter__(self):
+        with self._lock:
+            return iter(self._set.copy())
+
+    def __bool__(self):
+        with self._lock:
+            return bool(self._set)
+
+
 def make_train_env(all_args, shared_honeypots: set = None):
     """Create training environments with shared honeypot tracking.
 
     Args:
         all_args: Training arguments
         shared_honeypots: Shared set for tracking accessed honeypots across all envs.
-                         If None, a new set is created.
+                         If None, a new ThreadSafeSet is created.
 
     Returns:
         tuple: (vec_env, shared_honeypots_set)
     """
     if shared_honeypots is None:
-        shared_honeypots = set()
+        shared_honeypots = ThreadSafeSet()
 
     SQLEnv, _, _ = get_env_components(all_args.env_name)
 
