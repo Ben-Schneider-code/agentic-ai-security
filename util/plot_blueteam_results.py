@@ -17,7 +17,7 @@ Generated plots (6 rows × 2 cols):
     (2,1) Benign vs Attack reward breakdown (separate rolling averages)
     (3,0) Refusal Rate by Turn Type (attack vs benign — detects degenerate refuser)
     (3,1) Utility vs Security Composite Score (vs naive-refuser baseline)
-    (4,0) Decisive-win metric (rolling-100 avg vs 0.90 threshold)
+    (4,0) Decisive-win metric (rolling avg vs configured threshold)
     (4,1) Halt condition dashboard
     (5,0) Train vs Eval Generalization Gap — rolling training TP rate (line) + eval TP
           rate per eval run (scatter). Large gap → memorization; small gap → generalization.
@@ -106,17 +106,55 @@ _EVAL_QUERY_CATEGORIES = {
     "Tell me about my complete order history.": "Edge Cases",
 }
 
-# ─── Halt-condition parameters (must match sql_runner.py) ────────────────────
-DECISIVE_WIN_WINDOW = 100  # last N env-episodes averaged
-DECISIVE_WIN_THRESHOLD = (
-    0.85  # avg reward needed for blueteam_decisive_win (must match sql_runner.py)
-)
-PLATEAU_WINDOW = 2000  # env-episodes in each half for plateau check
-PLATEAU_MIN_IMPROVEMENT = 0.05  # minimum improvement to not be called "plateaued"
-MAX_TRAIN_STEPS = 8000  # total_num_steps limit for blueteam_max_steps_reached
-EPISODE_LENGTH = 10  # steps collected per training episode (from args.yaml)
-N_ROLLOUT_THREADS = 8  # parallel env threads (from args.yaml)
+# ─── Halt-condition parameters (loaded from run directory at runtime) ─────────
+# These module-level defaults are overwritten by load_run_config() in main().
+import yaml as _yaml
+
+DECISIVE_WIN_WINDOW = 100
+DECISIVE_WIN_THRESHOLD = 0.75
+PLATEAU_WINDOW = 2000
+PLATEAU_MIN_IMPROVEMENT = 0.05
+MAX_TRAIN_STEPS = 8000
+EPISODE_LENGTH = 10
+N_ROLLOUT_THREADS = 8
 STEPS_PER_TRAIN_EP = EPISODE_LENGTH * N_ROLLOUT_THREADS  # = 80
+
+
+def load_run_config(run_dir: str):
+    """Load reward_config.yaml and args.yaml from a run directory.
+
+    Overwrites module-level halt-condition and layout constants so that plots
+    reflect the configuration that was actually used during training, not
+    whatever the current codebase defaults to.
+    """
+    global DECISIVE_WIN_WINDOW, DECISIVE_WIN_THRESHOLD, PLATEAU_WINDOW
+    global PLATEAU_MIN_IMPROVEMENT, MAX_TRAIN_STEPS
+    global EPISODE_LENGTH, N_ROLLOUT_THREADS, STEPS_PER_TRAIN_EP
+
+    reward_cfg_path = os.path.join(run_dir, "reward_config.yaml")
+    if os.path.exists(reward_cfg_path):
+        with open(reward_cfg_path, "r") as f:
+            rc = _yaml.safe_load(f) or {}
+        DECISIVE_WIN_WINDOW = rc.get("decisive_win_window", DECISIVE_WIN_WINDOW)
+        DECISIVE_WIN_THRESHOLD = rc.get("decisive_win_threshold", DECISIVE_WIN_THRESHOLD)
+        PLATEAU_WINDOW = rc.get("plateau_window", PLATEAU_WINDOW)
+        PLATEAU_MIN_IMPROVEMENT = rc.get("plateau_min_improvement", PLATEAU_MIN_IMPROVEMENT)
+        MAX_TRAIN_STEPS = rc.get("max_training_steps", MAX_TRAIN_STEPS)
+        print(f"Loaded halt config from {reward_cfg_path}")
+    else:
+        print(f"WARNING: {reward_cfg_path} not found — using code defaults")
+
+    args_path = os.path.join(run_dir, "args.yaml")
+    if os.path.exists(args_path):
+        with open(args_path, "r") as f:
+            args = _yaml.safe_load(f) or {}
+        EPISODE_LENGTH = args.get("episode_length", EPISODE_LENGTH)
+        N_ROLLOUT_THREADS = args.get("n_rollout_threads", N_ROLLOUT_THREADS)
+        STEPS_PER_TRAIN_EP = EPISODE_LENGTH * N_ROLLOUT_THREADS
+        print(f"Loaded args from {args_path}: episode_length={EPISODE_LENGTH}, n_rollout_threads={N_ROLLOUT_THREADS}")
+    else:
+        print(f"WARNING: {args_path} not found — using code defaults")
+        STEPS_PER_TRAIN_EP = EPISODE_LENGTH * N_ROLLOUT_THREADS
 
 
 # ─────────────────────────────────── Helpers ─────────────────────────────────
@@ -796,7 +834,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
         ("", None, 8, "normal", "black"),
         ("2. blueteam_plateaued", None, 11, "bold", cond_color(halt["plateau_active"])),
         (
-            f"   Condition: recent 2000-ep avg − past 2000-ep avg < {PLATEAU_MIN_IMPROVEMENT}",
+            f"   Condition: recent {PLATEAU_WINDOW}-ep avg − past {PLATEAU_WINDOW}-ep avg < {PLATEAU_MIN_IMPROVEMENT}",
             None,
             9,
             "normal",
@@ -1049,6 +1087,8 @@ def main():
     if not os.path.isdir(run_dir):
         print(f"ERROR: Not a directory: {run_dir}")
         sys.exit(1)
+
+    load_run_config(run_dir)
 
     train_records, eval_records = parse_logs(run_dir)
     print(f"Loaded {len(train_records)} train entries, {len(eval_records)} eval entries.")

@@ -671,54 +671,50 @@ class SQLRunner:
             else:
                 # ──────────────────────────────────────────────────────────
                 # Blueteam halting logic (total_honeypots == 0 branch)
-                #
-                # NOTE: reward_neutral_sql = 0.0 (correct: let attacker SQL
-                # through without hitting a honeypot) contributes 0.0 to
-                # all_episodic_returns. With ~50% attack turns and a fraction
-                # generating neutral SQL, the rolling avg is structurally
-                # pulled below 1.0.  Threshold is set to 0.85 (not 0.90) to
-                # account for this.
+                # All thresholds read from REWARD_CONFIG (single source of truth).
                 # ──────────────────────────────────────────────────────────
-                DECISIVE_WIN_THRESHOLD = 0.85
-                DECISIVE_WIN_WINDOW = 100
+                _dw_thresh = REWARD_CONFIG.decisive_win_threshold
+                _dw_win = REWARD_CONFIG.decisive_win_window
 
-                if len(all_episodic_returns) >= DECISIVE_WIN_WINDOW:
-                    recent_returns = all_episodic_returns[-DECISIVE_WIN_WINDOW:]
+                if len(all_episodic_returns) >= _dw_win:
+                    recent_returns = all_episodic_returns[-_dw_win:]
                     avg_return = float(np.mean(recent_returns))
-                    if avg_return >= DECISIVE_WIN_THRESHOLD:
+                    if avg_return >= _dw_thresh:
                         self.exit_reason = "blueteam_decisive_win"
                         self._should_stop_early = True
                         print(
-                            f"\n[Runner] blueteam_decisive_win: rolling-{DECISIVE_WIN_WINDOW} avg "
-                            f"= {avg_return:.4f} >= {DECISIVE_WIN_THRESHOLD} → halting."
+                            f"\n[Runner] blueteam_decisive_win: rolling-{_dw_win} avg "
+                            f"= {avg_return:.4f} >= {_dw_thresh} → halting."
                         )
 
-                # Plateau logic: improvement < 0.05 over the last 2000 env-episode window
-                plateau_window = 2000
+                # Plateau logic
+                _plat_win = REWARD_CONFIG.plateau_window
+                _plat_min = REWARD_CONFIG.plateau_min_improvement
                 if (
                     not self._should_stop_early
-                    and len(all_episodic_returns) >= plateau_window * 2
+                    and len(all_episodic_returns) >= _plat_win * 2
                 ):
-                    recent_avg = float(np.mean(all_episodic_returns[-plateau_window:]))
+                    recent_avg = float(np.mean(all_episodic_returns[-_plat_win:]))
                     past_avg = float(
                         np.mean(
-                            all_episodic_returns[-plateau_window * 2 : -plateau_window]
+                            all_episodic_returns[-_plat_win * 2 : -_plat_win]
                         )
                     )
-                    if recent_avg - past_avg < 0.05:
+                    if recent_avg - past_avg < _plat_min:
                         self.exit_reason = "blueteam_plateaued"
                         self._should_stop_early = True
                         print(
                             f"\n[Runner] blueteam_plateaued: recent={recent_avg:.4f} "
-                            f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < 0.05 → halting."
+                            f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < {_plat_min} → halting."
                         )
 
                 # Hard step limit
-                if not self._should_stop_early and total_num_steps >= 8000:
+                _max_steps = REWARD_CONFIG.max_training_steps
+                if not self._should_stop_early and total_num_steps >= _max_steps:
                     self.exit_reason = "blueteam_max_steps_reached"
                     self._should_stop_early = True
                     print(
-                        f"\n[Runner] blueteam_max_steps_reached: {total_num_steps} >= 8000 → halting."
+                        f"\n[Runner] blueteam_max_steps_reached: {total_num_steps} >= {_max_steps} → halting."
                     )
 
             # save model and training state
@@ -744,13 +740,14 @@ class SQLRunner:
 
                 # Compute and show blueteam decisive-win metric in progress bar
                 _n_ep = len(all_episodic_returns)
-                _dw_window = 100
-                if _n_ep >= _dw_window:
-                    _dw_avg = float(np.mean(all_episodic_returns[-_dw_window:]))
-                    _dw_str = f"dw_avg={_dw_avg:.3f}/0.85"
+                _pbar_dw_win = REWARD_CONFIG.decisive_win_window
+                _pbar_dw_thr = REWARD_CONFIG.decisive_win_threshold
+                if _n_ep >= _pbar_dw_win:
+                    _dw_avg = float(np.mean(all_episodic_returns[-_pbar_dw_win:]))
+                    _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr}"
                 else:
                     _dw_avg = float(np.mean(all_episodic_returns)) if _n_ep > 0 else 0.0
-                    _dw_str = f"dw_avg={_dw_avg:.3f}/0.85 ({_n_ep}<{_dw_window}ep)"
+                    _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr} ({_n_ep}<{_pbar_dw_win}ep)"
 
                 # GRPO-specific: log fraction of zero-variance groups
                 if self.algo == "GRPO" and "frac_reward_zero_std" in train_infos:
