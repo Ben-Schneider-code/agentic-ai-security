@@ -393,8 +393,12 @@ async def evaluate_pairing(
     horizon: int,
     seed: int,
     output_dir: str,
+    concurrency: int = 32,
 ) -> dict:
     """Evaluate a single (red_i, blue_j) pairing.
+
+    Episodes run concurrently (up to `concurrency` at a time) to maximize
+    GPU utilization on the vLLM servers.
 
     Returns the summary metrics dict.
     """
@@ -405,22 +409,27 @@ async def evaluate_pairing(
     jsonl_path = os.path.join(pairing_dir, "reward_debug.jsonl")
     summary_path = os.path.join(pairing_dir, "summary.json")
 
+    # Pre-generate all episode configs using the same RNG sequence as before
+    # to preserve determinism regardless of execution order.
     rng = random.Random(seed + red_iter * 1000 + blue_iter)
     benign_queries = list(BENIGN_EVAL_QUERIES)
 
-    all_records = []
-    print(f"  [{pairing_key}] Running {n_episodes} episodes (horizon={horizon})...")
+    episode_configs = []
+    for ep_idx in range(n_episodes):
+        if rng.random() > 0.5:
+            episode_configs.append((ep_idx, "attack", None))
+        else:
+            episode_configs.append((ep_idx, "benign", rng.choice(benign_queries)))
 
-    with open(jsonl_path, "w") as f_out:
-        for ep_idx in range(n_episodes):
-            # 50/50 benign vs attack
-            if rng.random() > 0.5:
-                turn_type = "attack"
-                benign_query = None
-            else:
-                turn_type = "benign"
-                benign_query = rng.choice(benign_queries)
+    print(f"  [{pairing_key}] Running {n_episodes} episodes (horizon={horizon}, concurrency={concurrency})...")
 
+    sem = asyncio.Semaphore(concurrency)
+    done_count = 0
+    done_lock = asyncio.Lock()
+
+    async def _run_one(ep_idx, turn_type, benign_query):
+        nonlocal done_count
+        async with sem:
             try:
                 steps = await run_episode(
                     episode_idx=ep_idx,
@@ -435,15 +444,29 @@ async def evaluate_pairing(
                     step_record["red_iter"] = red_iter
                     step_record["blue_iter"] = blue_iter
                     step_record["timestamp"] = time.time()
-                    f_out.write(json.dumps(step_record) + "\n")
-                    all_records.append(step_record)
+                async with done_lock:
+                    done_count += 1
+                    if done_count % 25 == 0:
+                        print(f"    [{pairing_key}] {done_count}/{n_episodes} episodes done")
+                return (ep_idx, steps)
             except Exception as e:
                 print(f"    [{pairing_key}] Episode {ep_idx} error: {e}")
                 traceback.print_exc()
-                continue
+                return (ep_idx, [])
 
-            if (ep_idx + 1) % 25 == 0:
-                print(f"    [{pairing_key}] {ep_idx + 1}/{n_episodes} episodes done")
+    results = await asyncio.gather(*[
+        _run_one(ep_idx, turn_type, benign_query)
+        for ep_idx, turn_type, benign_query in episode_configs
+    ])
+
+    # Sort by episode index and write JSONL (identical output order)
+    results.sort(key=lambda x: x[0])
+    all_records = []
+    with open(jsonl_path, "w") as f_out:
+        for _ep_idx, steps in results:
+            for step_record in steps:
+                f_out.write(json.dumps(step_record) + "\n")
+                all_records.append(step_record)
 
     # Compute and save summary
     summary = compute_pairing_metrics(all_records)
@@ -469,6 +492,7 @@ async def evaluate_benign_only(
     n_episodes: int,
     seed: int,
     output_dir: str,
+    concurrency: int = 32,
 ) -> dict:
     """Evaluate blue team on benign queries only (TPR measurement)."""
     key = f"blue_{blue_iter}"
@@ -478,15 +502,17 @@ async def evaluate_benign_only(
     jsonl_path = os.path.join(benign_dir, "reward_debug.jsonl")
     summary_path = os.path.join(benign_dir, "summary.json")
 
+    # Pre-generate query assignments with same RNG sequence
     rng = random.Random(seed + blue_iter * 7919)
     benign_queries = list(BENIGN_EVAL_QUERIES)
+    episode_queries = [(ep_idx, rng.choice(benign_queries)) for ep_idx in range(n_episodes)]
 
-    all_records = []
-    print(f"  [benign_{key}] Running {n_episodes} benign-only episodes...")
+    print(f"  [benign_{key}] Running {n_episodes} benign-only episodes (concurrency={concurrency})...")
 
-    with open(jsonl_path, "w") as f_out:
-        for ep_idx in range(n_episodes):
-            benign_query = rng.choice(benign_queries)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _run_one(ep_idx, benign_query):
+        async with sem:
             try:
                 steps = await run_episode(
                     episode_idx=ep_idx,
@@ -500,11 +526,23 @@ async def evaluate_benign_only(
                 for step_record in steps:
                     step_record["blue_iter"] = blue_iter
                     step_record["timestamp"] = time.time()
-                    f_out.write(json.dumps(step_record) + "\n")
-                    all_records.append(step_record)
+                return (ep_idx, steps)
             except Exception as e:
                 print(f"    [benign_{key}] Episode {ep_idx} error: {e}")
-                continue
+                return (ep_idx, [])
+
+    results = await asyncio.gather(*[
+        _run_one(ep_idx, query) for ep_idx, query in episode_queries
+    ])
+
+    # Sort by episode index and write JSONL
+    results.sort(key=lambda x: x[0])
+    all_records = []
+    with open(jsonl_path, "w") as f_out:
+        for _ep_idx, steps in results:
+            for step_record in steps:
+                f_out.write(json.dumps(step_record) + "\n")
+                all_records.append(step_record)
 
     n_tp = sum(1 for r in all_records if r["outcome_tier"] == "true_positive")
     n_total = len(all_records)
@@ -617,20 +655,28 @@ async def run_evaluation(args):
     print(f"Blue versions: {blue_versions}")
     print(f"Total pairings: {len(red_versions) * len(blue_versions)}")
     print(f"Episodes per pairing: {args.episodes}")
+    print(f"Concurrency: {args.concurrency} episodes")
 
     # Load progress for resume
     completed = load_progress(output_dir) if args.resume else set()
     if completed:
         print(f"Resuming: {len(completed)} pairings already completed")
 
-    # Initialize MCP client (shared across all pairings)
-    mcp_client = MCPClient()
+    # Initialize MCP client with concurrency limit to gate Postgres load
+    mcp_client = MCPClient(max_concurrent=args.concurrency)
     await mcp_client.connect_to_server("/app/mcp/postgres.py")
     print("MCP client connected.")
 
-    # Create LLM clients — one per vLLM server, model_name changed per pairing
-    # We create OfflineLLM instances per-pairing since model_name is immutable on the instance.
-    # But the underlying vLLM server stays running.
+    # Verify vLLM servers are up once, then skip health checks for per-pairing instances
+    print("Verifying vLLM servers...")
+    _red_probe = OfflineLLM(
+        model_name=args.base_model, vllm_base_url=args.red_vllm_url, max_tokens=1,
+    )
+    _blue_probe = OfflineLLM(
+        model_name=args.base_model, vllm_base_url=args.blue_vllm_url, max_tokens=1,
+    )
+    del _red_probe, _blue_probe
+    print("Both vLLM servers verified.")
 
     try:
         # Evaluate all pairings
@@ -639,9 +685,10 @@ async def run_evaluation(args):
             blue_model = f"blue_{blue_iter}" if blue_iter > 0 else args.base_model
             blue_llm = OfflineLLM(
                 model_name=blue_model,
-                mcp_client=None,  # Blue doesn't execute SQL directly via LLM
+                mcp_client=None,
                 vllm_base_url=args.blue_vllm_url,
                 max_tokens=512,
+                skip_health_check=True,
             )
 
             for red_iter in red_versions:
@@ -656,6 +703,7 @@ async def run_evaluation(args):
                     mcp_client=None,
                     vllm_base_url=args.red_vllm_url,
                     max_tokens=512,
+                    skip_health_check=True,
                 )
 
                 try:
@@ -669,6 +717,7 @@ async def run_evaluation(args):
                         horizon=args.horizon,
                         seed=args.seed,
                         output_dir=output_dir,
+                        concurrency=args.concurrency,
                     )
                     completed.add(pairing_key)
                     save_progress(output_dir, completed)
@@ -690,6 +739,7 @@ async def run_evaluation(args):
                 mcp_client=None,
                 vllm_base_url=args.blue_vllm_url,
                 max_tokens=512,
+                skip_health_check=True,
             )
 
             try:
@@ -700,6 +750,7 @@ async def run_evaluation(args):
                     n_episodes=args.episodes,
                     seed=args.seed,
                     output_dir=output_dir,
+                    concurrency=args.concurrency,
                 )
                 completed.add(benign_key)
                 save_progress(output_dir, completed)
@@ -729,6 +780,8 @@ def main():
     parser.add_argument("--include-base", action="store_true", default=True,
                         help="Include iter_0 (base model, no LoRA) as baseline")
     parser.add_argument("--no-include-base", action="store_false", dest="include_base")
+    parser.add_argument("--concurrency", type=int, default=32,
+                        help="Max concurrent episodes per pairing (default: 32)")
     parser.add_argument("--resume", action="store_true", help="Resume from progress checkpoint")
     parser.add_argument("--aggregate-only", action="store_true",
                         help="Only rebuild cross_eval_results.json from existing data")

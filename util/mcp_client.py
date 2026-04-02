@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from typing import Optional
 from contextlib import AsyncExitStack
@@ -7,10 +8,14 @@ from mcp.client.stdio import stdio_client
 
 
 class MCPClient:
-    def __init__(self):
+    def __init__(self, max_concurrent: int = 0):
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
+        # Optional semaphore to limit concurrent call_tool invocations
+        # (protects Postgres from too many concurrent queries).
+        # 0 = no limit (default, preserves existing behavior).
+        self._sem = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
 
     async def cleanup(self):
         """Clean up the MCP client connection.
@@ -74,6 +79,9 @@ class MCPClient:
         ]
 
     async def call_tool(self, tool, tool_input) -> str:
-
+        if self._sem:
+            async with self._sem:
+                result = await self.session.call_tool(tool, tool_input)
+                return result
         result = await self.session.call_tool(tool, tool_input)
         return result

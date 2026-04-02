@@ -393,6 +393,7 @@ class OfflineLLM:
         vllm_base_url: str = "http://localhost:8000/v1",
         max_wait_time: int = 600,
         max_tokens: int = 2048,
+        skip_health_check: bool = False,
     ):
         """
         Args:
@@ -401,6 +402,8 @@ class OfflineLLM:
             vllm_base_url: Base URL of the vLLM server (default: http://localhost:8000/v1)
             max_wait_time: Maximum time to wait for server to be ready in seconds (default: 300)
             max_tokens: Maximum number of tokens to generate (default: 2048)
+            skip_health_check: Skip server readiness check and model listing (default: False).
+                Use when the server is already verified to be running (e.g. cross-evaluation).
         """
         from openai import OpenAI, AsyncOpenAI
 
@@ -413,27 +416,29 @@ class OfflineLLM:
         self.top_p = 0.95
         self.max_tokens = max_tokens
 
-        # Wait for vLLM server to be ready
-        print(f"Waiting for vLLM server at {vllm_base_url} to be ready...")
-        self._wait_for_server(max_wait_time)
+        if not skip_health_check:
+            # Wait for vLLM server to be ready
+            print(f"Waiting for vLLM server at {vllm_base_url} to be ready...")
+            self._wait_for_server(max_wait_time)
 
-        # Initialize OpenAI client after server is ready
+        # Initialize OpenAI client
         self.client = OpenAI(base_url=vllm_base_url, api_key="EMPTY")
         self.async_client = AsyncOpenAI(base_url=vllm_base_url, api_key="EMPTY")
-        print(f"Successfully connected to vLLM server at {vllm_base_url}")
-        logger.debug("Max tokens: %d", self.max_tokens)
 
-        try:
-            models_response = self.client.models.list()
-            available_models = [model.id for model in models_response.data]
-            logger.debug("Available models on server: %s", available_models)
-            logger.debug("Requested model name: %s", self.model_name)
-            if self.model_name not in available_models:
-                print(
-                    f"[WARNING] Requested model '{self.model_name}' not in available models list!"
-                )
-        except Exception as e:
-            logger.debug("Could not list models: %s", e)
+        if not skip_health_check:
+            print(f"Successfully connected to vLLM server at {vllm_base_url}")
+            logger.debug("Max tokens: %d", self.max_tokens)
+            try:
+                models_response = self.client.models.list()
+                available_models = [model.id for model in models_response.data]
+                logger.debug("Available models on server: %s", available_models)
+                logger.debug("Requested model name: %s", self.model_name)
+                if self.model_name not in available_models:
+                    print(
+                        f"[WARNING] Requested model '{self.model_name}' not in available models list!"
+                    )
+            except Exception as e:
+                logger.debug("Could not list models: %s", e)
 
         # Store event loop for async MCP operations (reuse instead of creating new ones)
         try:
