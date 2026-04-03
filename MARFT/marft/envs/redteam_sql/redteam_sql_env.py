@@ -643,9 +643,16 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
-        # Thread-safe: asyncio.run() creates a fresh event loop per call,
-        # allowing concurrent invocations from ThreadPoolExecutor workers.
-        return asyncio.run(self.acomplete(history, system_prompt))
+        # Use the instance's persistent event loop — the same one on which
+        # MCPClient.connect_to_server() was called. asyncio.run() creates a
+        # new loop per call and then closes it, which (a) severs the anyio
+        # stdio streams owned by the MCP session (silent SQL failures →
+        # corrupted reward signal) and (b) destroys httpx's connection pool
+        # (new TCP handshake to vLLM on every call).
+        # Thread-safety: each SQLEnv owns its own OfflineLLM (and loop);
+        # ThreadPoolExecutor assigns one worker per env at a time, so no
+        # two threads ever call run_until_complete() on the same loop.
+        return self.loop.run_until_complete(self.acomplete(history, system_prompt))
 
 
 # === SQL-specific helpers ===
