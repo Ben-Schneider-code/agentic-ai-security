@@ -1589,7 +1589,7 @@ class SQLEnv:
     def get_blueteam_context(self) -> tuple[str, list]:
         """
         Return the Blue Team's system prompt and victim conversation history.
-        Used for lure logging during trajectory harvesting.
+        Used for lure logging during SIL success capture.
 
         Returns:
             (sql_system_prompt, victim_conversation_history)

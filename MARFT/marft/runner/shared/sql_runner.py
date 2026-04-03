@@ -162,31 +162,31 @@ class SQLRunner:
         self._make_log_dir()
         self.writter = SummaryWriter(self.log_dir)
 
-        # Initialize trajectory augmenter (Phase 2) if coach URL is configured
-        self.trajectory_augmenter = None
+        # Initialize SIL coach augmenter (Phase 2) if coach URL is configured
+        self.sil_augmenter = None
         coach_url = getattr(self.all_args, "coach_vllm_url", None)
         is_redteam = "blueteam" not in getattr(self.all_args, "env_name", "")
         if coach_url and self.algo == "APPO" and is_redteam:
             try:
-                from marft.coach import TrajectoryAugmenter
+                from marft.coach import SILCoachAugmenter
 
                 coach_model = getattr(
                     self.all_args,
                     "coach_model_name",
                     "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
                 )
-                self.trajectory_augmenter = TrajectoryAugmenter(
+                self.sil_augmenter = SILCoachAugmenter(
                     coach_model_name=coach_model,
                     vllm_base_url=coach_url,
                 )
                 print(
-                    f"[Runner] Phase 2 coach augmenter initialized: {coach_model} @ {coach_url}"
+                    f"[Runner] SIL Phase 2 coach augmenter initialized: {coach_model} @ {coach_url}"
                 )
             except Exception as e:
                 print(
-                    f"[Runner] WARNING: Failed to init coach augmenter, using naive duplication: {e}"
+                    f"[Runner] WARNING: Failed to init SIL coach augmenter, using naive duplication: {e}"
                 )
-                self.trajectory_augmenter = None
+                self.sil_augmenter = None
 
         # Store resume state for training loop
         self.resume_state = config.get("resume_state", None)
@@ -356,13 +356,13 @@ class SQLRunner:
             # Clear GPU cache once per training episode (not every step - expensive sync)
             torch.cuda.empty_cache()
 
-            # --- Trajectory Harvesting: track successful trajectories ---
-            enable_harvesting = (
-                getattr(self.all_args, "enable_trajectory_harvesting", True)
+            # --- Self-Imitation Learning: track successful trajectories ---
+            enable_sil = (
+                getattr(self.all_args, "enable_sil", True)
                 and "blueteam" not in getattr(self.all_args, "env_name", "")
             )
             oversample_factor = getattr(self.all_args, "oversample_factor", 5)
-            harvested_trajectories = []  # list of (thread_idx, step, reward, honeypot_ids)
+            sil_successes = []  # list of (thread_idx, step, reward)
 
             self.trainer.prep_rollout()
             for step in range(self.episode_length):
@@ -418,9 +418,9 @@ class SQLRunner:
                                 "terminal_success", 1.0, global_step
                             )
 
-                            # === TRAJECTORY HARVESTING: capture successful trajectory ===
-                            if enable_harvesting and self.algo == "APPO":
-                                harvested_trajectories.append(
+                            # === SELF-IMITATION LEARNING: capture successful trajectory ===
+                            if enable_sil and self.algo == "APPO":
+                                sil_successes.append(
                                     {
                                         "thread_idx": i,
                                         "success_step": step,
@@ -428,7 +428,7 @@ class SQLRunner:
                                     }
                                 )
                                 print(
-                                    f"[HARVEST] Captured successful trajectory: "
+                                    f"[SIL] Captured successful trajectory: "
                                     f"thread={i}, step={step}, reward={episodic_return:.2f}"
                                 )
 
@@ -470,7 +470,7 @@ class SQLRunner:
                                                 red_actions,
                                             )
                                 except Exception as e:
-                                    print(f"[HARVEST] Warning: Failed to log lure: {e}")
+                                    print(f"[SIL] Warning: Failed to log lure: {e}")
 
                         # Log episode length for analysis
                         if env_episode_length is not None and env_episode_length != "?":
@@ -485,16 +485,16 @@ class SQLRunner:
                         # if len(all_episodic_returns) % 5 == 0:
                         #     self._save_reward_plot(all_episodic_returns)
 
-            # === TRAJECTORY HARVESTING: inject oversampled copies ===
-            if harvested_trajectories and enable_harvesting and self.algo == "APPO":
+            # === SELF-IMITATION LEARNING: inject oversampled copies into on-policy batch ===
+            if sil_successes and enable_sil and self.algo == "APPO":
                 batch = self.buffer.cur_batch_index
                 total_injected = 0
-                for traj_info in harvested_trajectories:
+                for traj_info in sil_successes:
                     tid = traj_info["thread_idx"]
                     traj_injected = 0
 
-                    # Phase 2: Use coach augmenter for diverse variations
-                    if self.trajectory_augmenter is not None:
+                    # Phase 2: Use SIL coach augmenter for diverse variations
+                    if self.sil_augmenter is not None:
                         try:
                             # Collect the successful action texts
                             success_step = traj_info["success_step"]
@@ -508,7 +508,7 @@ class SQLRunner:
                                 acts[0] for acts in action_texts[: success_step + 1]
                             ]
                             augmented, action_details = (
-                                self.trajectory_augmenter.augment_redteam_trajectory_sync(
+                                self.sil_augmenter.augment_redteam_trajectory_sync(
                                     flat_actions, oversample_factor
                                 )
                             )
@@ -554,14 +554,14 @@ class SQLRunner:
                                     "log_probs": var_log_probs,
                                     "value_preds": var_value_preds,
                                 }
-                                inj = self.buffer.inject_successful_trajectory(
+                                inj = self.buffer.sil_inject(
                                     trajectory_data, 1
                                 )
                                 traj_injected += inj
                                 total_injected += inj
 
                             print(
-                                f"[HARVEST] Phase 2: Injected {traj_injected} augmented copies "
+                                f"[SIL] Phase 2: Injected {traj_injected} augmented copies "
                                 f"for thread {tid} (reward={traj_info['reward']:.2f})"
                             )
 
@@ -582,11 +582,11 @@ class SQLRunner:
                                 )
                             except Exception as log_err:
                                 print(
-                                    f"[HARVEST] Warning: Failed to write coach_augment_log: {log_err}"
+                                    f"[SIL] Warning: Failed to write coach_augment_log: {log_err}"
                                 )
                         except Exception as e:
                             print(
-                                f"[HARVEST] Phase 2 augmentation failed, falling back to naive: {e}"
+                                f"[SIL] Phase 2 augmentation failed, falling back to naive: {e}"
                             )
                             # Fall back to Phase 1 naive duplication
                             trajectory_data = {
@@ -607,7 +607,7 @@ class SQLRunner:
                                     batch, : self.episode_length, tid, :
                                 ].copy(),
                             }
-                            injected = self.buffer.inject_successful_trajectory(
+                            injected = self.buffer.sil_inject(
                                 trajectory_data, oversample_factor
                             )
                             total_injected += injected
@@ -631,22 +631,22 @@ class SQLRunner:
                                 batch, : self.episode_length, tid, :
                             ].copy(),
                         }
-                        injected = self.buffer.inject_successful_trajectory(
+                        injected = self.buffer.sil_inject(
                             trajectory_data, oversample_factor
                         )
                         total_injected += injected
                         print(
-                            f"[HARVEST] Phase 1: Injected {injected}/{oversample_factor} copies "
+                            f"[SIL] Phase 1: Injected {injected}/{oversample_factor} copies "
                             f"for thread {tid} (reward={traj_info['reward']:.2f})"
                         )
 
                 self.writter.add_scalar(
-                    "harvest/trajectories_captured",
-                    len(harvested_trajectories),
+                    "sil/successes_captured",
+                    len(sil_successes),
                     total_num_steps,
                 )
                 self.writter.add_scalar(
-                    "harvest/copies_injected", total_injected, total_num_steps
+                    "sil/copies_injected", total_injected, total_num_steps
                 )
 
             self.before_update()

@@ -132,18 +132,19 @@ Observations are represented as strings in a structured dialogue format: `<|im_s
 
 Eight environments run in parallel via a `ThreadPoolExecutor`, exploiting the I/O-bound nature of vLLM HTTP calls. Each training episode collects 10 environment steps across all threads; with horizon $H = 5$, approximately two full environment episodes complete per training episode per thread, yielding approximately 16 complete interaction trajectories per policy update.
 
-### 3.4.4 Retrospective Trajectory Harvesting with Coach Augmentation
+### 3.4.4 Self-Imitation Learning with Coach Augmentation
 
-Successfully attacking the database (honeypot access) is a rare event, particularly early in training. We address this sparsity via **Retrospective Trajectory Harvesting (RTH)**: upon any terminal success, the complete successful trajectory is captured and oversampled into the replay buffer by a factor of 5, replacing the lowest-reward trajectories in the active thread slots. This provides an explicit behavioral cloning signal toward known-successful attack strategies.
+Successfully attacking the database (honeypot access) is a rare event, particularly early in training. We address this sparsity via **self-imitation learning** (Oh et al., 2018): upon any terminal success, the complete successful trajectory is captured and oversampled by a factor of 5, replacing the lowest-reward trajectories in the active thread slots. This provides an explicit behavioral cloning signal toward known-successful attack strategies.
 
-To mitigate overfitting to a small set of successful trajectories, we additionally apply **coach-based augmentation**: a configurable coach language model generates $k$ semantically equivalent but syntactically diverse paraphrases of the successful attack action. Variations are validated through a quality gate that checks semantic similarity (ensuring the attack intent is preserved) and lexical diversity (ensuring the variations differ from each other and from the original). Validated variations are injected into the buffer as additional positive-reward trajectories.
+Unlike standard self-imitation learning, which maintains a separate replay buffer and applies an auxiliary clipped behavioral cloning loss, our implementation operates directly on the current on-policy batch: low-reward rollout slots are overwritten in-place before the policy gradient step, avoiding the need for off-policy importance correction.
 
-Critically, the coach model is not required to be larger than the agents under training; in our experiments, using the same base model (Llama-3.1-8B-Instruct) as both agents and the coach yielded valid results. This parity is important for fair comparison: it ensures that neither team benefits from additional knowledge or capacity provided by a privileged external model during the training process itself.
+To mitigate overfitting to a small set of successful trajectories, we additionally apply **coach-based augmentation**: a configurable coach language model generates $k$ semantically equivalent but syntactically diverse paraphrases of the successful attack action. Variations are validated through a quality gate that checks semantic similarity (ensuring the attack intent is preserved) and lexical diversity (ensuring the variations differ from each other and from the original). Validated variations are injected into the batch as additional positive-reward trajectories.
+
+Critically, the coach model is not required to be larger than the agents under training; in our experiments, using the same base model as both agents and the coach yielded valid results. This parity is important for fair comparison: it ensures that neither team benefits from additional knowledge or capacity provided by a privileged external model during the training process itself.
 
 Red team training terminates when any of the following conditions is met: (i) all defined honeypots have been accessed at least once, (ii) no new honeypot has been accessed for 1000 consecutive steps, or (iii) the maximum episode budget (100 episodes) is exhausted.
 
 <!-- TODO: This part may change if we remove the coach model. -->
-<!-- TODO: Need to add more details on the related work on the approach. -->
 
 ## 3.5 Blue Team Training
 

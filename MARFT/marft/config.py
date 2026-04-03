@@ -427,18 +427,18 @@ def get_config():
         help="Normalize GRPO advantages by std (default: False, use mean-only)",
     )
 
-    # trajectory harvesting parameters
+    # self-imitation learning parameters
     parser.add_argument(
-        "--enable_trajectory_harvesting",
+        "--enable_sil",
         action="store_true",
         default=True,
-        help="Enable Retrospective Trajectory Harvesting (oversample successful honeypot trajectories)",
+        help="Enable Self-Imitation Learning (oversample successful honeypot trajectories into the on-policy batch)",
     )
     parser.add_argument(
-        "--no_trajectory_harvesting",
+        "--no_sil",
         action="store_false",
-        dest="enable_trajectory_harvesting",
-        help="Disable trajectory harvesting",
+        dest="enable_sil",
+        help="Disable Self-Imitation Learning",
     )
     parser.add_argument(
         "--oversample_factor",

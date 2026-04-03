@@ -1,5 +1,5 @@
 """
-Trajectory Augmenter: uses a 32B coach model to generate syntactically diverse
+SIL Coach Augmenter: uses a coach model to generate syntactically diverse
 but semantically equivalent variations of successful attack trajectories.
 
 This replaces naive duplication (which causes overfitting) with LLM-in-the-loop
@@ -57,10 +57,10 @@ ORIGINAL SUCCESSFUL LURE RULE:
 """
 
 
-class TrajectoryAugmenter:
+class SILCoachAugmenter:
     """
-    Uses a 32B coach model to generate diverse variations of successful trajectories.
-    Variations are validated through quality gates before insertion into the replay buffer.
+    Uses a coach model to generate diverse variations of successful trajectories.
+    Variations are validated through quality gates before insertion into the on-policy batch.
     """
 
     def __init__(
@@ -100,7 +100,7 @@ class TrajectoryAugmenter:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[TrajectoryAugmenter] Coach API error: {e}")
+            print(f"[SILCoachAugmenter] Coach API error: {e}")
             return ""
 
     @staticmethod

@@ -196,12 +196,13 @@ class ActionBuffer(BaseBuffer):
         sorted_indices = np.argsort(thread_rewards)
         return sorted_indices[:count].tolist()
 
-    def inject_successful_trajectory(
+    def sil_inject(
         self, trajectory_data: dict, oversample_factor: int
     ) -> int:
         """
-        Inject copies of a successful trajectory into the buffer by overwriting
-        the lowest-reward rollout threads.
+        Self-imitation learning: overwrite the lowest-reward rollout threads in the
+        current on-policy batch with copies of a successful trajectory, amplifying
+        the policy gradient signal toward known-successful strategies.
 
         Args:
             trajectory_data: dict with keys matching buffer arrays, each containing
