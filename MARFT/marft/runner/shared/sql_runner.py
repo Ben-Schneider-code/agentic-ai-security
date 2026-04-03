@@ -306,6 +306,39 @@ class SQLRunner:
         )
         print(f"[Runner] Total honeypots to discover: {total_honeypots}")
 
+        # Pre-compute SIL info for startup summary
+        _sil_enabled = (
+            getattr(self.all_args, "enable_sil", True)
+            and "blueteam" not in env_name
+        )
+        if self.sil_augmenter:
+            _coach_summary = (
+                f"{getattr(self.all_args, 'coach_model_name', 'N/A')}"
+                f" @ {getattr(self.all_args, 'coach_vllm_url', 'N/A')}"
+            )
+        else:
+            _coach_summary = "None"
+        print("=" * 60)
+        print("[Runner] === TRAINING CONFIGURATION ===")
+        print(f"  env_name:          {env_name}")
+        print(f"  algorithm:         {self.algo}")
+        print(f"  model:             {self.all_args.model_name_or_path}")
+        print(f"  n_rollout_threads: {self.n_rollout_threads}")
+        print(f"  episode_length:    {self.episode_length}")
+        print(f"  horizon:           {self.all_args.horizon}")
+        print(f"  max_episodes:      {episodes}")
+        print(f"  total_honeypots:   {total_honeypots}")
+        print(f"  enable_sil:        {_sil_enabled}")
+        print(f"  sil_coach:         {_coach_summary}")
+        print(f"  oversample_factor: {getattr(self.all_args, 'oversample_factor', 5)}")
+        print(f"  normalization:     {self.all_args.normalization_mode}")
+        print(f"  load_in_4bit:      {getattr(self.all_args, 'load_in_4bit', False)}")
+        print(f"  load_path:         {self.all_args.load_path}")
+        print(f"  save_interval:     {self.all_args.save_interval}")
+        print(f"  log_dir:           {self.log_dir}")
+        print(f"  run_dir:           {self.run_dir}")
+        print("=" * 60)
+
         # Handle resume state
         start_episode = 0
         all_episodic_returns = []
@@ -427,10 +460,10 @@ class SQLRunner:
                                         "reward": float(episodic_return),
                                     }
                                 )
-                                print(
-                                    f"[SIL] Captured successful trajectory: "
-                                    f"thread={i}, step={step}, reward={episodic_return:.2f}"
-                                )
+                                # print(  # aggregate in TensorBoard sil/successes_captured
+                                #     f"[SIL] Captured successful trajectory: "
+                                #     f"thread={i}, step={step}, reward={episodic_return:.2f}"
+                                # )
 
                                 # Log lure context for future Blue Team training
                                 try:
@@ -560,10 +593,10 @@ class SQLRunner:
                                 traj_injected += inj
                                 total_injected += inj
 
-                            print(
-                                f"[SIL] Phase 2: Injected {traj_injected} augmented copies "
-                                f"for thread {tid} (reward={traj_info['reward']:.2f})"
-                            )
+                            # print(  # aggregate in TensorBoard sil/copies_injected
+                            #     f"[SIL] Phase 2: Injected {traj_injected} augmented copies "
+                            #     f"for thread {tid} (reward={traj_info['reward']:.2f})"
+                            # )
 
                             # Write structured debug log for this augmentation event
                             try:
@@ -635,10 +668,10 @@ class SQLRunner:
                             trajectory_data, oversample_factor
                         )
                         total_injected += injected
-                        print(
-                            f"[SIL] Phase 1: Injected {injected}/{oversample_factor} copies "
-                            f"for thread {tid} (reward={traj_info['reward']:.2f})"
-                        )
+                        # print(  # aggregate in TensorBoard sil/copies_injected
+                        #     f"[SIL] Phase 1: Injected {injected}/{oversample_factor} copies "
+                        #     f"for thread {tid} (reward={traj_info['reward']:.2f})"
+                        # )
 
                 self.writter.add_scalar(
                     "sil/successes_captured",
@@ -887,8 +920,8 @@ class SQLRunner:
             if eval_episode >= self.all_args.eval_episodes:
                 eval_episode_rewards = np.array(eval_episode_rewards)
                 eval_env_infos = {"eval_average_episode_rewards": eval_episode_rewards}
-                print("total_num_steps: ", total_num_steps)
-                print("eval reward is {}.".format(np.mean(eval_episode_rewards)))
+                # print("total_num_steps: ", total_num_steps)  # in TensorBoard
+                # print("eval reward is {}.".format(np.mean(eval_episode_rewards)))  # via self.log_eval()
                 self.log_eval(eval_env_infos, total_num_steps)
                 break
 

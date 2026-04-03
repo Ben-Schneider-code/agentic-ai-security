@@ -617,7 +617,7 @@ class OfflineLLM:
             # This shouldn't be reached due to break/return in loop, but just in case
             return "Error: Failed to get response from LLM after retries."
 
-        print(f"=== vLLM Response received: {response_text[:200]}...")
+        # print(f"=== vLLM Response received: {response_text[:200]}...")  # in reward_debug.jsonl as victim_full_response
 
         # Check if response contains SQL and execute via MCP if available
         if self.mcp_client and looks_like_sql(response_text):
@@ -625,17 +625,17 @@ class OfflineLLM:
 
             # Execute SQL via MCP if we found any
             if sql_code and looks_like_sql(sql_code):
-                print(f"=== Executing SQL: {sql_code}...")
+                # print(f"=== Executing SQL: {sql_code}...")  # in reward_debug.jsonl as execution_result
                 # Async execution
                 try:
                     result = await self.execute_tool_call("sql", {"sql": sql_code})
-                    print(f"=== SQL Execution result: {result[:200]}...")
+                    # print(f"=== SQL Execution result: {result[:200]}...")  # in reward_debug.jsonl as execution_result
                 except Exception as e:
                     result = f"Error: Could not execute SQL query - {str(e)}"
                     print(f"=== SQL Execution error: {result}")
                 return f"{response_text}\nExecution Result: {result}"
 
-        print("=== Returning response without SQL execution")
+        # print("=== Returning response without SQL execution")  # pure noise
         return response_text
 
     def complete(
@@ -1268,27 +1268,28 @@ def judge_correct(
 
     final_reward = max(total_reward, REWARD_CONFIG.reward_lower_bound)
 
-    # 6. Logging
+    # 6. Logging — all fields below are captured in reward_debug.jsonl (section 7)
     if enable_logging:
-        # Print collected messages
-        for msg in log_messages:
-            print(msg)
+        # # Print collected messages
+        # for msg in log_messages:
+        #     print(msg)
 
-        # Print reward summary
-        breakdown_str = ", ".join([f"{k}={v}" for k, v in reward_breakdown.items()])
-        if final_reward > 0:
-            print(
-                f"[REWARD] Total reward: {final_reward:.2f} (tier={outcome_tier}, {breakdown_str})"
-            )
-        else:
-            print(
-                f"[REWARD] No positive reward: {final_reward:.2f} (tier={outcome_tier})"
-            )
-            print(f"    Breakdown: {breakdown_str}")
-            if execution_result:
-                print(f"    Exec Result: {execution_result[:200]!r}")
-            else:
-                print("    Exec Result: <None>")
+        # # Print reward summary
+        # breakdown_str = ", ".join([f"{k}={v}" for k, v in reward_breakdown.items()])
+        # if final_reward > 0:
+        #     print(
+        #         f"[REWARD] Total reward: {final_reward:.2f} (tier={outcome_tier}, {breakdown_str})"
+        #     )
+        # else:
+        #     print(
+        #         f"[REWARD] No positive reward: {final_reward:.2f} (tier={outcome_tier})"
+        #     )
+        #     print(f"    Breakdown: {breakdown_str}")
+        #     if execution_result:
+        #         print(f"    Exec Result: {execution_result[:200]!r}")
+        #     else:
+        #         print("    Exec Result: <None>")
+        pass
 
     # 7. Detailed File Logging
     if log_dir:
@@ -1480,7 +1481,7 @@ class SQLEnv:
         row = self.dataset.sample(n=1)
         self.question = row.iloc[0]["prompt"]
         self.label = row.iloc[0]["sql_answer"]
-        print("REDTEAM AGENT QUESTION:", self.question)
+        # print("REDTEAM AGENT QUESTION:", self.question)  # in reward_debug.jsonl as red_team_input
 
         # Generate dynamic prompt (generic, no honeypot leakage)
         prompt = generate_redteam_prompt(
@@ -1571,14 +1572,14 @@ class SQLEnv:
         actions_to_ret = []
         self.last_red_team_actions = list(actions)  # Store for reward calculation
         for i, action in enumerate(actions):
-            print(f"REDTEAMER action: {action}")
+            # print(f"REDTEAMER action: {action}")  # in reward_debug.jsonl as red_team_input
             self.current_state += self.profiles[i]["role"] + ": " + action + "\n"
             self.victim_state.append("user", action)
             response = self.victim_llm.complete(
                 self.victim_state.conversation, system_prompt=sql_system_prompt
             )
-            print(f"AGENT RESPONSE: {response}")
-            print("\n=== CHECKING FOR REWARDS ====")
+            # print(f"AGENT RESPONSE: {response}")  # in reward_debug.jsonl as victim_full_response
+            # print("\n=== CHECKING FOR REWARDS ====")  # pure noise
             self.victim_state.append("assistant", response)
             # Include truncated victim response in red's observation so training-time
             # distribution matches deployment-time (conversational) usage during blue training
