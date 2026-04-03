@@ -413,6 +413,14 @@ def plot_training_results(run_dir: str) -> None:
         print(f"Error: Directory not found: {run_dir}")
         sys.exit(1)
 
+    # Read exit reason if available
+    exit_reason = None
+    exit_reason_path = os.path.join(run_dir, "exit_reason.txt")
+    if os.path.exists(exit_reason_path):
+        with open(exit_reason_path, "r") as f:
+            exit_reason = f.read().strip()
+        print(f"Exit reason: {exit_reason}")
+
     # Try parsing detailed debug logs first
     data = parse_debug_logs(run_dir)
 
@@ -1183,6 +1191,9 @@ def plot_training_results(run_dir: str) -> None:
             ax_hdr_turns.set_title("Honeypot Discovery Rate")
             ax_hdr_turns.axis("off")
 
+    if exit_reason:
+        fig.suptitle(f"Exit Reason: {exit_reason}", fontsize=13, fontweight="bold", color="#c0392b", y=1.002)
+
     plt.tight_layout()
     output_path = os.path.join(run_dir, "training_results_detailed.png")
     plt.savefig(output_path, dpi=150)
@@ -1190,6 +1201,8 @@ def plot_training_results(run_dir: str) -> None:
 
     # Print Summary
     print("\n=== Summary Statistics ===")
+    if exit_reason:
+        print(f"Exit Reason: {exit_reason}")
     print(f"Total Episodes: {len(episodes)}")
 
     if using_debug_logs and "red_team_tokens" in diagnostic_data:
