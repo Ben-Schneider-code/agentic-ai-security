@@ -399,6 +399,11 @@ class SQLRunner:
 
             self.trainer.prep_rollout()
             for step in range(self.episode_length):
+                print(
+                    f"[Ep {episode+1}/{episodes} | Step {step+1}/{self.episode_length} | "
+                    f"Global: {total_num_steps + step * self.n_rollout_threads}] rollout...",
+                    flush=True,
+                )
                 # Pass generation params for GRPO (higher temperature for exploration)
                 if self.algo == "GRPO":
                     temperature = getattr(self.all_args, "generation_temperature", 0.8)
@@ -682,10 +687,20 @@ class SQLRunner:
                     "sil/copies_injected", total_injected, total_num_steps
                 )
 
+            print(
+                f"[Ep {episode+1}/{episodes}] PPO update starting...",
+                flush=True,
+            )
             self.before_update()
             self.trainer.prep_training()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
             self.buffer.after_update()
+            print(
+                f"[Ep {episode+1}/{episodes}] PPO update done. "
+                f"v_loss={train_infos['value_loss']:.4f} p_loss={train_infos['policy_loss']:.4f} "
+                f"kl={train_infos['approx_kl']:.4f}",
+                flush=True,
+            )
 
             current_honeypot_count = (
                 len(self.shared_honeypots) if self.shared_honeypots else 0
@@ -701,7 +716,7 @@ class SQLRunner:
                 elif total_num_steps - self.last_honeypot_step >= 1000:
                     self.exit_reason = "no_new_honeypot_for_1000_steps"
                     self._should_stop_early = True
-            else:
+            elif "blueteam" in env_name:
                 # ──────────────────────────────────────────────────────────
                 # Blueteam halting logic (total_honeypots == 0 branch)
                 # All thresholds read from REWARD_CONFIG (single source of truth).
@@ -760,6 +775,10 @@ class SQLRunner:
                 )
                 or self._should_stop_early
             ):
+                print(
+                    f"[Ep {episode+1}/{episodes}] Saving checkpoint at step {total_num_steps}...",
+                    flush=True,
+                )
                 self.save(total_num_steps)
                 self._save_training_state(
                     episode, total_num_steps, all_episodic_returns
@@ -771,17 +790,6 @@ class SQLRunner:
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
 
-                # Compute and show blueteam decisive-win metric in progress bar
-                _n_ep = len(all_episodic_returns)
-                _pbar_dw_win = REWARD_CONFIG.decisive_win_window
-                _pbar_dw_thr = REWARD_CONFIG.decisive_win_threshold
-                if _n_ep >= _pbar_dw_win:
-                    _dw_avg = float(np.mean(all_episodic_returns[-_pbar_dw_win:]))
-                    _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr}"
-                else:
-                    _dw_avg = float(np.mean(all_episodic_returns)) if _n_ep > 0 else 0.0
-                    _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr} ({_n_ep}<{_pbar_dw_win}ep)"
-
                 # GRPO-specific: log fraction of zero-variance groups
                 if self.algo == "GRPO" and "frac_reward_zero_std" in train_infos:
                     progress_bar.set_description(
@@ -789,10 +797,25 @@ class SQLRunner:
                         f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | "
                         f"zero_var: {train_infos['frac_reward_zero_std']:.2%}"
                     )
-                else:
+                elif "blueteam" in env_name:
+                    # Compute and show blueteam decisive-win metric in progress bar
+                    _n_ep = len(all_episodic_returns)
+                    _pbar_dw_win = REWARD_CONFIG.decisive_win_window
+                    _pbar_dw_thr = REWARD_CONFIG.decisive_win_threshold
+                    if _n_ep >= _pbar_dw_win:
+                        _dw_avg = float(np.mean(all_episodic_returns[-_pbar_dw_win:]))
+                        _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr}"
+                    else:
+                        _dw_avg = float(np.mean(all_episodic_returns)) if _n_ep > 0 else 0.0
+                        _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr} ({_n_ep}<{_pbar_dw_win}ep)"
                     progress_bar.set_description(
                         f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
                         f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | {_dw_str}"
+                    )
+                else:
+                    progress_bar.set_description(
+                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
+                        f"reward_avg: {float(np.mean(all_episodic_returns)):.4f}"
                     )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
