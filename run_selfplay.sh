@@ -103,6 +103,7 @@ pkill -f vllm.entrypoints || true
 sleep 5
 
 BLUE_LATEST_CKPT=""
+RED_LATEST_CKPT=""
 
 if [[ -n "$CONTINUE_DIR" ]]; then
     # --- Continue mode: reuse existing SELFPLAY_ID ---
@@ -115,7 +116,7 @@ if [[ -n "$CONTINUE_DIR" ]]; then
     echo "Continuing run with Selfplay ID: ${SELFPLAY_ID}"
     echo "  Resume at iteration ${CONTINUE_ITER}, round ${CONTINUE_ROUND}"
 
-    # Recover BLUE_LATEST_CKPT from the iteration before the continue point
+    # Recover checkpoints from the iteration before the continue point
     if [[ "$CONTINUE_ITER" -gt 1 ]]; then
         PREV_BLUE_DIR="results-${SELFPLAY_ID}/iter_$((CONTINUE_ITER - 1))/blueteam"
         if [[ ! -d "$PREV_BLUE_DIR" ]]; then
@@ -129,6 +130,15 @@ if [[ -n "$CONTINUE_DIR" ]]; then
         fi
         BLUE_LATEST_CKPT=$(realpath "${BLUE_LATEST_CKPT}")
         echo "Recovered Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
+
+        PREV_RED_DIR="results-${SELFPLAY_ID}/iter_$((CONTINUE_ITER - 1))/redteam"
+        if [[ -d "$PREV_RED_DIR" ]]; then
+            RED_LATEST_CKPT=$(find_latest_checkpoint "${PREV_RED_DIR}")
+            if [[ -n "$RED_LATEST_CKPT" ]]; then
+                RED_LATEST_CKPT=$(realpath "${RED_LATEST_CKPT}")
+                echo "Recovered Red LoRA from previous iteration: ${RED_LATEST_CKPT}"
+            fi
+        fi
     fi
 else
     # --- Fresh run ---
@@ -189,6 +199,10 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
             RED_TRAIN_ARGS+=(--opponent-lora "${BLUE_LATEST_CKPT}")
             echo "Using Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
         fi
+        if [[ -n "$RED_LATEST_CKPT" ]]; then
+            RED_TRAIN_ARGS+=(--student-lora "${RED_LATEST_CKPT}")
+            echo "Continuing Red LoRA from previous iteration: ${RED_LATEST_CKPT}"
+        fi
 
         # --- Phase 1: Train Red Team ---
         echo "[Iter ${ITER}] Training Red Team (ID: ${ITER_ID})..."
@@ -232,12 +246,13 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     fi
 
     # --- Phase 2: Train Blue Team ---
+    BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}")
+    if [[ -n "$BLUE_LATEST_CKPT" ]]; then
+        BLUE_TRAIN_ARGS+=(--student-lora "${BLUE_LATEST_CKPT}")
+        echo "Continuing Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
+    fi
     echo "[Iter ${ITER}] Training Blue Team against Red LoRA (ID: ${ITER_ID})..."
-    if ! ./run_training.sh --target blueteam \
-            --results-id "${ITER_ID}" \
-            --base-model "$BASE_MODEL" \
-            "${COACH_ARGS[@]}" \
-            --opponent-lora "${RED_LATEST_CKPT}"; then
+    if ! ./run_training.sh "${BLUE_TRAIN_ARGS[@]}"; then
         echo "Blue Team training failed on iteration ${ITER}!"
         exit 1
     fi

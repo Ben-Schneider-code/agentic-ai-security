@@ -197,6 +197,13 @@ if [[ -n "$OPPONENT_LORA" ]]; then
     fi
 fi
 
+if [[ -n "$STUDENT_LORA" ]]; then
+    # STUDENT_LORA points to .../sql_agent dir; --load_path expects the parent (steps_XXXX/)
+    STUDENT_CKPT_DIR="$(dirname "$STUDENT_LORA")"
+    EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --load_path $STUDENT_CKPT_DIR"
+    echo "Initializing LoRA from prior checkpoint: $STUDENT_CKPT_DIR"
+fi
+
 if [[ "$TARGET" == "redteam" ]]; then
     python3 marft/scripts/train_sql.py \
             --seed 10 \
