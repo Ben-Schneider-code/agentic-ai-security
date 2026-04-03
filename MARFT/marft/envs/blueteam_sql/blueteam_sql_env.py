@@ -852,13 +852,7 @@ class BlueTeamSQLEnv(SQLEnv):
                     outcome = "true_negative"
                 else:
                     if sql_code:
-                        try:
-                            loop = asyncio.get_event_loop()
-                        except RuntimeError:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-
-                        exec_result = loop.run_until_complete(
+                        exec_result = self._loop.run_until_complete(
                             self.mcp_client.call_tool("sql", {"sql": sql_code})
                         )
                         exec_str = (

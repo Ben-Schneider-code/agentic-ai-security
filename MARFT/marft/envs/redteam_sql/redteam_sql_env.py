@@ -411,6 +411,7 @@ class OfflineLLM:
         max_wait_time: int = 600,
         max_tokens: int = 2048,
         skip_health_check: bool = False,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         """
         Args:
@@ -457,12 +458,12 @@ class OfflineLLM:
             except Exception as e:
                 logger.debug("Could not list models: %s", e)
 
-        # Store event loop for async MCP operations (reuse instead of creating new ones)
-        try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
+        # Reuse the caller's event loop (same one the MCP session lives on)
+        # so that async MCP calls stay on the correct loop.
+        if loop is not None:
+            self.loop = loop
+        else:
             self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
 
     def _wait_for_server(self, max_wait_time: int):
         """Wait for vLLM server to be ready by checking /v1/models endpoint"""
@@ -643,15 +644,10 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
-        # Use the instance's persistent event loop — the same one on which
-        # MCPClient.connect_to_server() was called. asyncio.run() creates a
-        # new loop per call and then closes it, which (a) severs the anyio
-        # stdio streams owned by the MCP session (silent SQL failures →
-        # corrupted reward signal) and (b) destroys httpx's connection pool
-        # (new TCP handshake to vLLM on every call).
-        # Thread-safety: each SQLEnv owns its own OfflineLLM (and loop);
-        # ThreadPoolExecutor assigns one worker per env at a time, so no
-        # two threads ever call run_until_complete() on the same loop.
+        # Each env owns a dedicated event loop (created in SQLEnv.__init__).
+        # This is the same loop the MCP session lives on, so async MCP calls
+        # work correctly. Thread-safety: no two ThreadPoolExecutor workers
+        # share a loop, so concurrent run_until_complete() calls are safe.
         return self.loop.run_until_complete(self.acomplete(history, system_prompt))
 
 
@@ -1394,14 +1390,14 @@ class SQLEnv:
         else:
             self.accessed_honeypots_training = set()
 
+        # Each env gets its own event loop so that ThreadPoolExecutor workers
+        # never call run_until_complete() on the same loop concurrently.
+        # Using get_event_loop() would return the shared main-thread loop.
+        self._loop = asyncio.new_event_loop()
+
         # Initialize MCP client
         self.mcp_client = MCPClient()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        loop.run_until_complete(
+        self._loop.run_until_complete(
             self.mcp_client.connect_to_server("/app/mcp/postgres.py")
         )
 
@@ -1410,6 +1406,7 @@ class SQLEnv:
             mcp_client=self.mcp_client,
             vllm_base_url=vllm_base_url,
             max_tokens=max_tokens,
+            loop=self._loop,
         )
         self.victim_state = ChatState()
 
@@ -1638,12 +1635,7 @@ class SQLEnv:
 
     def close(self):
         try:
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.mcp_client.cleanup())
+            self._loop.run_until_complete(self.mcp_client.cleanup())
         except Exception as e:
             print(f"[SQLEnv] Non-fatal error during close: {e}")
 
