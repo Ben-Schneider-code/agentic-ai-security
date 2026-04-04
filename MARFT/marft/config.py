@@ -431,7 +431,7 @@ def get_config():
     parser.add_argument(
         "--enable_sil",
         action="store_true",
-        default=True,
+        default=False,
         help="Enable Self-Imitation Learning (oversample successful honeypot trajectories into the on-policy batch)",
     )
     parser.add_argument(

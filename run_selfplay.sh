@@ -13,6 +13,9 @@ NUM_ITERATIONS=8
 REDTEAM_GPU=0
 BLUETEAM_GPU=1
 HORIZON=5
+# Coach GPU defaults to REDTEAM_GPU (GPU 0) for 2-GPU operation.
+# For 3-GPU setups, pass --coach-gpu 2 to keep coach isolated on its own GPU.
+COACH_GPU="$REDTEAM_GPU"
 
 # --- Continue defaults ---
 CONTINUE_DIR=""
@@ -30,6 +33,7 @@ while [[ "$#" -gt 0 ]]; do
         --continue-round) CONTINUE_ROUND="$2"; shift ;;
         --redteam-gpu) REDTEAM_GPU="$2"; shift ;;
         --blueteam-gpu) BLUETEAM_GPU="$2"; shift ;;
+        --coach-gpu) COACH_GPU="$2"; shift ;;
         --horizon) HORIZON="$2"; shift ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
@@ -76,7 +80,7 @@ echo "Base model:      $BASE_MODEL"
 echo "Coach model:     ${COACH_MODEL:-<default from config>}"
 echo "Num iterations:  $NUM_ITERATIONS"
 echo "Horizon:         $HORIZON"
-echo "GPU layout:      redteam=GPU${REDTEAM_GPU}  blueteam=GPU${BLUETEAM_GPU}  coach=GPU2 (from experiments/sql_training.json)"
+echo "GPU layout:      redteam=GPU${REDTEAM_GPU}  blueteam=GPU${BLUETEAM_GPU}  coach=GPU${COACH_GPU}"
 
 # Build optional coach arg (only pass if explicitly set)
 COACH_ARGS=()
@@ -202,7 +206,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
             fi
         fi
 
-        RED_TRAIN_ARGS=(--target redteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --actor-gpu "$BLUETEAM_GPU" --training-gpu "$REDTEAM_GPU" --horizon "$HORIZON")
+        RED_TRAIN_ARGS=(--target redteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --actor-gpu "$BLUETEAM_GPU" --training-gpu "$REDTEAM_GPU" --coach-gpu "$COACH_GPU" --horizon "$HORIZON")
         if [[ -n "$BLUE_LATEST_CKPT" ]]; then
             RED_TRAIN_ARGS+=(--opponent-lora "${BLUE_LATEST_CKPT}")
             echo "Using Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
@@ -254,7 +258,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     fi
 
     # --- Phase 2: Train Blue Team ---
-    BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}" --actor-gpu "$REDTEAM_GPU" --training-gpu "$BLUETEAM_GPU" --horizon "$HORIZON")
+    BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}" --actor-gpu "$REDTEAM_GPU" --training-gpu "$BLUETEAM_GPU" --coach-gpu "$COACH_GPU" --horizon "$HORIZON")
     if [[ -n "$BLUE_LATEST_CKPT" ]]; then
         BLUE_TRAIN_ARGS+=(--student-lora "${BLUE_LATEST_CKPT}")
         echo "Continuing Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
