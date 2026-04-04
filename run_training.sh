@@ -24,6 +24,7 @@ BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 LOAD_IN_4BIT=false
 ACTOR_GPU=1
 TRAINING_GPU=2
+HORIZON=5
 
 # Read coach model default from the config file; can be overridden via --coach-model
 COACH_CONFIG="experiments/sql_training.json"
@@ -42,6 +43,7 @@ while [[ "$#" -gt 0 ]]; do
         --load-in-4bit) LOAD_IN_4BIT=true ;;
         --actor-gpu) ACTOR_GPU="$2"; shift ;;
         --training-gpu) TRAINING_GPU="$2"; shift ;;
+        --horizon) HORIZON="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -236,7 +238,7 @@ if [[ "$TARGET" == "redteam" ]]; then
             --save_interval 400 \
             --entropy_coef 0.05 \
             --warmup_steps 500 \
-            --horizon 5 \
+            --horizon "$HORIZON" \
             --coach_vllm_url "$COACH_VLLM_URL" \
             --coach_model_name "$COACH_MODEL_NAME" \
             --results_dir "${RESULTS_TEAM_DIR}" \
@@ -267,7 +269,7 @@ else
             --save_interval 400 \
             --entropy_coef 0.05 \
             --warmup_steps 500 \
-            --horizon 5 \
+            --horizon "$HORIZON" \
             --use_eval \
             --eval_interval 10 \
             --eval_episodes 20 \
