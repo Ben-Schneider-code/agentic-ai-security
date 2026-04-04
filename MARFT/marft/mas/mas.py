@@ -576,9 +576,11 @@ class MAS(ABC):
         rollout_obs, rollout_actions, rollout_action_tokens = (
             self.get_actions_sequential(obs, temperature=temperature, top_k=top_k)
         )
+        torch.cuda.empty_cache()  # Free generate() KV cache before critic/logprob phases
         if self.algo == "APPO":
             rollout_values = self.get_action_values(rollout_obs)
             rollout_values = rollout_values.float().cpu().numpy()
+            torch.cuda.empty_cache()  # Free critic activations before log-prob phase
             action_log_probs, _ = self.get_joint_action_log_probs(
                 rollout_obs, rollout_action_tokens, batch_infer=True
             )
@@ -588,6 +590,7 @@ class MAS(ABC):
             rollout_values = self.get_token_values(
                 rollout_obs, rollout_action_tokens
             ).squeeze(-1)
+            torch.cuda.empty_cache()  # Free critic activations before logit phase
             logits, _ = self.get_token_logits(rollout_obs, rollout_action_tokens)
             logp_softmax = torch.log_softmax(logits, dim=-1)
             token_log_probs = torch.gather(

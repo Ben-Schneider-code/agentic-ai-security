@@ -337,6 +337,13 @@ class SQLRunner:
         print(f"  save_interval:     {self.all_args.save_interval}")
         print(f"  log_dir:           {self.log_dir}")
         print(f"  run_dir:           {self.run_dir}")
+        device = torch.device(self.mas.device)
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(device)
+            alloc_gb = torch.cuda.memory_allocated(device) / 1e9
+            print(f"  gpu_device:        {device} ({props.name})")
+            print(f"  gpu_total_mem:     {props.total_mem / 1e9:.1f} GB")
+            print(f"  gpu_alloc_at_init: {alloc_gb:.1f} GB")
         print("=" * 60)
 
         # Handle resume state
@@ -388,6 +395,7 @@ class SQLRunner:
 
             # Clear GPU cache once per training episode (not every step - expensive sync)
             torch.cuda.empty_cache()
+            self._log_gpu_memory("episode_start", total_num_steps)
 
             # --- Self-Imitation Learning: track successful trajectories ---
             enable_sil = (
@@ -522,6 +530,8 @@ class SQLRunner:
                         # Plotting disabled - raw data saved via TensorBoard/debug logs
                         # if len(all_episodic_returns) % 5 == 0:
                         #     self._save_reward_plot(all_episodic_returns)
+
+            self._log_gpu_memory("post_rollout", total_num_steps)
 
             # === SELF-IMITATION LEARNING: inject oversampled copies into on-policy batch ===
             if sil_successes and enable_sil and self.algo == "APPO":
@@ -695,6 +705,7 @@ class SQLRunner:
             self.trainer.prep_training()
             train_infos = self.trainer.train(self.buffer, total_num_steps)
             self.buffer.after_update()
+            self._log_gpu_memory("post_training", total_num_steps)
             print(
                 f"[Ep {episode+1}/{episodes}] PPO update done. "
                 f"v_loss={train_infos['value_loss']:.4f} p_loss={train_infos['policy_loss']:.4f} "
@@ -920,6 +931,28 @@ class SQLRunner:
     def log_train(self, train_infos, total_num_steps):
         for k, v in train_infos.items():
             self.writter.add_scalars(k, {k: v}, total_num_steps)
+
+    def _log_gpu_memory(self, phase: str, total_num_steps: int):
+        """Log GPU memory usage to TensorBoard and console (when utilization is high)."""
+        device = torch.device(self.mas.device)
+        allocated_gb = torch.cuda.memory_allocated(device) / 1e9
+        reserved_gb = torch.cuda.memory_reserved(device) / 1e9
+        total_gb = torch.cuda.get_device_properties(device).total_mem / 1e9
+        utilization = allocated_gb / total_gb if total_gb > 0 else 0
+
+        self.writter.add_scalars(
+            "gpu/allocated_gb", {"gpu/allocated_gb": allocated_gb}, total_num_steps
+        )
+        self.writter.add_scalars(
+            "gpu/reserved_gb", {"gpu/reserved_gb": reserved_gb}, total_num_steps
+        )
+
+        if utilization > 0.90:
+            print(
+                f"[GPU] {phase}: alloc={allocated_gb:.1f}GB res={reserved_gb:.1f}GB "
+                f"total={total_gb:.1f}GB ({utilization:.0%})",
+                flush=True,
+            )
 
     @torch.no_grad()
     def eval(self, total_num_steps):

@@ -102,10 +102,10 @@ class TokenCritic(nn.Module):
                 past_key_values=past_key_values,
                 attention_mask=attention_mask,
                 use_cache=use_cache,
-                output_hidden_states=True,
+                output_hidden_states=False,
             )
 
-        hidden_states = transformer_outputs[1][-1].float()
+        hidden_states = transformer_outputs[0].float()
 
         x = self.relu(self.v_head_mlp1(hidden_states))
         x = self.relu(self.v_head_mlp2(x))

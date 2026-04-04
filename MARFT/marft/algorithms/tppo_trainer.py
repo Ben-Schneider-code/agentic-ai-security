@@ -247,5 +247,8 @@ class TPPOTrainer(ABC):
 
     def prep_rollout(self):
         for agent in self.mas.agents:
+            agent.model.zero_grad(set_to_none=True)
             agent.eval()
+        self.mas.critic.zero_grad(set_to_none=True)
         self.mas.critic.eval()
+        torch.cuda.empty_cache()
