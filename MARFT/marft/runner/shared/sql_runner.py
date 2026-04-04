@@ -308,7 +308,7 @@ class SQLRunner:
 
         # Pre-compute SIL info for startup summary
         _sil_enabled = (
-            getattr(self.all_args, "enable_sil", True)
+            getattr(self.all_args, "enable_sil", False)
             and "blueteam" not in env_name
         )
         if self.sil_augmenter:
@@ -391,7 +391,7 @@ class SQLRunner:
 
             # --- Self-Imitation Learning: track successful trajectories ---
             enable_sil = (
-                getattr(self.all_args, "enable_sil", True)
+                getattr(self.all_args, "enable_sil", False)
                 and "blueteam" not in getattr(self.all_args, "env_name", "")
             )
             oversample_factor = getattr(self.all_args, "oversample_factor", 5)
