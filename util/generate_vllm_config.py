@@ -36,6 +36,12 @@ def main():
         default="meta-llama/Llama-3.1-8B-Instruct",
         help="Base model for actors",
     )
+    parser.add_argument(
+        "--actor-gpu",
+        type=int,
+        default=1,
+        help="GPU index for actor vLLM servers (default: 1)",
+    )
     args = parser.parse_args()
 
     if args.target == "blueteam" and not args.opponent_lora:
@@ -50,8 +56,7 @@ def main():
     }
 
     if args.target == "redteam":
-        # Redteam training: student vLLM on GPU 1
-        # GPU 0 = coach, GPU 1 = student vLLM (inference), GPU 2 = training loop
+        # Redteam training: student vLLM on actor_gpu
         student_extra_args = ["--dtype", "auto"]
         lora_modules = []
         if args.student_lora:
@@ -69,7 +74,7 @@ def main():
             {
                 "id": "student",
                 "model": args.model,
-                "gpus": [1],
+                "gpus": [args.actor_gpu],
                 "port": 8001,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
@@ -79,12 +84,11 @@ def main():
     else:
         # Blueteam training: NO student vLLM — the blueteam env calls redteam vLLM
         # directly, so the student vLLM would just waste a GPU.
-        # GPU 0 = coach, GPU 1 = redteam opponent (LoRA), GPU 2 = training loop
         config["servers"].append(
             {
                 "id": "redteam",
                 "model": args.model,
-                "gpus": [1],
+                "gpus": [args.actor_gpu],
                 "port": 8002,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
@@ -105,7 +109,7 @@ def main():
             {
                 "id": "student",
                 "model": args.model,
-                "gpus": [1],
+                "gpus": [args.actor_gpu],
                 "port": 8002,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,

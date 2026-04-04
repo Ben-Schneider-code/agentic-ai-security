@@ -22,6 +22,8 @@ HOST_ONLY=false
 RESULTS_ID=""
 BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 LOAD_IN_4BIT=false
+ACTOR_GPU=1
+TRAINING_GPU=2
 
 # Read coach model default from the config file; can be overridden via --coach-model
 COACH_CONFIG="experiments/sql_training.json"
@@ -38,6 +40,8 @@ while [[ "$#" -gt 0 ]]; do
         --base-model) BASE_MODEL="$2"; shift ;;
         --coach-model) COACH_MODEL_NAME="$2"; shift ;;
         --load-in-4bit) LOAD_IN_4BIT=true ;;
+        --actor-gpu) ACTOR_GPU="$2"; shift ;;
+        --training-gpu) TRAINING_GPU="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -45,6 +49,8 @@ done
 
 echo "Base model:   $BASE_MODEL"
 echo "Coach model:  $COACH_MODEL_NAME"
+echo "Actor GPU:    $ACTOR_GPU"
+echo "Training GPU: $TRAINING_GPU"
 
 if [[ "$TARGET" != "redteam" && "$TARGET" != "blueteam" ]]; then
     echo "ERROR: --target must be 'redteam' or 'blueteam'"
@@ -99,7 +105,7 @@ fi
 # Always read the coach URL from the registry (works whether we just started it or it was already running)
 COACH_VLLM_URL=$(python3 -c "import json; reg = json.load(open('/tmp/vllm_coach_registry.json')); print(reg['coach']['url'])")/v1
 export COACH_VLLM_URL
-echo "Coach vLLM:   $COACH_VLLM_URL (GPU 0)"
+echo "Coach vLLM:   $COACH_VLLM_URL"
 
 # ============================================
 # 2. Generate and Start Dynamic Actor vLLM
@@ -111,7 +117,7 @@ ACTOR_CONFIG_PATH="/tmp/actor_vllm_config.json"
 ACTOR_REGISTRY_PATH="/tmp/vllm_actor_registry.json"
 rm -f "$ACTOR_REGISTRY_PATH"
 
-GEN_CMD=(python3 util/generate_vllm_config.py --target "$TARGET" --out-config "$ACTOR_CONFIG_PATH" --model "$BASE_MODEL")
+GEN_CMD=(python3 util/generate_vllm_config.py --target "$TARGET" --out-config "$ACTOR_CONFIG_PATH" --model "$BASE_MODEL" --actor-gpu "$ACTOR_GPU")
 
 [[ -n "$OPPONENT_LORA" ]] && GEN_CMD+=(--opponent-lora "$OPPONENT_LORA")
 [[ -n "$STUDENT_LORA" ]] && GEN_CMD+=(--student-lora "$STUDENT_LORA")
@@ -181,6 +187,8 @@ echo "[3/3] Starting Training..."
 cd MARFT
 # Memory optimization flags for CUDA allocator
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+export TRAINING_GPU="$TRAINING_GPU"
+export TRAINING_DEVICE="cuda:$TRAINING_GPU"
 
 EXTRA_TRAIN_ARGS=""
 if [ "$LOAD_IN_4BIT" = true ]; then

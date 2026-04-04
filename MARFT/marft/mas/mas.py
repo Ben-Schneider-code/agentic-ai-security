@@ -35,7 +35,7 @@ class MAS(ABC):
         self.algo = algo
         self.normalization_mode = normalization_mode
         self.num_agents = num_agents
-        self.device = "cuda:2"  # GPU 0=coach vLLM, GPU 1=opponent/student vLLM, GPU 2=training loop
+        self.device = os.environ.get("TRAINING_DEVICE", "cuda:2")
 
         self.context_window = context_window
         self.max_new_tokens = max_new_tokens
@@ -49,7 +49,7 @@ class MAS(ABC):
 
         # Assign devices for agents
         # Needs to match `self.device`
-        available_devices = ["cuda:2"]
+        available_devices = [self.device]
         next_dev = 0
         for profile in self.profiles:
             if "device" not in profile:

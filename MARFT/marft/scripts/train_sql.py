@@ -319,12 +319,12 @@ def main(args):
     print(f">>> Debug logs will be saved to: {all_args.debug_log_dir}")
 
     # seed
-    # Only seed the training device (cuda:2) — manual_seed_all initializes CUDA
-    # contexts on ALL visible GPUs, leaking ~0.5-1GB onto GPU 0 (coach vLLM)
-    # and GPU 1 (actor vLLM) for the entire training duration.
+    # Only seed the training device — manual_seed_all initializes CUDA contexts on ALL
+    # visible GPUs, leaking ~0.5-1GB onto other GPUs for the entire training duration.
+    _training_gpu = int(os.environ.get("TRAINING_GPU", "2"))
     print(f">>> Setting seed to {all_args.seed}")
     torch.manual_seed(all_args.seed)
-    with torch.cuda.device(2):
+    with torch.cuda.device(_training_gpu):
         torch.cuda.manual_seed(all_args.seed)
     np.random.seed(all_args.seed)
     random.seed(all_args.seed)
