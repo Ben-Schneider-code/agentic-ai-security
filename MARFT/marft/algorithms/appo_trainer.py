@@ -249,9 +249,13 @@ class APPOTrainer(ABC):
         }
 
         update_time = 0
-        for _ in range(self.ppo_epoch):
+        for epoch in range(self.ppo_epoch):
             data_generator = buffer.sample(self.num_mini_batch)
-            for sample in data_generator:
+            for mb_idx, sample in enumerate(data_generator):
+                print(
+                    f"  [PPO] epoch {epoch+1}/{self.ppo_epoch} mini-batch {mb_idx+1}/{self.num_mini_batch}",
+                    flush=True,
+                )
                 (
                     value_loss,
                     value_grad_norm,
