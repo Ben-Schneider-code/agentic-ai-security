@@ -9,7 +9,9 @@ echo "========================================"
 # --- Defaults ---
 BASE_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 COACH_MODEL=""
-NUM_ITERATIONS=3
+NUM_ITERATIONS=8
+REDTEAM_GPU=0
+BLUETEAM_GPU=1
 
 # --- Continue defaults ---
 CONTINUE_DIR=""
@@ -25,6 +27,8 @@ while [[ "$#" -gt 0 ]]; do
         --continue) CONTINUE_DIR="$2"; shift ;;
         --continue-iteration) CONTINUE_ITER="$2"; shift ;;
         --continue-round) CONTINUE_ROUND="$2"; shift ;;
+        --redteam-gpu) REDTEAM_GPU="$2"; shift ;;
+        --blueteam-gpu) BLUETEAM_GPU="$2"; shift ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -69,6 +73,7 @@ find_latest_checkpoint() {
 echo "Base model:      $BASE_MODEL"
 echo "Coach model:     ${COACH_MODEL:-<default from config>}"
 echo "Num iterations:  $NUM_ITERATIONS"
+echo "GPU layout:      redteam=GPU${REDTEAM_GPU}  blueteam=GPU${BLUETEAM_GPU}  coach=GPU2 (from experiments/sql_training.json)"
 
 # Build optional coach arg (only pass if explicitly set)
 COACH_ARGS=()
@@ -194,7 +199,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
             fi
         fi
 
-        RED_TRAIN_ARGS=(--target redteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}")
+        RED_TRAIN_ARGS=(--target redteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --actor-gpu "$BLUETEAM_GPU" --training-gpu "$REDTEAM_GPU")
         if [[ -n "$BLUE_LATEST_CKPT" ]]; then
             RED_TRAIN_ARGS+=(--opponent-lora "${BLUE_LATEST_CKPT}")
             echo "Using Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
@@ -246,7 +251,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     fi
 
     # --- Phase 2: Train Blue Team ---
-    BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}")
+    BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}" --actor-gpu "$REDTEAM_GPU" --training-gpu "$BLUETEAM_GPU")
     if [[ -n "$BLUE_LATEST_CKPT" ]]; then
         BLUE_TRAIN_ARGS+=(--student-lora "${BLUE_LATEST_CKPT}")
         echo "Continuing Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"

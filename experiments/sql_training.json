@@ -1,12 +1,12 @@
 {
     "_comment": "SQL/RFT training experiment base infrastructure: 32B fixed coach model.",
-    "_comment2": "GPU allocation: GPU 0 = coach vLLM",
+    "_comment2": "GPU allocation: GPU 0 = redteam training, GPU 1 = blueteam training, actor vLLM on opposite GPU, GPU 2 = coach vLLM",
     "servers": [
         {
             "id": "coach",
             "model": "meta-llama/Llama-3.1-8B-Instruct",
             "gpus": [
-                0
+                2
             ],
             "port": 8000,
             "max_model_len": 16384,
