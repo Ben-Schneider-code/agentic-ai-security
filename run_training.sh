@@ -94,7 +94,7 @@ echo "Experiment ID:  ${RESULTS_ID}"
 echo "Results dir:    ${RESULTS_TEAM_DIR}"
 
 # ============================================
-# 1. Start Core Infrastructure (DB, MCP, Coach vLLM)
+# 1. Start Core Infrastructure (DB, MCP)
 # ============================================
 echo ""
 echo "[1/3] Starting Core Fixed Infrastructure..."
@@ -102,61 +102,64 @@ echo "[1/3] Starting Core Fixed Infrastructure..."
 # Always ensure DB and MCP server are up (idempotent)
 ./script/init.sh
 
-if [ -f "/tmp/vllm_coach_registry.json" ]; then
-    echo "Coach registry found — skipping coach vLLM startup (already running)."
-else
-    echo "Starting coach vLLM (model: $COACH_MODEL_NAME)..."
-    _DEFAULT_COACH=$(python3 -c "import json; cfg = json.load(open('$COACH_CONFIG')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
-    if [[ "$COACH_MODEL_NAME" != "$_DEFAULT_COACH" || -n "$COACH_GPU" ]]; then
-        _COACH_VLLM_CONFIG=$(mktemp /tmp/sql_training_override_XXXXXX.json)
-        python3 -c "
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-coach_gpu = sys.argv[3]
-for s in cfg['servers']:
-    if s['id'] == 'coach':
-        s['model'] = sys.argv[2]
-        if coach_gpu:
-            s['gpus'] = [int(coach_gpu)]
-json.dump(cfg, open(sys.argv[4], 'w'), indent=4)
-" "$COACH_CONFIG" "$COACH_MODEL_NAME" "$COACH_GPU" "$_COACH_VLLM_CONFIG"
-    else
-        _COACH_VLLM_CONFIG="$COACH_CONFIG"
-    fi
-
-    python3 start_vllm.py --config "$_COACH_VLLM_CONFIG" --timeout 600 --wait-only &
-    VLLM_FLEET_PID=$!
-
-    TIMEOUT=660
-    START_TIME=$(date +%s)
-    while true; do
-        if ! kill -0 $VLLM_FLEET_PID 2>/dev/null; then
-            echo "ERROR: Coach vLLM process died unexpectedly. Check /tmp/vllm_logs/"
-            [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
-            exit 1
-        fi
-        if [ -f "/tmp/vllm_coach_registry.json" ]; then
-            if python3 -c "import json; data = json.load(open('/tmp/vllm_coach_registry.json')); exit(0 if data else 1)" 2>/dev/null; then
-                echo "✓ Coach vLLM ready"
-                break
-            fi
-        fi
-        ELAPSED=$(($(date +%s) - START_TIME))
-        if [ $ELAPSED -ge $TIMEOUT ]; then
-            echo "ERROR: Coach vLLM timed out after $TIMEOUT seconds. Check /tmp/vllm_logs/"
-            kill $VLLM_FLEET_PID 2>/dev/null
-            [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
-            exit 1
-        fi
-        sleep 5
-    done
-    [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
-fi
-
-# Always read the coach URL from the registry (works whether we just started it or it was already running)
-COACH_VLLM_URL=$(python3 -c "import json; reg = json.load(open('/tmp/vllm_coach_registry.json')); print(reg['coach']['url'])")/v1
-export COACH_VLLM_URL
-echo "Coach vLLM:   $COACH_VLLM_URL"
+# Coach vLLM startup disabled — SIL is off by default and the coach would
+# occupy the training GPU (GPU 0), causing OOM when training loads its model.
+# Re-enable once SIL is ready to use by uncommenting the block below.
+#
+# if [ -f "/tmp/vllm_coach_registry.json" ]; then
+#     echo "Coach registry found — skipping coach vLLM startup (already running)."
+# else
+#     echo "Starting coach vLLM (model: $COACH_MODEL_NAME)..."
+#     _DEFAULT_COACH=$(python3 -c "import json; cfg = json.load(open('$COACH_CONFIG')); print([s['model'] for s in cfg['servers'] if s['id'] == 'coach'][0])")
+#     if [[ "$COACH_MODEL_NAME" != "$_DEFAULT_COACH" || -n "$COACH_GPU" ]]; then
+#         _COACH_VLLM_CONFIG=$(mktemp /tmp/sql_training_override_XXXXXX.json)
+#         python3 -c "
+# import json, sys
+# cfg = json.load(open(sys.argv[1]))
+# coach_gpu = sys.argv[3]
+# for s in cfg['servers']:
+#     if s['id'] == 'coach':
+#         s['model'] = sys.argv[2]
+#         if coach_gpu:
+#             s['gpus'] = [int(coach_gpu)]
+# json.dump(cfg, open(sys.argv[4], 'w'), indent=4)
+# " "$COACH_CONFIG" "$COACH_MODEL_NAME" "$COACH_GPU" "$_COACH_VLLM_CONFIG"
+#     else
+#         _COACH_VLLM_CONFIG="$COACH_CONFIG"
+#     fi
+#
+#     python3 start_vllm.py --config "$_COACH_VLLM_CONFIG" --timeout 600 --wait-only &
+#     VLLM_FLEET_PID=$!
+#
+#     TIMEOUT=660
+#     START_TIME=$(date +%s)
+#     while true; do
+#         if ! kill -0 $VLLM_FLEET_PID 2>/dev/null; then
+#             echo "ERROR: Coach vLLM process died unexpectedly. Check /tmp/vllm_logs/"
+#             [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
+#             exit 1
+#         fi
+#         if [ -f "/tmp/vllm_coach_registry.json" ]; then
+#             if python3 -c "import json; data = json.load(open('/tmp/vllm_coach_registry.json')); exit(0 if data else 1)" 2>/dev/null; then
+#                 echo "✓ Coach vLLM ready"
+#                 break
+#             fi
+#         fi
+#         ELAPSED=$(($(date +%s) - START_TIME))
+#         if [ $ELAPSED -ge $TIMEOUT ]; then
+#             echo "ERROR: Coach vLLM timed out after $TIMEOUT seconds. Check /tmp/vllm_logs/"
+#             kill $VLLM_FLEET_PID 2>/dev/null
+#             [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
+#             exit 1
+#         fi
+#         sleep 5
+#     done
+#     [[ "$_COACH_VLLM_CONFIG" == /tmp/* ]] && rm -f "$_COACH_VLLM_CONFIG"
+# fi
+#
+# COACH_VLLM_URL=$(python3 -c "import json; reg = json.load(open('/tmp/vllm_coach_registry.json')); print(reg['coach']['url'])")/v1
+# export COACH_VLLM_URL
+# echo "Coach vLLM:   $COACH_VLLM_URL"
 
 # ============================================
 # 2. Generate and Start Dynamic Actor vLLM
