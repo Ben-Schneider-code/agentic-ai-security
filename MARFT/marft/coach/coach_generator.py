@@ -85,7 +85,7 @@ Output ONLY the attack text, one per line, no numbering or explanation.
                 max_tokens=self.max_tokens,
             )
 
-            generated_text = response.choices[0].message.content.strip()
+            generated_text = (response.choices[0].message.content or "").strip()
 
             # Parse output into individual turns
             attacks = [line.strip() for line in generated_text.split('\n') if line.strip()]

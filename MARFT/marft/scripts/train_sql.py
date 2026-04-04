@@ -77,7 +77,7 @@ class ThreadSafeSet:
             return bool(self._set)
 
 
-def make_train_env(all_args, shared_honeypots: set = None):
+def make_train_env(all_args, shared_honeypots=None):
     """Create training environments with shared honeypot tracking.
 
     Args:

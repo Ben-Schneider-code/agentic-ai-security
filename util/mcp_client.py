@@ -78,10 +78,8 @@ class MCPClient:
             for tool in response.tools
         ]
 
-    async def call_tool(self, tool, tool_input) -> str:
+    async def call_tool(self, tool, tool_input):
         if self._sem:
             async with self._sem:
-                result = await self.session.call_tool(tool, tool_input)
-                return result
-        result = await self.session.call_tool(tool, tool_input)
-        return result
+                return await self.session.call_tool(tool, tool_input)
+        return await self.session.call_tool(tool, tool_input)

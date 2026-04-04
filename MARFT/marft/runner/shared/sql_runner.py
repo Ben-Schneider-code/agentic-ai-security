@@ -342,7 +342,7 @@ class SQLRunner:
             props = torch.cuda.get_device_properties(device)
             alloc_gb = torch.cuda.memory_allocated(device) / 1e9
             print(f"  gpu_device:        {device} ({props.name})")
-            print(f"  gpu_total_mem:     {props.total_mem / 1e9:.1f} GB")
+            print(f"  gpu_total_mem:     {props.total_memory / 1e9:.1f} GB")
             print(f"  gpu_alloc_at_init: {alloc_gb:.1f} GB")
         print("=" * 60)
 
@@ -732,8 +732,8 @@ class SQLRunner:
                 # Blueteam halting logic (total_honeypots == 0 branch)
                 # All thresholds read from REWARD_CONFIG (single source of truth).
                 # ──────────────────────────────────────────────────────────
-                _dw_thresh = REWARD_CONFIG.decisive_win_threshold
-                _dw_win = REWARD_CONFIG.decisive_win_window
+                _dw_thresh = REWARD_CONFIG.blueteam_decisive_win_threshold
+                _dw_win = REWARD_CONFIG.blueteam_decisive_win_window
 
                 if len(all_episodic_returns) >= _dw_win:
                     recent_returns = all_episodic_returns[-_dw_win:]
@@ -747,8 +747,8 @@ class SQLRunner:
                         )
 
                 # Plateau logic
-                _plat_win = REWARD_CONFIG.plateau_window
-                _plat_min = REWARD_CONFIG.plateau_min_improvement
+                _plat_win = REWARD_CONFIG.blueteam_plateau_window
+                _plat_min = REWARD_CONFIG.blueteam_plateau_min_improvement
                 if (
                     not self._should_stop_early
                     and len(all_episodic_returns) >= _plat_win * 2
@@ -768,7 +768,7 @@ class SQLRunner:
                         )
 
                 # Hard step limit
-                _max_steps = REWARD_CONFIG.max_training_steps
+                _max_steps = REWARD_CONFIG.blueteam_max_training_steps
                 if not self._should_stop_early and total_num_steps >= _max_steps:
                     self.exit_reason = "blueteam_max_steps_reached"
                     self._should_stop_early = True
@@ -811,8 +811,8 @@ class SQLRunner:
                 elif "blueteam" in env_name:
                     # Compute and show blueteam decisive-win metric in progress bar
                     _n_ep = len(all_episodic_returns)
-                    _pbar_dw_win = REWARD_CONFIG.decisive_win_window
-                    _pbar_dw_thr = REWARD_CONFIG.decisive_win_threshold
+                    _pbar_dw_win = REWARD_CONFIG.blueteam_decisive_win_window
+                    _pbar_dw_thr = REWARD_CONFIG.blueteam_decisive_win_threshold
                     if _n_ep >= _pbar_dw_win:
                         _dw_avg = float(np.mean(all_episodic_returns[-_pbar_dw_win:]))
                         _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr}"
@@ -937,7 +937,7 @@ class SQLRunner:
         device = torch.device(self.mas.device)
         allocated_gb = torch.cuda.memory_allocated(device) / 1e9
         reserved_gb = torch.cuda.memory_reserved(device) / 1e9
-        total_gb = torch.cuda.get_device_properties(device).total_mem / 1e9
+        total_gb = torch.cuda.get_device_properties(device).total_memory / 1e9
         utilization = allocated_gb / total_gb if total_gb > 0 else 0
 
         self.writter.add_scalars(

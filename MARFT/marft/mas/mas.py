@@ -22,14 +22,14 @@ class MAS(ABC):
         context_window: int,
         max_new_tokens: int,
         num_agents: int,
-        profile_path: str | os.PathLike = None,
+        profile_path: str | os.PathLike | None = None,
         algo: str = "APPO",
         normalization_mode: str = "sum",
-        load_path: str = None,
+        load_path: str | None = None,
         load_in_4bit: bool = False,
         bf16: bool = True,
         device_map=None,
-        profiles: list[dict] = None,
+        profiles: list[dict] | None = None,
         **kwargs,
     ):
         self.algo = algo

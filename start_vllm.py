@@ -245,6 +245,7 @@ class VLLMInstance:
 class ServerFleet:
     def __init__(self, registry_path: Optional[str] = None):
         self.instances: Dict[str, VLLMInstance] = {}
+        self._placeholder_entries: Dict[str, dict] = {}
         self.registry_path = registry_path or os.environ.get(
             "VLLM_REGISTRY", "/tmp/vllm_registry.json"
         )
@@ -310,6 +311,9 @@ class ServerFleet:
                     # Dump logs to help debug
                     print(f"\n========= CRASH LOGS: {sid} =========\n")
                     try:
+                        if inst.log_file_path is None:
+                            print("(no log file available)")
+                            raise FileNotFoundError("log_file_path is None")
                         with open(inst.log_file_path, "r") as f:
                             print(f.read())
                     except Exception as e:
@@ -390,7 +394,7 @@ class ServerFleet:
 DEFAULT_REGISTRY_PATH = os.environ.get("VLLM_REGISTRY", "/tmp/vllm_registry.json")
 
 
-def read_registry(registry_path: str = None) -> dict:
+def read_registry(registry_path: Optional[str] = None) -> dict:
     """Read the vLLM server registry written by start_vllm.py.
 
     Returns a dict like:
@@ -402,7 +406,7 @@ def read_registry(registry_path: str = None) -> dict:
 
 
 def wait_for_registry(
-    registry_path: str = None, timeout: int = 660, poll_interval: int = 5
+    registry_path: Optional[str] = None, timeout: int = 660, poll_interval: int = 5
 ) -> dict:
     """Block until the registry file exists and is non-empty, then read it."""
     path = registry_path or DEFAULT_REGISTRY_PATH

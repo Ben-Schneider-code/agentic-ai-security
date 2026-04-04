@@ -108,10 +108,10 @@ class ActionCritic(nn.Module):
                 past_key_values=past_key_values,
                 attention_mask=attention_mask,
                 use_cache=use_cache,
-                output_hidden_states=False,
+                output_hidden_states=True,
             )
 
-        hidden_states = transformer_outputs[0][:, -1, :].float()
+        hidden_states = transformer_outputs.hidden_states[-1][:, -1, :].float()
 
         x = self.relu(self.v_head_mlp1(hidden_states))
         x = self.relu(self.v_head_mlp2(x))

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 import numpy as np
 
 class BaseBuffer(ABC):
@@ -39,7 +40,7 @@ class BaseBuffer(ABC):
         pass
 
     @abstractmethod
-    def sample(self, num_mini_batch: int = None, mini_batch_size: int = None):
+    def sample(self, num_mini_batch: Optional[int] = None, mini_batch_size: Optional[int] = None):
         """
         Sample data from the buffer.
         :param num_mini_batch: (int) number of mini batches to sample

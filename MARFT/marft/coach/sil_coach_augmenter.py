@@ -98,7 +98,7 @@ class SILCoachAugmenter:
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            return response.choices[0].message.content.strip()
+            return (response.choices[0].message.content or "").strip()
         except Exception as e:
             print(f"[SILCoachAugmenter] Coach API error: {e}")
             return ""

@@ -635,7 +635,7 @@ class BlueTeamSQLEnv(SQLEnv):
         horizon,
         mode,
         *args,
-        redteam_vllm_url: str = None,
+        redteam_vllm_url: str | None = None,
         **kwargs,
     ):
         import os

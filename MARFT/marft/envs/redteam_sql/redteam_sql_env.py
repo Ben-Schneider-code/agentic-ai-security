@@ -548,7 +548,7 @@ class OfflineLLM:
                     top_p=self.top_p,
                     max_tokens=self.max_tokens,
                 )
-                response_text = response.choices[0].message.content
+                response_text = response.choices[0].message.content or ""
                 break  # Success, exit retry loop
             except BadRequestError as e:
                 error_msg = str(e)
@@ -964,7 +964,7 @@ def detect_sensitive_data_query(answer: str) -> bool:
     return any(re.search(r"\b" + t + r"\b", answer_upper) for t in sensitive_tables)
 
 
-def detect_degenerate_input(text: str) -> tuple[bool, str]:
+def detect_degenerate_input(text: Optional[str]) -> tuple[bool, str]:
     """Check if the red team input is degenerate (too short/simple to be meaningful).
 
     This catches inputs like "1.0.0" or "version" that have low perplexity
@@ -1343,11 +1343,11 @@ class SQLEnv:
         profile_path=None,  # Deprecated - profiles generated dynamically
         dataset_path=None,
         log_dir=None,
-        shared_honeypots: set = None,  # Shared across all parallel envs
+        shared_honeypots: Optional[set] = None,  # Shared across all parallel envs
         vllm_base_url: str = "http://localhost:8000/v1",  # vLLM server URL for blueteam agent
         max_tokens: int = 2048,  # Maximum tokens for LLM generation
-        opponent_model_name: str = None,
-        opponent_lora_path: str = None,
+        opponent_model_name: Optional[str] = None,
+        opponent_lora_path: Optional[str] = None,
         # Legacy params - now ignored, using frozen REWARD_CONFIG
         **kwargs,
     ):
@@ -1511,6 +1511,7 @@ class SQLEnv:
         #     actions_to_check.append(actions[i])
 
         score = 0.0
+        outcome_tier = "no_sql"
         for i, action in enumerate(actions_to_check):
             # Get corresponding red team action for fluency penalty
             red_team_text = (
