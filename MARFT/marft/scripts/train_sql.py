@@ -108,7 +108,7 @@ def make_train_env(all_args, shared_honeypots=None):
                 log_dir=getattr(all_args, "debug_log_dir", None),
                 shared_honeypots=shared_honeypots,  # Pass shared set
                 vllm_base_url=vllm_url,
-                max_tokens=all_args.max_new_tokens,
+                max_tokens=all_args.victim_max_tokens,
                 opponent_model_name=getattr(all_args, "opponent_model_name", None),
                 opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
             )
@@ -141,7 +141,7 @@ def make_eval_env(all_args):
                 mode="test",
                 log_dir=getattr(all_args, "debug_log_dir", None),
                 vllm_base_url=vllm_url,
-                max_tokens=all_args.max_new_tokens,
+                max_tokens=all_args.victim_max_tokens,
                 opponent_model_name=getattr(all_args, "opponent_model_name", None),
                 opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
                 # Reward config now uses frozen REWARD_CONFIG - no CLI args

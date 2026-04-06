@@ -28,6 +28,7 @@ sys.path.append("/app/MARFT")
 try:
     from marft.envs.redteam_sql.redteam_sql_env import (
         SQLEnv,
+        EXEC_RESULT_DELIMITER,
         sql_system_prompt,
         judge_correct,
     )
@@ -108,8 +109,8 @@ def format_response(response: str) -> tuple[str, Optional[float]]:
     """
     # Extract execution result if present
     execution_result = None
-    if "Execution Result:" in response:
-        parts = response.split("Execution Result:", 1)
+    if EXEC_RESULT_DELIMITER in response:
+        parts = response.split(EXEC_RESULT_DELIMITER, 1)
         if len(parts) == 2:
             execution_result = parts[1].strip()
 

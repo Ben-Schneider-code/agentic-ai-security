@@ -240,7 +240,8 @@ echo ""
 echo "[3/3] Starting Training..."
 cd MARFT
 # Memory optimization flags for CUDA allocator
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+# Do not re-enable expandable segments: <https://github.com/pytorch/pytorch/issues/119293>
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:False
 export TRAINING_GPU="$TRAINING_GPU"
 export TRAINING_DEVICE="cuda:$TRAINING_GPU"
 
@@ -285,8 +286,9 @@ if [[ "$TARGET" == "redteam" ]]; then
             --n_rollout_threads 8 \
             --episode_length 10 \
             --gradient_cp_steps 8 \
-            --context_window 4096 \
+            --context_window 16384 \
             --max_new_tokens 512 \
+            --victim_max_tokens 256 \
             --save_interval 400 \
             --entropy_coef 0.05 \
             --warmup_steps 500 \
@@ -316,8 +318,9 @@ else
             --n_rollout_threads 8 \
             --episode_length 10 \
             --gradient_cp_steps 8 \
-            --context_window 4096 \
+            --context_window 16384 \
             --max_new_tokens 512 \
+            --victim_max_tokens 256 \
             --save_interval 400 \
             --entropy_coef 0.05 \
             --warmup_steps 500 \

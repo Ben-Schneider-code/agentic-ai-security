@@ -412,6 +412,8 @@ class SQLRunner:
                     f"Global: {total_num_steps + step * self.n_rollout_threads}] rollout...",
                     flush=True,
                 )
+                # Sync profiles so MAS uses the correct turn counter
+                self._sync_profiles_to_mas()
                 # Pass generation params for GRPO (higher temperature for exploration)
                 if self.algo == "GRPO":
                     temperature = getattr(self.all_args, "generation_temperature", 0.8)

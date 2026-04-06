@@ -23,6 +23,7 @@ try:
     # Fix: Import directly from marft package since we added MARFT to sys.path
     from marft.envs.redteam_sql.redteam_sql_env import (
         OfflineLLM,
+        EXEC_RESULT_DELIMITER,
         sql_system_prompt,
         detect_honeypot_access,
         detect_sql_generated,
@@ -192,8 +193,8 @@ async def run_conversations(args):
                 # Parse response for execution result
                 execution_result = ""
                 llm_response_text = response
-                if "\nExecution Result: " in response:
-                    parts = response.rsplit("\nExecution Result: ", 1)
+                if EXEC_RESULT_DELIMITER in response:
+                    parts = response.split(EXEC_RESULT_DELIMITER, 1)
                     llm_response_text = parts[0]
                     execution_result = parts[1]
 

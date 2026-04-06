@@ -42,6 +42,7 @@ try:
     from util.run_conversations import parse_conversations
     from marft.envs.redteam_sql.redteam_sql_env import (
         OfflineLLM,
+        EXEC_RESULT_DELIMITER,
         sql_system_prompt,
         detect_honeypot_access,
         detect_sql_generated,
@@ -285,8 +286,8 @@ async def test_attack(victim_llm: OfflineLLM, attack_prompt: str) -> dict:
     # Parse response
     execution_result = ""
     llm_response_text = response
-    if "\nExecution Result: " in response:
-        parts = response.rsplit("\nExecution Result: ", 1)
+    if EXEC_RESULT_DELIMITER in response:
+        parts = response.split(EXEC_RESULT_DELIMITER, 1)
         llm_response_text = parts[0]
         execution_result = parts[1]
 

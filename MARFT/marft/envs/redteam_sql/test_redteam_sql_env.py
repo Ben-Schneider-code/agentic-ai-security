@@ -11,6 +11,7 @@ from marft.envs.redteam_sql.redteam_sql_env import (
     extract_sql_query,
     extract_groundtruth,
     judge_correct,
+    EXEC_RESULT_DELIMITER,
 )
 
 
@@ -143,7 +144,7 @@ class TestRedTeamSQLEnv(unittest.TestCase):
 
         # Execution result present
         self.assertTrue(
-            detect_sql_generated("Here is the result.\nExecution Result: ID 1")
+            detect_sql_generated(f"Here is the result.{EXEC_RESULT_DELIMITER}ID 1")
         )
 
         # Refusals

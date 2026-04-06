@@ -225,6 +225,13 @@ def get_config():
     parser.add_argument(
         "--max_new_tokens", type=int, default=256, help="max_new_tokens"
     )
+    parser.add_argument(
+        "--victim_max_tokens",
+        type=int,
+        default=256,
+        help="Max tokens for victim/opponent LLM responses (SQL generation). "
+        "Kept lower than --max_new_tokens to limit conversation growth.",
+    )
     parser.add_argument("--n_agents", type=int, default=1)
     parser.add_argument("--profile_path", type=str, default=None, required=False)
     parser.add_argument(

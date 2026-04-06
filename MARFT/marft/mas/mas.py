@@ -171,6 +171,11 @@ class MAS(ABC):
             * self.tokenizer.pad_token_id
         )
 
+        # Sub-batch size for generation to limit peak activation memory.
+        # With long observations (H=15), processing all rollout threads at once
+        # can OOM during the prefill phase.
+        gen_batch_size = min(4, rollout_threads)
+
         prompts = obs[:, 0].tolist()
         for agent_idx in range(num_agents):
             prompts = [
@@ -180,27 +185,42 @@ class MAS(ABC):
             prompts_with_profile = [
                 self.profiles[agent_idx]["prompt"] + prompt for prompt in prompts
             ]
-            token_seq = self.tokenizer(
-                prompts_with_profile, return_tensors="pt", padding=True
-            )
             device = self.agents[agent_idx].device
-            input_ids = token_seq["input_ids"].to(device)
-            attn_mask = token_seq["attention_mask"].to(device)
-            output = self.agents[agent_idx].generate(
-                input_ids,
-                attention_mask=attn_mask,
-                do_sample=True,
-                top_k=top_k,
-                temperature=temperature,
-                max_new_tokens=self.max_new_tokens,
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.pad_token_id,
-                return_dict_in_generate=True,
-            )
-            sequences = output.sequences
+
+            # Process in sub-batches to reduce peak memory during generation
+            all_sequences = []
+            all_input_lengths = []
+            for batch_start in range(0, rollout_threads, gen_batch_size):
+                batch_end = min(batch_start + gen_batch_size, rollout_threads)
+                batch_prompts = prompts_with_profile[batch_start:batch_end]
+
+                token_seq = self.tokenizer(
+                    batch_prompts,
+                    return_tensors="pt",
+                    padding=True,
+                )
+                input_ids = token_seq["input_ids"].to(device)
+                attn_mask = token_seq["attention_mask"].to(device)
+                output = self.agents[agent_idx].generate(
+                    input_ids,
+                    attention_mask=attn_mask,
+                    do_sample=True,
+                    top_k=top_k,
+                    temperature=temperature,
+                    max_new_tokens=self.max_new_tokens,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    return_dict_in_generate=True,
+                )
+                for i in range(batch_end - batch_start):
+                    all_sequences.append(output.sequences[i])
+                    all_input_lengths.append(input_ids[i].shape[0])
+                del input_ids, attn_mask, output
+                torch.cuda.empty_cache()
+
             actions = []
             for i in range(rollout_threads):
-                action_token = sequences[i][input_ids[i].shape[0] :]
+                action_token = all_sequences[i][all_input_lengths[i] :]
                 all_action_tokens[i, agent_idx, : action_token.shape[0]] = (
                     action_token.cpu().clone()
                 )

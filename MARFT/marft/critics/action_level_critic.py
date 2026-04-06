@@ -102,16 +102,19 @@ class ActionCritic(nn.Module):
         inputs_embeds=None,
         use_cache=False,
     ):
+        # Use the inner transformer (skipping lm_head) to avoid allocating a
+        # (batch, seq_len, vocab_size) logits tensor that the critic never uses.
+        # output_hidden_states=False since we only need last_hidden_state (always returned).
         with torch.no_grad():
-            transformer_outputs = self.rwtransformer(
+            transformer_outputs = self.rwtransformer.model(
                 input_ids,
                 past_key_values=past_key_values,
                 attention_mask=attention_mask,
                 use_cache=use_cache,
-                output_hidden_states=True,
+                output_hidden_states=False,
             )
 
-        hidden_states = transformer_outputs.hidden_states[-1][:, -1, :].float()
+        hidden_states = transformer_outputs.last_hidden_state[:, -1, :].float()
 
         x = self.relu(self.v_head_mlp1(hidden_states))
         x = self.relu(self.v_head_mlp2(x))
