@@ -293,7 +293,9 @@ class GRPOTrainer(ABC):
     def save_optimizers(self, save_dir: str, steps: int) -> None:
         """Save optimizer states."""
         exp_path = os.path.join(save_dir, "steps_{:04d}".format(steps))
-        os.makedirs(exp_path, exist_ok=True)
+        role = next(iter(self.policy_optimizer))
+        role_dir = os.path.join(exp_path, role)
+        os.makedirs(role_dir, exist_ok=True)
         torch.save(
             {
                 "policy_opt_states": {
@@ -301,12 +303,16 @@ class GRPOTrainer(ABC):
                     for role, opt in self.policy_optimizer.items()
                 },
             },
-            os.path.join(exp_path, "optimizers.pt"),
+            os.path.join(role_dir, "optimizers.pt"),
         )
-        print(f"[GRPOTrainer] optimizer states saved -> {exp_path}")
+        print(f"[GRPOTrainer] optimizer states saved -> {role_dir}")
 
     def load_optimizers(self, path: str, map_location: str | torch.device = "cpu"):
         """Load optimizer states."""
+        if not os.path.isfile(path):
+            legacy = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "optimizers.pt")
+            if os.path.isfile(legacy):
+                path = legacy
         ckpt = torch.load(path, map_location=map_location)
         for role, opt_state in ckpt["policy_opt_states"].items():
             self.policy_optimizer[role].load_state_dict(opt_state)

@@ -279,7 +279,11 @@ class APPOTrainer(ABC):
 
     def save_optimizers(self, save_dir: str, steps: int) -> None:
         exp_path = os.path.join(save_dir, "steps_{:04d}".format(steps))
-        os.makedirs(exp_path, exist_ok=True)
+        # Save into the first role's subdir so optimizers.pt lives next to the
+        # LoRA checkpoint returned by find_latest_checkpoint.
+        role = next(iter(self.policy_optimizer))
+        role_dir = os.path.join(exp_path, role)
+        os.makedirs(role_dir, exist_ok=True)
         torch.save(
             {
                 "policy_opt_states": {
@@ -288,11 +292,16 @@ class APPOTrainer(ABC):
                 },
                 "critic_opt_state": self.critic_optimizer.state_dict(),
             },
-            os.path.join(exp_path, "optimizers.pt"),
+            os.path.join(role_dir, "optimizers.pt"),
         )
-        print(f"[APPOTrainer] optimizer states saved -> {exp_path}")
+        print(f"[APPOTrainer] optimizer states saved -> {role_dir}")
 
     def load_optimizers(self, path: str, map_location: str | torch.device = "cpu"):
+        # Legacy fallback: older runs saved optimizers.pt one level up.
+        if not os.path.isfile(path):
+            legacy = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "optimizers.pt")
+            if os.path.isfile(legacy):
+                path = legacy
         ckpt = torch.load(path, map_location=map_location)
         for role, opt_state in ckpt["policy_opt_states"].items():
             # The trainer’s __init__ already created the corresponding optimizer.

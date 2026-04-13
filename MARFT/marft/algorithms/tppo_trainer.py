@@ -219,7 +219,9 @@ class TPPOTrainer(ABC):
     
     def save_optimizers(self, save_dir: str, steps: int) -> None:
         exp_path = os.path.join(save_dir, "steps_{:04d}".format(steps))
-        os.makedirs(exp_path, exist_ok=True)
+        role = next(iter(self.policy_optimizer))
+        role_dir = os.path.join(exp_path, role)
+        os.makedirs(role_dir, exist_ok=True)
         torch.save(
             {
                 "policy_opt_states": {
@@ -228,11 +230,15 @@ class TPPOTrainer(ABC):
                 },
                 "critic_opt_state": self.critic_optimizer.state_dict(),
             },
-            os.path.join(exp_path, f"optimizers.pt"),
+            os.path.join(role_dir, "optimizers.pt"),
         )
-        print(f"[TPPOTrainer] optimizer states saved -> {exp_path}")
+        print(f"[TPPOTrainer] optimizer states saved -> {role_dir}")
 
     def load_optimizers(self, path: str, map_location: str | torch.device = "cpu"):
+        if not os.path.isfile(path):
+            legacy = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "optimizers.pt")
+            if os.path.isfile(legacy):
+                path = legacy
         ckpt = torch.load(path, map_location=map_location)
         for role, opt_state in ckpt["policy_opt_states"].items():
             # The trainer’s __init__ already created the corresponding optimizer.
