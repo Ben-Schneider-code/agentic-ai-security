@@ -139,9 +139,18 @@ class MAS(ABC):
         else:
             raise NotImplementedError
         if critic_path is not None:
-            critic_path = os.path.join(critic_path, "value_head.pth")
-            critic.load_value_head(critic_path, map_location="cpu")
-            print(f"Load critic from {critic_path}")
+            candidates = [
+                os.path.join(critic_path, "value_head.pth"),
+                # Legacy layout: value_head.pth was saved one level up from the LoRA dir.
+                os.path.join(os.path.dirname(critic_path.rstrip("/")), "value_head.pth"),
+            ]
+            resolved = next((p for p in candidates if os.path.isfile(p)), None)
+            if resolved is None:
+                raise FileNotFoundError(
+                    f"value_head.pth not found. Tried: {candidates}"
+                )
+            critic.load_value_head(resolved, map_location="cpu")
+            print(f"Load critic from {resolved}")
         return critic
 
     @torch.no_grad()
@@ -773,7 +782,11 @@ class MAS(ABC):
         for agent in self.agents:
             agent.model.save_pretrained(os.path.join(exp_path, agent.role))
         if self.critic is not None:
-            self.critic.save_value_head(os.path.join(exp_path, f"value_head.pth"))
+            # Save value_head.pth alongside the (first) agent's LoRA so it
+            # travels with the checkpoint path returned by find_latest_checkpoint.
+            role_dir = os.path.join(exp_path, self.agents[0].role)
+            os.makedirs(role_dir, exist_ok=True)
+            self.critic.save_value_head(os.path.join(role_dir, "value_head.pth"))
         print(f"[MAS] MAS checkpoints saved → {exp_path}")
 
     def train(self):
