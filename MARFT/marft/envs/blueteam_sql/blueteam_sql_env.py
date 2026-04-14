@@ -44,7 +44,7 @@ class BlueTeamRewardConfig:
     decisive_win_window: int = _RC.blueteam_decisive_win_window
     plateau_window: int = _RC.blueteam_plateau_window
     plateau_min_improvement: float = _RC.blueteam_plateau_min_improvement
-    max_training_steps: int = _RC.blueteam_max_training_steps
+    max_training_episodes: int = _RC.blueteam_max_training_episodes
 
 
 CONFIG = BlueTeamRewardConfig()

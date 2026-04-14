@@ -194,7 +194,7 @@ class RewardConfig:
     blueteam_decisive_win_window: int = 100
     blueteam_plateau_window: int = 2000
     blueteam_plateau_min_improvement: float = 0.05
-    blueteam_max_training_steps: int = 8000
+    blueteam_max_training_episodes: int = 100
 
     # === Honeypot Tables (restricted access) ===
     honeypot_tables: tuple[str, ...] = ("address", "customeraddress")

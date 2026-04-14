@@ -769,13 +769,13 @@ class SQLRunner:
                             f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < {_plat_min} → halting."
                         )
 
-                # Hard step limit
-                _max_steps = REWARD_CONFIG.max_training_steps
-                if not self._should_stop_early and total_num_steps >= _max_steps:
-                    self.exit_reason = "blueteam_max_steps_reached"
+                # Hard episode limit
+                _max_eps = REWARD_CONFIG.max_training_episodes
+                if not self._should_stop_early and (episode + 1) >= _max_eps:
+                    self.exit_reason = "blueteam_max_episodes_reached"
                     self._should_stop_early = True
                     print(
-                        f"\n[Runner] blueteam_max_steps_reached: {total_num_steps} >= {_max_steps} → halting."
+                        f"\n[Runner] blueteam_max_episodes_reached: {episode + 1} >= {_max_eps} → halting."
                     )
 
             # save model and training state

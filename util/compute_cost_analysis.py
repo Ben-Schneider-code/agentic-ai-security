@@ -289,7 +289,7 @@ _EXIT_SHORT = {
     "max_episodes_met": "max_ep",
     "blueteam_decisive_win": "decisive_win",
     "blueteam_plateaued": "plateau",
-    "blueteam_max_steps_reached": "max_steps",
+    "blueteam_max_episodes_reached": "max_eps",
     "forced_exit": "forced",
     "unknown": "?",
 }

@@ -51,11 +51,15 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-echo "Base model:   $BASE_MODEL"
-echo "Coach model:  $COACH_MODEL_NAME"
-echo "Actor GPU:    $ACTOR_GPU"
-echo "Training GPU: $TRAINING_GPU"
-echo "Coach GPU:    ${COACH_GPU:-<from config>}"
+EPISODE_LENGTH=$(( 2 * HORIZON ))
+
+echo "Base model:      $BASE_MODEL"
+echo "Coach model:     $COACH_MODEL_NAME"
+echo "Actor GPU:       $ACTOR_GPU"
+echo "Training GPU:    $TRAINING_GPU"
+echo "Coach GPU:       ${COACH_GPU:-<from config>}"
+echo "Horizon:         $HORIZON"
+echo "Episode length:  $EPISODE_LENGTH (=2*horizon)"
 
 if [[ "$TARGET" != "redteam" && "$TARGET" != "blueteam" ]]; then
     echo "ERROR: --target must be 'redteam' or 'blueteam'"
@@ -267,73 +271,46 @@ if [[ -n "$STUDENT_LORA" ]]; then
     echo "Initializing LoRA from prior checkpoint: $STUDENT_CKPT_DIR"
 fi
 
+COMMON_ARGS=(
+    --algorithm_name APPO
+    --dataset_name None --dataset_path None
+    --flag train
+    --num_mini_batch 10 --ppo_epoch 1
+    --lr 5e-7 --critic_lr 5e-5
+    --model_name_or_path "$BASE_MODEL"
+    --n_agents 1
+    --agent_iteration_interval 800
+    --n_rollout_threads 8
+    --episode_length "$EPISODE_LENGTH"
+    --gradient_cp_steps 8
+    --context_window 16384
+    --max_new_tokens 512 --victim_max_tokens 256
+    --save_interval 400
+    --entropy_coef 0.05
+    --warmup_steps 500
+    --horizon "$HORIZON"
+    --coach_vllm_url "$COACH_VLLM_URL"
+    --coach_model_name "$COACH_MODEL_NAME"
+    --results_dir "${RESULTS_TEAM_DIR}"
+)
+
 if [[ "$TARGET" == "redteam" ]]; then
-    python3 marft/scripts/train_sql.py \
-            --seed 10 \
-            --env_name redteam_sql_env \
-            --algorithm_name APPO \
-            --experiment_name redteam_sql_experiment \
-            --dataset_name None \
-            --flag train \
-            --num_mini_batch 10 \
-            --ppo_epoch 1 \
-            --lr 5e-7 \
-            --critic_lr 5e-5 \
-            --dataset_path None \
-            --model_name_or_path "$BASE_MODEL" \
-            --n_agents 1 \
-            --agent_iteration_interval 800 \
-            --n_rollout_threads 8 \
-            --episode_length 10 \
-            --gradient_cp_steps 8 \
-            --context_window 16384 \
-            --max_new_tokens 512 \
-            --victim_max_tokens 256 \
-            --save_interval 400 \
-            --entropy_coef 0.05 \
-            --warmup_steps 500 \
-            --horizon "$HORIZON" \
-            --coach_vllm_url "$COACH_VLLM_URL" \
-            --coach_model_name "$COACH_MODEL_NAME" \
-            --results_dir "${RESULTS_TEAM_DIR}" \
-            $EXTRA_TRAIN_ARGS
+    TARGET_ARGS=(
+        --seed 10
+        --env_name redteam_sql_env
+        --experiment_name redteam_sql_experiment
+    )
 else
-    # NOTES:
-    # - horizon must match redteam — blueteam attack episodes use multi-turn red LoRA
-    python3 marft/scripts/train_sql.py \
-            --seed 12 \
-            --env_name blueteam_sql_env \
-            --algorithm_name APPO \
-            --experiment_name blueteam_sql_experiment \
-            --dataset_name None \
-            --flag train \
-            --num_mini_batch 10 \
-            --ppo_epoch 1 \
-            --lr 5e-7 \
-            --critic_lr 5e-5 \
-            --dataset_path None \
-            --model_name_or_path "$BASE_MODEL" \
-            --n_agents 1 \
-            --agent_iteration_interval 800 \
-            --n_rollout_threads 8 \
-            --episode_length 10 \
-            --gradient_cp_steps 8 \
-            --context_window 16384 \
-            --max_new_tokens 512 \
-            --victim_max_tokens 256 \
-            --save_interval 400 \
-            --entropy_coef 0.05 \
-            --warmup_steps 500 \
-            --horizon "$HORIZON" \
-            --use_eval \
-            --eval_interval 10 \
-            --eval_episodes 20 \
-            --n_eval_rollout_threads 2 \
-            --coach_vllm_url "$COACH_VLLM_URL" \
-            --coach_model_name "$COACH_MODEL_NAME" \
-            --results_dir "${RESULTS_TEAM_DIR}" \
-            $EXTRA_TRAIN_ARGS
+    # horizon must match redteam — blueteam attack episodes use multi-turn red LoRA
+    TARGET_ARGS=(
+        --seed 12
+        --env_name blueteam_sql_env
+        --experiment_name blueteam_sql_experiment
+        --use_eval --eval_interval 10 --eval_episodes 20 --n_eval_rollout_threads 2
+    )
 fi
+
+python3 marft/scripts/train_sql.py "${COMMON_ARGS[@]}" "${TARGET_ARGS[@]}" $EXTRA_TRAIN_ARGS
 
 echo ""
 echo "========================================"

@@ -108,7 +108,7 @@ DECISIVE_WIN_WINDOW = 100
 DECISIVE_WIN_THRESHOLD = 0.75
 PLATEAU_WINDOW = 2000
 PLATEAU_MIN_IMPROVEMENT = 0.05
-MAX_TRAIN_STEPS = 8000
+MAX_TRAIN_EPS = 100
 EPISODE_LENGTH = 10
 N_ROLLOUT_THREADS = 8
 STEPS_PER_TRAIN_EP = EPISODE_LENGTH * N_ROLLOUT_THREADS  # = 80
@@ -122,7 +122,7 @@ def load_run_config(run_dir: str):
     whatever the current codebase defaults to.
     """
     global DECISIVE_WIN_WINDOW, DECISIVE_WIN_THRESHOLD, PLATEAU_WINDOW
-    global PLATEAU_MIN_IMPROVEMENT, MAX_TRAIN_STEPS
+    global PLATEAU_MIN_IMPROVEMENT, MAX_TRAIN_EPS
     global EPISODE_LENGTH, N_ROLLOUT_THREADS, STEPS_PER_TRAIN_EP
 
     reward_cfg_path = os.path.join(run_dir, "reward_config.yaml")
@@ -133,7 +133,7 @@ def load_run_config(run_dir: str):
         DECISIVE_WIN_THRESHOLD = rc.get("decisive_win_threshold", DECISIVE_WIN_THRESHOLD)
         PLATEAU_WINDOW = rc.get("plateau_window", PLATEAU_WINDOW)
         PLATEAU_MIN_IMPROVEMENT = rc.get("plateau_min_improvement", PLATEAU_MIN_IMPROVEMENT)
-        MAX_TRAIN_STEPS = rc.get("max_training_steps", MAX_TRAIN_STEPS)
+        MAX_TRAIN_EPS = rc.get("max_training_episodes", MAX_TRAIN_EPS)
         print(f"Loaded halt config from {reward_cfg_path}")
     else:
         print(f"WARNING: {reward_cfg_path} not found — using code defaults")
@@ -209,16 +209,12 @@ def compute_halt_status(rewards):
         plateau_past = float(arr[-PLATEAU_WINDOW * 2 : -PLATEAU_WINDOW].mean())
         plateau_active = (plateau_recent - plateau_past) < PLATEAU_MIN_IMPROVEMENT
 
-    # --- hard step limit ---
-    # Derive approx total_num_steps from env-episode count.
-    # In sql_runner.py: total_num_steps = (episode+1) * episode_length * n_rollout_threads
-    # all_episodic_returns gets one entry per thread per step (blueteam done=True every step):
-    #   entries per training episode = episode_length * n_rollout_threads = STEPS_PER_TRAIN_EP
-    # So: n_env_episodes == total_num_steps  (they're the same sum)
-    # i.e. training_ep = n_env_episodes // STEPS_PER_TRAIN_EP
-    #      total_num_steps = training_ep * STEPS_PER_TRAIN_EP
-    approx_total_steps = (n // STEPS_PER_TRAIN_EP) * STEPS_PER_TRAIN_EP
-    hard_limit_active = approx_total_steps >= MAX_TRAIN_STEPS
+    # --- hard episode limit ---
+    # Derive approx training-episode count from env-episode count.
+    # In sql_runner.py blueteam emits one episodic return per env step, so
+    # entries per training episode = episode_length * n_rollout_threads.
+    approx_train_eps = n // STEPS_PER_TRAIN_EP
+    hard_limit_active = approx_train_eps >= MAX_TRAIN_EPS
 
     return {
         "dw_avg": dw_avg,
@@ -227,7 +223,7 @@ def compute_halt_status(rewards):
         "plateau_active": plateau_active,
         "plateau_recent": plateau_recent,
         "plateau_past": plateau_past,
-        "approx_total_steps": approx_total_steps,
+        "approx_train_eps": approx_train_eps,
         "hard_limit_active": hard_limit_active,
         "n_env_episodes": n,
     }
@@ -814,8 +810,8 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
     ax10.axis("off")
 
     n = halt["n_env_episodes"]
-    approx_steps = halt["approx_total_steps"]
-    hard_limit_pct = min(100.0, approx_steps / MAX_TRAIN_STEPS * 100)
+    approx_train_eps = halt["approx_train_eps"]
+    hard_limit_pct = min(100.0, approx_train_eps / MAX_TRAIN_EPS * 100)
 
     def cond_color(active):
         return "#e74c3c" if active else "#27ae60"
@@ -910,21 +906,21 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
         ),
         ("", None, 8, "normal", "black"),
         (
-            "3. blueteam_max_steps_reached",
+            "3. blueteam_max_episodes_reached",
             None,
             11,
             "bold",
             cond_color(halt["hard_limit_active"]),
         ),
         (
-            f"   Condition: total_num_steps ≥ {MAX_TRAIN_STEPS}",
+            f"   Condition: training_episode + 1 ≥ {MAX_TRAIN_EPS}",
             None,
             9,
             "normal",
             "#555",
         ),
         (
-            f"   Approx current steps: ~{approx_steps}  ({hard_limit_pct:.1f}% of limit)",
+            f"   Approx training episodes: ~{approx_train_eps}  ({hard_limit_pct:.1f}% of limit)",
             None,
             10,
             "normal",
@@ -1134,14 +1130,14 @@ def main():
     # Print a concise summary to stdout
     print("\n=== Halt Condition Summary ===")
     print(f"  Env episodes:   {halt['n_env_episodes']}")
-    print(f"  Approx steps:   ~{halt['approx_total_steps']} / {MAX_TRAIN_STEPS}")
+    print(f"  Approx train eps: ~{halt['approx_train_eps']} / {MAX_TRAIN_EPS}")
     print(
         f"  [1] decisive_win: rolling-{DECISIVE_WIN_WINDOW} avg = {halt['dw_avg']:.4f}  "
         f"(threshold {DECISIVE_WIN_THRESHOLD})  → {'TRIGGERED' if halt['decisive_win_active'] else 'not yet'}"
     )
     print(f"  [2] plateaued:   {'TRIGGERED' if halt['plateau_active'] else 'not yet'}")
     print(
-        f"  [3] max_steps:   {'TRIGGERED' if halt['hard_limit_active'] else 'not yet'}"
+        f"  [3] max_episodes: {'TRIGGERED' if halt['hard_limit_active'] else 'not yet'}"
     )
 
     # Print train vs eval generalization summary
