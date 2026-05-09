@@ -5,8 +5,50 @@ import time
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    LogitsProcessor,
+    LogitsProcessorList,
+)
 from peft import LoraConfig, get_peft_model, PeftModel, PeftConfig
+
+
+class _FiniteLogitsProcessor(LogitsProcessor):
+    """Replace non-finite next-token scores before sampling.
+
+    bf16 LoRA adapters can produce NaN/±Inf logits after many thousands of
+    updates; that makes `torch.multinomial` crash with a CUDA illegal
+    instruction inside transformers `_sample`. Sanitizing at the scores
+    stage keeps a single bad forward pass from killing a multi-day run.
+    """
+
+    _WARN_EVERY = 100
+
+    def __init__(self, role: str = "agent") -> None:
+        self.role = role
+        self._fired = 0
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        if torch.isfinite(scores).all():
+            return scores
+        n_bad = int((~torch.isfinite(scores)).sum().item())
+        scores = torch.nan_to_num(scores, nan=-1e4, posinf=1e4, neginf=-1e4)
+        row_max = scores.max(dim=-1, keepdim=True).values
+        dead_rows = (row_max <= -1e4 + 1.0).squeeze(-1)
+        if dead_rows.any():
+            scores[dead_rows] = 0.0
+        if self._fired % self._WARN_EVERY == 0:
+            print(
+                f"[Agent {self.role}] _FiniteLogitsProcessor sanitized {n_bad} "
+                f"non-finite logits (occurrence #{self._fired + 1}).",
+                flush=True,
+            )
+        self._fired += 1
+        return scores
 
 
 class Agent:
@@ -85,7 +127,7 @@ class Agent:
         else:
             adapter_path = os.path.join(load_path, self.role)
             self.model = PeftModel.from_pretrained(
-                self.base_model, adapter_path, adapter_name=self.role,
+                self.base_model, adapter_path,
                 is_trainable=True,
             )
 
@@ -93,11 +135,23 @@ class Agent:
         self.model.bfloat16()
         self.model.to(self.device)
 
+        self._finite_logits_processor = _FiniteLogitsProcessor(self.role)
+
     def generate(self, *args, **kwargs):
         # Enable KV cache for fast autoregressive generation.
         # Gradient checkpointing is inactive in eval mode (prep_rollout sets training=False),
         # so no need to toggle it here — toggling via PeftModel accumulates forward hooks.
         self.model.config.use_cache = True
+        lp = kwargs.get("logits_processor")
+        if lp is None:
+            kwargs["logits_processor"] = LogitsProcessorList(
+                [self._finite_logits_processor]
+            )
+        else:
+            if not isinstance(lp, LogitsProcessorList):
+                lp = LogitsProcessorList(list(lp))
+            lp.append(self._finite_logits_processor)
+            kwargs["logits_processor"] = lp
         try:
             return self.model.generate(*args, **kwargs)
         finally:

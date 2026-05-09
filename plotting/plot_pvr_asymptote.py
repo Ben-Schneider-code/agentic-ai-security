@@ -1,0 +1,210 @@
+"""
+PVR (conv + turn) along the co-evolved diagonal with 99% CIs and asymptote band.
+
+This replaces the previous pvr.png/pvr_conv.png, which were silently empty when
+the aggregated cross_eval_results.json was absent. The new plot:
+  * Reads from cross_eval/ first (800 ep/cell once the re-run lands) and falls
+    back to diagonal_eval/ (200 ep/cell) or cross_eval_old2/ (50 ep/cell).
+  * Renders both PVR_conv and PVR_turn side-by-side.
+  * Overlays a plateau mean ± 1σ band (tail half of iterations) to make the
+    "asymptote" claim explicit.
+  * Labels every point with its 99% Wilson CI and prints the numeric table
+    to stderr for paper use.
+
+CLI:
+    python plotting/plot_pvr_asymptote.py --results <dir>[:label]
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+try:
+    from ._data import (
+        apply_paper_style,
+        load_cross_eval_results,
+        extract_diagonal_metrics,
+        parse_results_arg,
+        write_sidecar,
+        BLUE_COL, RED_COL, GRAY_COL,
+        FIG_SIZE_1x2,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from plotting._data import (
+        apply_paper_style,
+        load_cross_eval_results,
+        extract_diagonal_metrics,
+        parse_results_arg,
+        write_sidecar,
+        BLUE_COL, RED_COL, GRAY_COL,
+        FIG_SIZE_1x2,
+    )
+
+apply_paper_style()
+
+DESCRIPTION = (
+    "PVR_conv and PVR_turn along the co-evolved diagonal (red_i vs blue_i) "
+    "with 99% Wilson CIs and a plateau mean ± 1σ band over the tail half of "
+    "iterations. Source priority: cross_eval → diagonal_eval → cross_eval_old2."
+)
+
+_SUBDIR_PRIORITY = ("cross_eval", "diagonal_eval", "cross_eval_old2")
+
+
+def _load_diagonal(selfplay_dir: str) -> tuple[dict[int, dict], str] | None:
+    for sd in _SUBDIR_PRIORITY:
+        ce = load_cross_eval_results(selfplay_dir, subdir=sd)
+        if ce is None:
+            continue
+        diag = extract_diagonal_metrics(ce)
+        if diag:
+            return diag, sd
+    return None
+
+
+def _plateau(vals: list[float]) -> tuple[float, float, int]:
+    n_tail = max(1, (len(vals) + 1) // 2)
+    tail = vals[-n_tail:]
+    return float(np.mean(tail)), float(np.std(tail)), n_tail
+
+
+def _render(ax, iters, vals, lo, hi, metric_label: str, color: str) -> None:
+    iters = np.array(iters)
+    vals = np.array(vals)
+    yerr = np.array([[v - l for v, l in zip(vals, lo)],
+                     [h - v for v, h in zip(vals, hi)]])
+    ax.errorbar(
+        iters, vals, yerr=yerr,
+        fmt="-o", color=color, linewidth=1.8, markersize=7,
+        capsize=4, capthick=1.2, elinewidth=1.0, zorder=3,
+    )
+    # Plateau band
+    plat_mean, plat_std, n_tail = _plateau(vals.tolist())
+    x0 = iters[-n_tail]
+    x1 = iters[-1] + (iters[-1] - iters[0]) * 0.18
+    ax.axhline(plat_mean, color=GRAY_COL, linewidth=1.5, linestyle="--", zorder=2,
+               label=f"plateau mean = {plat_mean:.1f}%")
+    ax.fill_between([x0, x1], plat_mean - plat_std, plat_mean + plat_std,
+                    color=GRAY_COL, alpha=0.18, zorder=1,
+                    label=f"±1σ ({plat_std:.1f} pp, tail-{n_tail})")
+    ax.annotate(
+        "", xy=(x1, plat_mean),
+        xytext=(iters[-1] + 1e-6, plat_mean),
+        arrowprops=dict(arrowstyle="->", color=GRAY_COL, lw=1.3),
+    )
+    for x, v, l, h in zip(iters, vals, lo, hi):
+        ax.text(x, v + (h - l) * 0.55 + 0.5,
+                f"[{l:.0f}, {h:.0f}]",
+                ha="center", va="bottom", fontsize=7, color="#555555")
+    ax.set_xlabel("Self-play iteration (co-evolved diagonal)")
+    ax.set_ylabel(metric_label)
+    ax.set_xticks(iters)
+    ax.grid(True, axis="y", alpha=0.4)
+    ax.legend(fontsize=9, frameon=True, loc="upper left")
+
+
+def plot_pvr_asymptote(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+) -> tuple[Path, dict]:
+    out_path = Path(out_path)
+    if len(results) > 1:
+        print("[plot_pvr_asymptote] Multiple runs given; using first only.",
+              file=sys.stderr)
+    label, selfplay_dir = results[0]
+
+    loaded = _load_diagonal(selfplay_dir)
+    if loaded is None:
+        print(f"[plot_pvr_asymptote] No diagonal metrics found in {selfplay_dir}.",
+              file=sys.stderr)
+        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
+        ax.text(0.5, 0.5, "No diagonal cross-eval data",
+                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return out_path, {}
+
+    diag, source = loaded
+    iters = sorted(diag)
+    pvr_conv = [diag[i].get("asr", float("nan")) for i in iters]
+    pvr_conv_ci = [diag[i].get("asr_ci") or [float("nan"), float("nan")] for i in iters]
+    pvr_turn = [diag[i].get("pvr_turn", float("nan")) for i in iters]
+    pvr_turn_ci = [diag[i].get("pvr_turn_ci") or [float("nan"), float("nan")] for i in iters]
+
+    print(f"[plot_pvr_asymptote] source={source}  diagonal N={len(iters)}",
+          file=sys.stderr)
+    print(f"{'iter':<6}{'PVR_conv':<14}{'CI_conv':<18}"
+          f"{'PVR_turn':<14}{'CI_turn':<18}", file=sys.stderr)
+    for i, vc, cc, vt, ct in zip(iters, pvr_conv, pvr_conv_ci, pvr_turn, pvr_turn_ci):
+        print(f"{i:<6}{vc:<14.2f}[{cc[0]:.1f}, {cc[1]:.1f}]     "
+              f"{vt:<14.2f}[{ct[0]:.1f}, {ct[1]:.1f}]",
+              file=sys.stderr)
+
+    fig, (ax_c, ax_t) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
+    _render(ax_c, iters, pvr_conv,
+            [c[0] for c in pvr_conv_ci],
+            [c[1] for c in pvr_conv_ci],
+            r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)", RED_COL)
+    _render(ax_t, iters, pvr_turn,
+            [c[0] for c in pvr_turn_ci],
+            [c[1] for c in pvr_turn_ci],
+            r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)", BLUE_COL)
+
+    ax_c.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{conv}}$")
+    ax_t.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{turn}}$")
+    fig.suptitle(
+        f"Bounded equilibrium on the diagonal — {label}  (source: {source}, 99% Wilson CI)",
+        fontsize=12,
+    )
+    fig.tight_layout(pad=0.5)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path)
+    plt.close(fig)
+
+    pvr_conv_plat_mean, pvr_conv_plat_std, n_tail = _plateau(pvr_conv)
+    pvr_turn_plat_mean, pvr_turn_plat_std, _ = _plateau(pvr_turn)
+    metrics = {
+        "source_subdir": source,
+        "label": label,
+        "selfplay_dir": selfplay_dir,
+        "iters": iters,
+        "n_tail_for_plateau": n_tail,
+        "pvr_conv": {
+            "per_iter_pct": [round(v, 2) for v in pvr_conv],
+            "per_iter_ci_99": [[round(c[0], 2), round(c[1], 2)] for c in pvr_conv_ci],
+            "diag_mean_pct": round(float(np.mean(pvr_conv)), 2),
+            "plateau_tail_mean_pct": round(pvr_conv_plat_mean, 2),
+            "plateau_tail_std_pp": round(pvr_conv_plat_std, 2),
+        },
+        "pvr_turn": {
+            "per_iter_pct": [round(v, 2) for v in pvr_turn],
+            "per_iter_ci_99": [[round(c[0], 2), round(c[1], 2)] for c in pvr_turn_ci],
+            "diag_mean_pct": round(float(np.mean(pvr_turn)), 2),
+            "plateau_tail_mean_pct": round(pvr_turn_plat_mean, 2),
+            "plateau_tail_std_pp": round(pvr_turn_plat_std, 2),
+        },
+    }
+    return out_path, metrics
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--results", nargs="+", required=True, metavar="DIR[:LABEL]")
+    ap.add_argument("--out", default="figures/pvr_asymptote.png")
+    args = ap.parse_args()
+    results = parse_results_arg(args.results)
+    out, metrics = plot_pvr_asymptote(results, args.out)
+    write_sidecar(out, DESCRIPTION, results, metrics)
+    print(f"[{DESCRIPTION[:100]}...]\n  → {out}")
+
+
+if __name__ == "__main__":
+    main()

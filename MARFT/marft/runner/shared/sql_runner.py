@@ -733,44 +733,54 @@ class SQLRunner:
                 # ──────────────────────────────────────────────────────────
                 # Blueteam halting logic (total_honeypots == 0 branch)
                 # All thresholds read from REWARD_CONFIG (single source of truth).
+                # BLUETEAM_DISABLE_EARLY_STOP=1 bypasses convergence-based halts
+                # (decisive_win and plateau) while keeping the hard episode cap,
+                # so the full training budget is always consumed. Default (unset)
+                # preserves existing behaviour exactly.
                 # ──────────────────────────────────────────────────────────
-                _dw_thresh = REWARD_CONFIG.decisive_win_threshold
-                _dw_win = REWARD_CONFIG.decisive_win_window
+                _disable_convergence = os.environ.get("BLUETEAM_DISABLE_EARLY_STOP", "") == "1"
 
-                if len(all_episodic_returns) >= _dw_win:
-                    recent_returns = all_episodic_returns[-_dw_win:]
-                    avg_return = float(np.mean(recent_returns))
-                    if avg_return >= _dw_thresh:
-                        self.exit_reason = "blueteam_decisive_win"
-                        self._should_stop_early = True
-                        print(
-                            f"\n[Runner] blueteam_decisive_win: rolling-{_dw_win} avg "
-                            f"= {avg_return:.4f} >= {_dw_thresh} → halting."
-                        )
+                if not _disable_convergence:
+                    _dw_thresh = REWARD_CONFIG.decisive_win_threshold
+                    _dw_win = REWARD_CONFIG.decisive_win_window
 
-                # Plateau logic
-                _plat_win = REWARD_CONFIG.plateau_window
-                _plat_min = REWARD_CONFIG.plateau_min_improvement
-                if (
-                    not self._should_stop_early
-                    and len(all_episodic_returns) >= _plat_win * 2
-                ):
-                    recent_avg = float(np.mean(all_episodic_returns[-_plat_win:]))
-                    past_avg = float(
-                        np.mean(
-                            all_episodic_returns[-_plat_win * 2 : -_plat_win]
-                        )
-                    )
-                    if recent_avg - past_avg < _plat_min:
-                        self.exit_reason = "blueteam_plateaued"
-                        self._should_stop_early = True
-                        print(
-                            f"\n[Runner] blueteam_plateaued: recent={recent_avg:.4f} "
-                            f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < {_plat_min} → halting."
-                        )
+                    if len(all_episodic_returns) >= _dw_win:
+                        recent_returns = all_episodic_returns[-_dw_win:]
+                        avg_return = float(np.mean(recent_returns))
+                        if avg_return >= _dw_thresh:
+                            self.exit_reason = "blueteam_decisive_win"
+                            self._should_stop_early = True
+                            print(
+                                f"\n[Runner] blueteam_decisive_win: rolling-{_dw_win} avg "
+                                f"= {avg_return:.4f} >= {_dw_thresh} → halting."
+                            )
 
-                # Hard episode limit
-                _max_eps = REWARD_CONFIG.max_training_episodes
+                    # Plateau logic
+                    _plat_win = REWARD_CONFIG.plateau_window
+                    _plat_min = REWARD_CONFIG.plateau_min_improvement
+                    if (
+                        not self._should_stop_early
+                        and len(all_episodic_returns) >= _plat_win * 2
+                    ):
+                        recent_avg = float(np.mean(all_episodic_returns[-_plat_win:]))
+                        past_avg = float(
+                            np.mean(
+                                all_episodic_returns[-_plat_win * 2 : -_plat_win]
+                            )
+                        )
+                        if recent_avg - past_avg < _plat_min:
+                            self.exit_reason = "blueteam_plateaued"
+                            self._should_stop_early = True
+                            print(
+                                f"\n[Runner] blueteam_plateaued: recent={recent_avg:.4f} "
+                                f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < {_plat_min} → halting."
+                            )
+
+                # Hard episode limit — always enforced regardless of BLUETEAM_DISABLE_EARLY_STOP.
+                # BLUETEAM_MAX_TRAINING_EPISODES env var overrides the config default
+                # (used by ablations to cap training at a reduced budget).
+                _max_eps_override = os.environ.get("BLUETEAM_MAX_TRAINING_EPISODES", "")
+                _max_eps = int(_max_eps_override) if _max_eps_override else REWARD_CONFIG.max_training_episodes
                 if not self._should_stop_early and (episode + 1) >= _max_eps:
                     self.exit_reason = "blueteam_max_episodes_reached"
                     self._should_stop_early = True

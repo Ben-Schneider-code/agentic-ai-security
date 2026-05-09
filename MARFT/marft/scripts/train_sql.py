@@ -181,8 +181,21 @@ def save_reward_config_to_yaml(run_dir, all_args):
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
+def _checkpoint_is_complete(folder: Path) -> bool:
+    # A checkpoint is usable only if at least one role subdir contains the LoRA
+    # adapter_config.json. Partial saves (process killed mid-save) can leave
+    # role dirs with just README.md, which breaks PeftModel.from_pretrained.
+    role_dirs = [p for p in folder.iterdir() if p.is_dir()]
+    if not role_dirs:
+        return False
+    return all((role / "adapter_config.json").is_file() for role in role_dirs)
+
+
 def find_latest_checkpoint(run_dir):
-    """Find the latest checkpoint in a run directory.
+    """Find the latest *complete* checkpoint in a run directory.
+
+    Skips partial / torn checkpoints left behind when a save was interrupted
+    (e.g. by a CUDA crash between mkdir and adapter write).
 
     Returns:
         tuple: (checkpoint_path, steps) or (None, 0) if no checkpoint found
@@ -203,9 +216,14 @@ def find_latest_checkpoint(run_dir):
     if not checkpoints:
         return None, 0
 
-    # Sort by steps and return the latest
     checkpoints.sort(key=lambda x: x[1], reverse=True)
-    return str(checkpoints[0][0]), checkpoints[0][1]
+    for folder, steps in checkpoints:
+        if _checkpoint_is_complete(folder):
+            return str(folder), steps
+        print(
+            f">>> Skipping incomplete checkpoint {folder} (missing adapter_config.json)"
+        )
+    return None, 0
 
 
 def load_training_state(run_dir):

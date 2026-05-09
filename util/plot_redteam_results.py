@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Plot training results using detailed reward debug logs or tensorboard logs.
+Plot red-team training results from reward_debug.jsonl / tensorboard.
 
 Usage:
-    python util/plot_training_results.py <run_dir>
+    python util/plot_redteam_results.py <run_dir> [--output-dir DIR]
 
 Example:
-    python util/plot_training_results.py results/.../run_1
+    python util/plot_redteam_results.py results/.../run_1
 
-This script generates a graph with:
-1. Total reward per episode + Cumulative reward
-2. Cumulative outcomes by tier (Permission Violation, Honeypot, etc.)
-3. Gibberish rate over time (KEY WARNING SIGN for mode collapse)
-4. Perplexity and Fluency Penalty trends
+Tier-count plots here feed the PVR numerator used in problem_statement.tex:
+the ``permission_violation``, ``honeypot_access``, and ``repeated_honeypot``
+outcome tiers are counted as turn-level policy violations (``PVR_turn``) and
+their per-episode existence drives ``PVR_conv``. Display labels call this
+out; internal tier strings are owned by the env writers and are not renamed.
 """
 
+import argparse
 import os
 import sys
 import json
@@ -407,11 +408,13 @@ def compute_eval_metrics(diagnostic_data: dict, sample_size: int = 100) -> dict:
     return results
 
 
-def plot_training_results(run_dir: str) -> None:
+def plot_training_results(run_dir: str, output_dir: str | None = None) -> None:
     # Validate directory
     if not os.path.exists(run_dir):
         print(f"Error: Directory not found: {run_dir}")
         sys.exit(1)
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
 
     # Read exit reason if available
     exit_reason = None
@@ -539,9 +542,9 @@ def plot_training_results(run_dir: str) -> None:
     }
 
     labels = {
-        "permission_violation": "Permission Violation",
-        "honeypot_access": "Honeypot Access",
-        "repeated_honeypot": "Repeated Honeypot",
+        "permission_violation": "Permission Violation (PVR violation)",
+        "honeypot_access": "Honeypot Access (PVR violation)",
+        "repeated_honeypot": "Repeated Honeypot (PVR violation)",
         "sensitive_query": "Sensitive Query",
         "sql_generated": "Valid SQL Generated",
         "sql_error": "SQL Error",
@@ -588,7 +591,7 @@ def plot_training_results(run_dir: str) -> None:
 
     ax_cum_counts.set_xlabel("Episode")
     ax_cum_counts.set_ylabel("Cumulative Count")
-    ax_cum_counts.set_title("Cumulative Outcomes by Category")
+    ax_cum_counts.set_title("Cumulative outcomes (PVR-relevant tiers)")
     ax_cum_counts.legend(loc="upper left")
     ax_cum_counts.grid(True, alpha=0.3)
 
@@ -1195,8 +1198,11 @@ def plot_training_results(run_dir: str) -> None:
         fig.suptitle(f"Exit Reason: {exit_reason}", fontsize=13, fontweight="bold", color="#c0392b", y=1.002)
 
     plt.tight_layout()
-    output_path = os.path.join(run_dir, "training_results_detailed.png")
+    out_dir = output_dir if output_dir is not None else run_dir
+    output_path = os.path.join(out_dir, "training_results_detailed.png")
+    output_path_pdf = os.path.join(out_dir, "training_results_detailed.pdf")
     plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path_pdf, dpi=150)
     print(f"Plot saved to: {output_path}")
 
     # Print Summary
@@ -1213,8 +1219,8 @@ def plot_training_results(run_dir: str) -> None:
 
     if using_debug_logs:
         labels = {
-            "permission_violation": "Permission Violation",
-            "honeypot_access": "Honeypot Access",
+            "permission_violation": "Permission Violation (PVR)",
+            "honeypot_access": "Honeypot Access (PVR)",
             "sensitive_query": "Sensitive Query",
             "sql_generated": "Valid SQL Generated",
             "sql_error": "SQL Error",
@@ -1224,8 +1230,8 @@ def plot_training_results(run_dir: str) -> None:
             if data_points:
                 final_count = data_points[-1]
                 pct = (final_count / len(episodes)) * 100
-                print(f"{labels.get(cat, cat):<25}: {final_count:>4} ({pct:.1f}%)")
-        print(f"{'Fluent Perm. Violations':<25}: {len(fluent_violations):>4}")
+                print(f"{labels.get(cat, cat):<30}: {final_count:>4} ({pct:.1f}%)")
+        print(f"{'Fluent Perm. Violations':<30}: {len(fluent_violations):>4}")
 
         if diagnostic_data:
             # Diagnostic summary
@@ -1370,11 +1376,17 @@ def plot_training_results(run_dir: str) -> None:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-
-    plot_training_results(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Plot red-team training results (PVR-relevant outcome tiers).",
+    )
+    parser.add_argument("run_dir", help="Path to a red-team run_* directory.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to write figures into. Defaults to <run_dir>/.",
+    )
+    args = parser.parse_args()
+    plot_training_results(args.run_dir, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

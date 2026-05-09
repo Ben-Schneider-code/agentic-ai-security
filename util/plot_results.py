@@ -98,6 +98,29 @@ def main():
     if result.returncode != 0:
         failures.append(f"selfplay (exit {result.returncode})")
 
+    # Post-hoc diagnostics: collapse monitor and red-team diversity.
+    # Both consume existing logs; they are best-effort and never block.
+    collapse_script = os.path.join(script_dir, "collapse_monitor.py")
+    if os.path.exists(collapse_script):
+        print(f"Running collapse_monitor on {selfplay_dir}")
+        result = subprocess.run([sys.executable, collapse_script, selfplay_dir])
+        if result.returncode != 0:
+            failures.append(f"collapse_monitor (exit {result.returncode})")
+
+    diversity_script = os.path.join(script_dir, "diversity_diagnostics.py")
+    if os.path.exists(diversity_script):
+        print(f"Running diversity_diagnostics on {selfplay_dir}")
+        result = subprocess.run([sys.executable, diversity_script, selfplay_dir])
+        if result.returncode != 0:
+            failures.append(f"diversity_diagnostics (exit {result.returncode})")
+
+    per_style_script = os.path.join(script_dir, "per_style_pud_trend.py")
+    if os.path.exists(per_style_script):
+        print(f"Running per_style_pud_trend on {selfplay_dir}")
+        result = subprocess.run([sys.executable, per_style_script, selfplay_dir])
+        if result.returncode != 0:
+            failures.append(f"per_style_pud_trend (exit {result.returncode})")
+
     if failures:
         print(f"\n{len(failures)} failure(s):")
         for f in failures:

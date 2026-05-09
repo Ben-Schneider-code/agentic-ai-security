@@ -26,6 +26,7 @@ ACTOR_GPU=1
 TRAINING_GPU=2
 COACH_GPU=""  # empty = use GPU from experiments/sql_training.json
 HORIZON=5
+RESUME_RUN_DIR=""
 
 # Read coach model default from the config file; can be overridden via --coach-model
 COACH_CONFIG="experiments/sql_training.json"
@@ -46,6 +47,7 @@ while [[ "$#" -gt 0 ]]; do
         --actor-gpu) ACTOR_GPU="$2"; shift ;;
         --training-gpu) TRAINING_GPU="$2"; shift ;;
         --horizon) HORIZON="$2"; shift ;;
+        --resume-run-dir) RESUME_RUN_DIR="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -78,7 +80,7 @@ ROOT_DIR="$(pwd)"
 if [[ -z "$RESULTS_ID" ]]; then
     RESULTS_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5 || true)"
     RESULTS_BASE_DIR="${ROOT_DIR}/results-${RESULTS_ID}"
-    if [ -d "${RESULTS_BASE_DIR}" ]; then
+    if [ -d "${RESULTS_BASE_DIR}" ] && [[ -z "$RESUME_RUN_DIR" ]]; then
         echo "ERROR: Collision — ${RESULTS_BASE_DIR} already exists. Exiting."
         exit 1
     fi
@@ -86,7 +88,7 @@ else
     # ID was provided by run_selfplay.sh — guard only the team subdir
     RESULTS_BASE_DIR="${ROOT_DIR}/results-${RESULTS_ID}"
     RESULTS_TEAM_DIR="${RESULTS_BASE_DIR}/${TARGET}"
-    if [ -d "${RESULTS_TEAM_DIR}" ]; then
+    if [ -d "${RESULTS_TEAM_DIR}" ] && [[ -z "$RESUME_RUN_DIR" ]]; then
         echo "ERROR: Collision — ${RESULTS_TEAM_DIR} already exists. Exiting."
         exit 1
     fi
@@ -94,6 +96,19 @@ fi
 
 RESULTS_TEAM_DIR="${RESULTS_BASE_DIR}/${TARGET}"
 mkdir -p "${RESULTS_TEAM_DIR}"
+
+if [[ -n "$RESUME_RUN_DIR" ]]; then
+    if [[ ! -d "$RESUME_RUN_DIR" ]]; then
+        echo "ERROR: --resume-run-dir does not exist: $RESUME_RUN_DIR"
+        exit 1
+    fi
+    if [[ ! -f "$RESUME_RUN_DIR/training_state.json" ]]; then
+        echo "ERROR: --resume-run-dir has no training_state.json: $RESUME_RUN_DIR"
+        exit 1
+    fi
+    RESUME_RUN_DIR="$(realpath "$RESUME_RUN_DIR")"
+    echo "Resuming run at: $RESUME_RUN_DIR"
+fi
 echo "Experiment ID:  ${RESULTS_ID}"
 echo "Results dir:    ${RESULTS_TEAM_DIR}"
 
@@ -269,6 +284,11 @@ if [[ -n "$STUDENT_LORA" ]]; then
     STUDENT_CKPT_DIR="$(dirname "$STUDENT_LORA")"
     EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --load_path $STUDENT_CKPT_DIR"
     echo "Initializing LoRA from prior checkpoint: $STUDENT_CKPT_DIR"
+fi
+
+if [[ -n "$RESUME_RUN_DIR" ]]; then
+    # train_sql.py will override load_path via find_latest_checkpoint(resume_run_dir)
+    EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --resume_run_dir $RESUME_RUN_DIR"
 fi
 
 COMMON_ARGS=(

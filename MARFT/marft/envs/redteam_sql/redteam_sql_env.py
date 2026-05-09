@@ -175,7 +175,8 @@ class RewardConfig:
     reward_decay_alpha: float = (
         0.01  # Decay over ~100 episodes (effective training budget)
     )
-    reward_decay_enabled: bool = True
+    # A1 ablation: set REDTEAM_DISABLE_REWARD_DECAY=1 to hold intermediate tiers flat.
+    reward_decay_enabled: bool = os.environ.get("REDTEAM_DISABLE_REWARD_DECAY", "") != "1"
 
     # === Logging ===
     enable_attack_logging: bool = True
@@ -430,6 +431,7 @@ class OfflineLLM:
                 Use when the server is already verified to be running (e.g. cross-evaluation).
         """
         from openai import OpenAI, AsyncOpenAI
+        import httpx
 
         self.vllm_base_url = vllm_base_url
         self.model_name = model_name
@@ -445,9 +447,19 @@ class OfflineLLM:
             print(f"Waiting for vLLM server at {vllm_base_url} to be ready...")
             self._wait_for_server(max_wait_time)
 
-        # Initialize OpenAI client
-        self.client = OpenAI(base_url=vllm_base_url, api_key="EMPTY")
-        self.async_client = AsyncOpenAI(base_url=vllm_base_url, api_key="EMPTY")
+        # Explicit timeout keeps the SDK from issuing its own hidden retries
+        # while our asyncio.wait_for is in flight. Read timeout (300 s) is
+        # intentionally larger than the per-call wait_for (240 s) so the SDK
+        # never fires first. max_retries=0: all retry logic lives in acomplete.
+        _http_timeout = httpx.Timeout(300.0, connect=10.0)
+        self.client = OpenAI(
+            base_url=vllm_base_url, api_key="EMPTY",
+            timeout=_http_timeout, max_retries=0,
+        )
+        self.async_client = AsyncOpenAI(
+            base_url=vllm_base_url, api_key="EMPTY",
+            timeout=_http_timeout, max_retries=0,
+        )
 
         if not skip_health_check:
             print(f"Successfully connected to vLLM server at {vllm_base_url}")
@@ -544,18 +556,33 @@ class OfflineLLM:
         max_retries = 5
         current_conversation = conversation
         response_text = ""
+        timeout_count = 0
 
         for attempt in range(max_retries):
             try:
-                response = await self.async_client.chat.completions.create(
-                    model=self.model_name,
-                    messages=current_conversation,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    max_tokens=self.max_tokens,
+                response = await asyncio.wait_for(
+                    self.async_client.chat.completions.create(
+                        model=self.model_name,
+                        messages=current_conversation,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        max_tokens=self.max_tokens,
+                    ),
+                    timeout=240,
                 )
                 response_text = response.choices[0].message.content or ""
                 break  # Success, exit retry loop
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                print(f"[WARNING] LLM request timed out (timeout attempt {timeout_count}/3)")
+                if timeout_count >= 3:
+                    print("[ERROR] LLM request timed out 3 times; treating as empty response.")
+                    return ""
+                # Exponential backoff with jitter: prevents thundering-herd retries
+                # when many concurrent episodes time out at the same moment.
+                backoff = min(5 * 2 ** timeout_count + random.uniform(0, 1), 30)
+                await asyncio.sleep(backoff)
+                continue
             except BadRequestError as e:
                 error_msg = str(e)
                 if (

@@ -236,9 +236,16 @@ class TPPOTrainer(ABC):
 
     def load_optimizers(self, path: str, map_location: str | torch.device = "cpu"):
         if not os.path.isfile(path):
-            legacy = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "optimizers.pt")
-            if os.path.isfile(legacy):
-                path = legacy
+            ckpt_dir = os.path.dirname(path.rstrip("/"))
+            role_candidates = [
+                os.path.join(ckpt_dir, role, "optimizers.pt")
+                for role in self.policy_optimizer.keys()
+            ]
+            legacy = os.path.join(os.path.dirname(ckpt_dir), "optimizers.pt")
+            for cand in role_candidates + [legacy]:
+                if os.path.isfile(cand):
+                    path = cand
+                    break
         ckpt = torch.load(path, map_location=map_location)
         for role, opt_state in ckpt["policy_opt_states"].items():
             # The trainer’s __init__ already created the corresponding optimizer.

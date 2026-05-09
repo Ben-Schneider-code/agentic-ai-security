@@ -3,28 +3,28 @@
 Plot Blue Team training results from reward_debug.jsonl.
 
 Usage:
-    python util/plot_blueteam_results.py <run_dir>
+    python util/plot_blueteam_results.py <run_dir> [--output-dir DIR]
 
 Example:
     python util/plot_blueteam_results.py results-20260302-1530-abc12/blueteam/...
-
-Generated plots (6 rows × 2 cols):
-    (0,0) Reward per episode (rolling average) + halt-condition threshold
-    (0,1) Precision / Recall / F1 over training (rolling window)
-    (1,0) Benign Turn Outcome Rates (TP/FN/sql_error on benign turns — utility check)
-    (1,1) Attack Turn Outcome Rates (TN/FP/neutral_sql on attack turns — defense check)
-    (2,0) Catastrophic failure rate (honeypot access on attack turns)
-    (2,1) Benign vs Attack reward breakdown (separate rolling averages)
-    (3,0) Refusal Rate by Turn Type (attack vs benign — detects degenerate refuser)
-    (3,1) Utility vs Security Composite Score (vs naive-refuser baseline)
-    (4,0) Decisive-win metric (rolling avg vs configured threshold)
-    (4,1) Halt condition dashboard
-    (5,0) Train vs Eval Generalization Gap — rolling training TP rate (line) + eval TP
-          rate per eval run (scatter). Large gap → memorization; small gap → generalization.
-    (5,1) Eval TP Rate by Query Category — bar chart showing per-category TP rate across
-          all eval runs, using BENIGN_EVAL_QUERIES category groupings.
 """
 
+# Metric vocabulary (display-layer):
+#   ASR  ≡ PVR_conv        conversation-level policy violation rate
+#   TNR  ≡ 1 − PVR_turn    turn-level attack refusal (defense score)
+#   TPR  ≡ 1 − PUD         turn-level benign utility
+#   FN   ≡ PUD             over-refusal on a benign turn
+#   FP   ≡ PVR violation   honeypot access on an attack turn
+# problem_statement.tex owns the formal definitions. Internal dict keys
+# (e.g. benign_is_tp, attack_is_tn) track the per-turn outcome counters
+# and are left untouched; only user-visible strings use the PVR/PUD names.
+_METRIC_VOCAB_DOC = (
+    "PVR_turn = turn-level policy violation rate; "
+    "PUD = policy utility degradation on benign turns; "
+    "F1 = HM(1 − PVR_turn, 1 − PUD)"
+)
+
+import argparse
 import os
 import sys
 import json
@@ -432,7 +432,7 @@ def aggregate(records):
 # ─────────────────────────────── Plotting ────────────────────────────────────
 
 
-def plot(run_dir: str, data: dict, eval_data: dict) -> str:
+def plot(run_dir: str, data: dict, eval_data: dict, output_dir: str | None = None) -> str:
     steps = data["steps"]
     rewards = data["rewards"]
     W = 50  # rolling window
@@ -482,8 +482,8 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
     # ── Plot 3: Benign Turn Outcome Rates — "is utility maintained?" ──────────
     benign_eps = np.array(data["benign_episode_indices"])
     for arr, color, label, lw in [
-        (data["benign_is_tp"], "#27ae60", "TP rate — utility (benign→SQL ✓)", 2.5),
-        (data["benign_is_fn"], "#f39c12", "FN rate — over-refusal (benign→refused ✗)", 1.5),
+        (data["benign_is_tp"], "#27ae60", r"$1 - \mathrm{PUD}$ (benign→SQL ✓)", 2.5),
+        (data["benign_is_fn"], "#f39c12", r"PUD — over-refusal (benign→refused ✗)", 1.5),
         (data["benign_is_sqlerr"], "#bdc3c7", "SQL error rate", 1.0),
     ]:
         if len(arr) >= 2:
@@ -493,7 +493,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
                 global_x = benign_eps[rx]
                 ax3.plot(global_x, ra * 100, color=color, linewidth=lw, label=label)
     ax3.axhspan(80, 100, alpha=0.08, color="#27ae60", label="Healthy utility zone (80–100%)")
-    ax3.set_title("Benign Turn Outcome Rates — Is Utility Maintained?")
+    ax3.set_title(r"Benign Turn Outcome Rates — PUD over training")
     ax3.set_xlabel("Episode (global)")
     ax3.set_ylabel("Rate (%)")
     ax3.set_ylim(-2, 105)
@@ -503,8 +503,8 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
     # ── Plot 4: Attack Turn Outcome Rates — "how is it defending?" ────────────
     attack_eps = np.array(data["attack_episode_indices"])
     for arr, color, label, lw in [
-        (data["attack_is_tn"], "#2980b9", "TN rate — defense (attack→refused ✓)", 2.5),
-        (data["attack_is_fp"], "#e74c3c", "FP rate — catastrophic (attack→honeypot ✗)", 1.5),
+        (data["attack_is_tn"], "#2980b9", r"$1 - \mathrm{PVR}_{\mathrm{turn}}$ (attack→refused ✓)", 2.5),
+        (data["attack_is_fp"], "#e74c3c", r"$\mathrm{PVR}_{\mathrm{turn}}$ (attack→honeypot ✗)", 1.5),
         (data["attack_is_neutral"], "#95a5a6", "Neutral SQL rate (attack→SQL, no honeypot)", 1.0),
         (data["attack_is_sqlerr"], "#bdc3c7", "SQL error rate", 1.0),
     ]:
@@ -514,7 +514,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
             if len(rx) == len(ra) and len(rx) > 0:
                 global_x = attack_eps[rx]
                 ax4.plot(global_x, ra * 100, color=color, linewidth=lw, label=label)
-    ax4.set_title("Attack Turn Outcome Rates — How Is It Defending?")
+    ax4.set_title(r"Attack Turn Outcome Rates — $\mathrm{PVR}_{\mathrm{turn}}$ over training")
     ax4.set_xlabel("Episode (global)")
     ax4.set_ylabel("Rate (%)")
     ax4.set_ylim(-2, 105)
@@ -598,7 +598,11 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
 
     # Per-style benign refusal breakdown (regression detector)
     _STYLE_COLORS = {"plain": "#95a5a6", "adversarial": "#e74c3c", "multi_turn": "#8e44ad"}
-    _STYLE_LABELS = {"plain": "Plain benign FN", "adversarial": "Adversarial benign FN", "multi_turn": "Multi-turn benign FN"}
+    _STYLE_LABELS = {
+        "plain": r"Plain PUD",
+        "adversarial": r"Adversarial PUD",
+        "multi_turn": r"Multi-turn PUD",
+    }
     for style in ("plain", "adversarial", "multi_turn"):
         style_ref = data.get("benign_style_refusal", {}).get(style, [])
         style_eps_arr = data.get("benign_style_ep_indices", {}).get(style, [])
@@ -682,7 +686,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
                 utility_series,
                 color="#27ae60",
                 linewidth=2,
-                label="Utility score — TP rate on benign",
+                label=r"Utility = $1 - \mathrm{PUD}$ (benign)",
             )
 
     if len(data["attack_is_tn"]) >= 2:
@@ -696,7 +700,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
                 security_series,
                 color="#2980b9",
                 linewidth=2,
-                label="Security score — TN rate on attack",
+                label=r"Security = $1 - \mathrm{PVR}_{\mathrm{turn}}$ (attack)",
             )
 
     # Composite score on common x grid
@@ -725,7 +729,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
         linewidth=1.5,
         label="Naive refuser baseline (50% composite)",
     )
-    ax8.set_title("Utility vs Security Composite Score\n(above dashed line = better than blind refusal)")
+    ax8.set_title(r"Utility $(1-\mathrm{PUD})$ vs Security $(1-\mathrm{PVR}_{\mathrm{turn}})$""\n(above dashed line = better than blind refusal)")
     ax8.set_xlabel("Episode (global)")
     ax8.set_ylabel("Score (%)")
     ax8.set_ylim(-2, 105)
@@ -971,7 +975,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
                 ra * 100,
                 color="#27ae60",
                 linewidth=2,
-                label=f"Train TP rate ({W}-ep rolling)",
+                label=rf"Train $1-\mathrm{{PUD}}$ ({W}-ep rolling)",
             )
 
     # Scatter eval TP rate per eval run — group by episode number
@@ -993,7 +997,7 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
                 color="#e74c3c",
                 s=60,
                 zorder=5,
-                label="Eval TP rate (held-out queries)",
+                label=r"Eval $1-\mathrm{PUD}$ (held-out)",
             )
             # Annotate final gap
             if len(eval_x) > 0 and len(data["benign_is_tp"]) >= 2:
@@ -1039,11 +1043,11 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
         )
 
     ax11.set_title(
-        "Train vs Eval Generalization Gap\n"
+        r"Train vs Eval Generalization Gap — $1-\mathrm{PUD}$""\n"
         "(scatter = held-out BENIGN_EVAL_QUERIES; close to line = generalizing)"
     )
     ax11.set_xlabel("Episode (global)")
-    ax11.set_ylabel("TP Rate (%)")
+    ax11.set_ylabel(r"$1-\mathrm{PUD}$ (%)")
     ax11.set_ylim(-2, 105)
     ax11.legend(loc="lower right", fontsize="small")
     ax11.grid(True, alpha=0.3)
@@ -1088,14 +1092,18 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
             color="#aaa",
         )
 
-    ax12.set_title("Eval TP Rate by Query Category\n(held-out BENIGN_EVAL_QUERIES only)")
+    ax12.set_title(r"Eval $1-\mathrm{PUD}$ by Query Category""\n(held-out BENIGN_EVAL_QUERIES only)")
     ax12.set_xlabel("Category")
-    ax12.set_ylabel("TP Rate (%)")
+    ax12.set_ylabel(r"$1-\mathrm{PUD}$ (%)")
     ax12.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    out = os.path.join(run_dir, "blueteam_training_results.png")
+    out_dir = output_dir if output_dir is not None else run_dir
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, "blueteam_training_results.png")
+    out_pdf = os.path.join(out_dir, "blueteam_training_results.pdf")
     fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out_pdf, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out}")
     return out
@@ -1105,11 +1113,18 @@ def plot(run_dir: str, data: dict, eval_data: dict) -> str:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python util/plot_blueteam_results.py <run_dir>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description=f"Plot Blue Team training results. {_METRIC_VOCAB_DOC}",
+    )
+    parser.add_argument("run_dir", help="Path to a blueteam run_* directory.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to write the figure into. Defaults to <run_dir>/.",
+    )
+    args = parser.parse_args()
 
-    run_dir = sys.argv[1]
+    run_dir = args.run_dir
     if not os.path.isdir(run_dir):
         print(f"ERROR: Not a directory: {run_dir}")
         sys.exit(1)
@@ -1146,16 +1161,16 @@ def main():
         train_tp = data.get("benign_is_tp", [])
         train_tp_mean = np.mean(train_tp[-500:]) * 100 if len(train_tp) >= 500 else (np.mean(train_tp) * 100 if train_tp else float("nan"))
         print(f"\n=== Generalization Summary ===")
-        print(f"  Train TP rate (last 500 benign turns): {train_tp_mean:.1f}%")
-        print(f"  Eval TP rate  (held-out queries):      {eval_tp_mean:.1f}%")
-        print(f"  Gap (train - eval):                    {train_tp_mean - eval_tp_mean:+.1f}%")
+        print(f"  Train 1-PUD (last 500 benign turns): {train_tp_mean:.1f}%")
+        print(f"  Eval 1-PUD  (held-out queries):      {eval_tp_mean:.1f}%")
+        print(f"  Gap (train - eval):                  {train_tp_mean - eval_tp_mean:+.1f}%")
         if abs(train_tp_mean - eval_tp_mean) < 10:
             print("  → Small gap: model appears to GENERALIZE beyond training queries.")
         else:
             print("  → Large gap: possible MEMORIZATION of training query set.")
     print()
 
-    plot(run_dir, data, eval_data)
+    plot(run_dir, data, eval_data, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

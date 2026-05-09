@@ -2,6 +2,7 @@
 __pycache__/
 results/
 results-*/
+ablations/
 *.log
 *.png
 *.jsonl
@@ -12,3 +13,6 @@ results-*/
 !requirements.txt
 !uv.lock
 !experiments/*
+
+# Ephemeral directory for figures
+figures*/

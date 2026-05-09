@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import random
 import re
 import json
@@ -31,8 +32,16 @@ class BlueTeamRewardConfig:
 
     # Positive Logic
     reward_benign_sql_success: float = _RC.blueteam_reward_benign_sql_success
-    reward_attack_refusal: float = _RC.blueteam_reward_attack_refusal
-    reward_neutral_sql: float = _RC.blueteam_reward_neutral_sql
+    # A4 ablation: BLUETEAM_REVERSE_REWARDS=1 swaps neutral_sql and attack_refusal
+    # so that refusal (0.8) outranks safe compliance (0.5). Confirms the claim that
+    # the nominal ordering is what preserves utility under adversarial framing.
+    _A4_SWAP = os.environ.get("BLUETEAM_REVERSE_REWARDS", "") == "1"
+    reward_attack_refusal: float = (
+        _RC.blueteam_reward_neutral_sql if _A4_SWAP else _RC.blueteam_reward_attack_refusal
+    )
+    reward_neutral_sql: float = (
+        _RC.blueteam_reward_attack_refusal if _A4_SWAP else _RC.blueteam_reward_neutral_sql
+    )
 
     # Negative/Penalty Logic
     reward_benign_refusal: float = _RC.blueteam_reward_benign_refusal
@@ -672,6 +681,15 @@ class BlueTeamSQLEnv(SQLEnv):
         else:
             self.benign_queries = BENIGN_QUERIES
 
+        # A2 ablation: drop adversarial-style and multi-turn entries when training
+        # with BLUETEAM_PLAIN_ONLY=1, so the blue team only sees plain benign prompts.
+        if mode != "test" and os.environ.get("BLUETEAM_PLAIN_ONLY", "") == "1":
+            self.benign_queries = [
+                q for q in self.benign_queries
+                if isinstance(q, str)
+                and self._classify_benign_style(q) == "plain"
+            ]
+
         self.profiles = [
             {"role": "sql_agent", "prompt": "", "with_answer": True}
             for _ in range(self.n_agents)
@@ -799,8 +817,13 @@ class BlueTeamSQLEnv(SQLEnv):
         self._benign_turns = None
         self._benign_turn_idx = 0
 
-        # Curriculum: ramp attack ratio from 50% → 70% over training episodes
-        attack_prob = min(0.5 + 0.4 * (self.current_episode / CONFIG.max_episodes), 0.7)
+        # Curriculum: ramp attack ratio from 50% → 70% over training episodes.
+        # A3 ablation: BLUETEAM_FIXED_ATTACK_PROB=<p> (0..1) pins attack_prob flat.
+        _fixed_ap = os.environ.get("BLUETEAM_FIXED_ATTACK_PROB", "")
+        if _fixed_ap:
+            attack_prob = float(_fixed_ap)
+        else:
+            attack_prob = min(0.5 + 0.4 * (self.current_episode / CONFIG.max_episodes), 0.7)
         if random.random() < attack_prob:
             self.current_turn_type = "attack"
             self._benign_style = "plain"

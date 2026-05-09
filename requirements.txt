@@ -37,3 +37,5 @@ word2number
 
 bert-score
 matplotlib
+seaborn
+scikit-learn

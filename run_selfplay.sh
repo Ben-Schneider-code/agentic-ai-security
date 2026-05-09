@@ -21,6 +21,7 @@ COACH_GPU="$REDTEAM_GPU"
 CONTINUE_DIR=""
 CONTINUE_ITER=""
 CONTINUE_ROUND=""
+RESUME_BLUE_CHECKPOINT=false
 
 # --- Parse arguments ---
 while [[ "$#" -gt 0 ]]; do
@@ -31,6 +32,7 @@ while [[ "$#" -gt 0 ]]; do
         --continue) CONTINUE_DIR="$2"; shift ;;
         --continue-iteration) CONTINUE_ITER="$2"; shift ;;
         --continue-round) CONTINUE_ROUND="$2"; shift ;;
+        --resume-blue-checkpoint) RESUME_BLUE_CHECKPOINT=true ;;
         --redteam-gpu) REDTEAM_GPU="$2"; shift ;;
         --blueteam-gpu) BLUETEAM_GPU="$2"; shift ;;
         --coach-gpu) COACH_GPU="$2"; shift ;;
@@ -69,6 +71,13 @@ if [[ -n "$CONTINUE_DIR" ]]; then
 elif [[ -n "$CONTINUE_ITER" || -n "$CONTINUE_ROUND" ]]; then
     echo "ERROR: --continue-iteration and --continue-round require --continue <result_dir>."
     exit 1
+fi
+
+if [[ "$RESUME_BLUE_CHECKPOINT" == "true" ]]; then
+    if [[ -z "$CONTINUE_DIR" || "$CONTINUE_ROUND" != "blue" ]]; then
+        echo "ERROR: --resume-blue-checkpoint requires --continue and --continue-round blue."
+        exit 1
+    fi
 fi
 
 find_latest_checkpoint() {
@@ -248,10 +257,23 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
         sleep 3
     fi
 
-    # --- Clean up stale partial blue dir if re-running ---
+    BLUE_RESUME_RUN_DIR=""
     if [[ -n "$CONTINUE_DIR" && "$ITER" -eq "$CONTINUE_ITER" ]]; then
         STALE_BLUE="results-${ITER_ID}/blueteam"
-        if [[ -d "$STALE_BLUE" ]]; then
+        if [[ "$RESUME_BLUE_CHECKPOINT" == "true" ]]; then
+            # Preserve crashed blue state and resume it via train_sql.py --resume_run_dir.
+            if [[ ! -d "$STALE_BLUE" ]]; then
+                echo "ERROR: --resume-blue-checkpoint set but no blueteam dir at ${STALE_BLUE}"
+                exit 1
+            fi
+            BLUE_RESUME_RUN_DIR=$(find "$STALE_BLUE" -type f -name training_state.json -printf '%h\n' | head -n 1)
+            if [[ -z "$BLUE_RESUME_RUN_DIR" ]]; then
+                echo "ERROR: No training_state.json under ${STALE_BLUE}; nothing to resume."
+                exit 1
+            fi
+            BLUE_RESUME_RUN_DIR=$(realpath "$BLUE_RESUME_RUN_DIR")
+            echo "[Iter ${ITER}] Resuming crashed blue run from: ${BLUE_RESUME_RUN_DIR}"
+        elif [[ -d "$STALE_BLUE" ]]; then
             echo "[Iter ${ITER}] Removing stale partial blue results: ${STALE_BLUE}"
             rm -rf "$STALE_BLUE"
         fi
@@ -259,7 +281,9 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
 
     # --- Phase 2: Train Blue Team ---
     BLUE_TRAIN_ARGS=(--target blueteam --results-id "${ITER_ID}" --base-model "$BASE_MODEL" "${COACH_ARGS[@]}" --opponent-lora "${RED_LATEST_CKPT}" --actor-gpu "$REDTEAM_GPU" --training-gpu "$BLUETEAM_GPU" --coach-gpu "$COACH_GPU" --horizon "$HORIZON")
-    if [[ -n "$BLUE_LATEST_CKPT" ]]; then
+    if [[ -n "$BLUE_RESUME_RUN_DIR" ]]; then
+        BLUE_TRAIN_ARGS+=(--resume-run-dir "${BLUE_RESUME_RUN_DIR}")
+    elif [[ -n "$BLUE_LATEST_CKPT" ]]; then
         BLUE_TRAIN_ARGS+=(--student-lora "${BLUE_LATEST_CKPT}")
         echo "Continuing Blue LoRA from previous iteration: ${BLUE_LATEST_CKPT}"
     fi

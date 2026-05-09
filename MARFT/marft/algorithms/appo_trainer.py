@@ -297,11 +297,21 @@ class APPOTrainer(ABC):
         print(f"[APPOTrainer] optimizer states saved -> {role_dir}")
 
     def load_optimizers(self, path: str, map_location: str | torch.device = "cpu"):
-        # Legacy fallback: older runs saved optimizers.pt one level up.
+        # Resolve the actual on-disk location of optimizers.pt. save_optimizers
+        # writes it into the first role's subdir, so the path passed in
+        # (load_path + "optimizers.pt") won't exist directly.
         if not os.path.isfile(path):
-            legacy = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "optimizers.pt")
-            if os.path.isfile(legacy):
-                path = legacy
+            ckpt_dir = os.path.dirname(path.rstrip("/"))
+            role_candidates = [
+                os.path.join(ckpt_dir, role, "optimizers.pt")
+                for role in self.policy_optimizer.keys()
+            ]
+            # Legacy fallback: older runs saved optimizers.pt one level up.
+            legacy = os.path.join(os.path.dirname(ckpt_dir), "optimizers.pt")
+            for cand in role_candidates + [legacy]:
+                if os.path.isfile(cand):
+                    path = cand
+                    break
         ckpt = torch.load(path, map_location=map_location)
         for role, opt_state in ckpt["policy_opt_states"].items():
             # The trainer’s __init__ already created the corresponding optimizer.

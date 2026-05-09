@@ -120,6 +120,34 @@ async def run_conversations(args):
     conversations = parse_conversations(args.input_file)
     print(f"Found {len(conversations)} conversations.")
 
+    # Optional system-prompt override. Used to swap in the "unprotected"
+    # (pre-patch) blue-team prompt for Agent-vs-Human baseline runs; without
+    # --system_prompt_file we keep the manually-protected sql_system_prompt.
+    if getattr(args, "system_prompt_file", None):
+        if not os.path.exists(args.system_prompt_file):
+            print(f"ERROR: --system_prompt_file {args.system_prompt_file} not found.")
+            sys.exit(1)
+        with open(args.system_prompt_file, "r") as f:
+            active_system_prompt = f.read()
+        print(
+            f"Overriding system prompt from {args.system_prompt_file} "
+            f"({len(active_system_prompt)} chars)."
+        )
+    else:
+        active_system_prompt = sql_system_prompt
+
+    # Seed Python-level RNG so any non-vLLM randomness (e.g., ordering) is
+    # reproducible; vLLM sampling at T=0.7 remains stochastic across seeds.
+    seed_val = getattr(args, "seed", None)
+    if seed_val is not None:
+        import random as _random
+        _random.seed(seed_val)
+        try:
+            import numpy as _np
+            _np.random.seed(seed_val)
+        except ImportError:
+            pass
+
     # ── vLLM lifecycle ────────────────────────────────────────────────────────
     vllm_instance = None  # will be set if we manage the server ourselves
 
@@ -129,17 +157,20 @@ async def run_conversations(args):
     vllm_base_url = f"http://localhost:{port}/v1"
     model_name = args.model_name
 
-    try:
-        vllm_instance = start_vllm_instance(
-            model_name=model_name,
-            gpus=gpus,
-            port=port,
-            max_model_len=args.max_model_len,
-            timeout=args.vllm_timeout,
-        )
-    except (RuntimeError, TimeoutError) as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
+    if getattr(args, "no_start_vllm", False):
+        print(f"[vLLM] Reusing existing server at {vllm_base_url} (model={model_name}).")
+    else:
+        try:
+            vllm_instance = start_vllm_instance(
+                model_name=model_name,
+                gpus=gpus,
+                port=port,
+                max_model_len=args.max_model_len,
+                timeout=args.vllm_timeout,
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
 
     # ── MCP Client ────────────────────────────────────────────────────────────
     print("\nInitializing MCP Client to connect to Postgres...")
@@ -165,9 +196,16 @@ async def run_conversations(args):
         )
         print("Blue Team Agent ready.")
 
-        output_filename = (
-            args.output_file if args.output_file else f"{args.input_file}_report.jsonl"
-        )
+        if args.output_file:
+            output_filename = args.output_file
+        else:
+            suffix_parts = []
+            if getattr(args, "run_tag", None):
+                suffix_parts.append(args.run_tag)
+            if getattr(args, "seed", None) is not None:
+                suffix_parts.append(f"seed{args.seed}")
+            suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+            output_filename = f"{args.input_file}_report{suffix}.jsonl"
         print(f"Writing report to {output_filename}...")
         accessed_honeypots = set()
 
@@ -183,7 +221,7 @@ async def run_conversations(args):
                 print("[BLUE TEAM PROCESSING]...")
                 # Use async acomplete method
                 response = await victim_llm.acomplete(
-                    history, system_prompt=sql_system_prompt
+                    history, system_prompt=active_system_prompt
                 )
 
                 print(f"[BLUE TEAM RESPONSE]:\n{response}")
@@ -294,6 +332,37 @@ def main():
         type=int,
         help="Seconds to wait for the vLLM server to become ready. Default: 600.",
         default=600,
+    )
+    parser.add_argument(
+        "--system_prompt_file",
+        default=None,
+        help=(
+            "Optional path to a plain-text file whose contents replace the "
+            "default sql_system_prompt. Used for the 'unprotected' (pre-patch) "
+            "blue-team prompt in the Agent-vs-Human baseline; omit to keep the "
+            "manually-protected prompt."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for Python/NumPy RNG; also appended to auto-named output file.",
+    )
+    parser.add_argument(
+        "--run_tag",
+        default=None,
+        help="Short tag folded into the auto-named output filename (e.g. 'unprotected').",
+    )
+    parser.add_argument(
+        "--no_start_vllm",
+        action="store_true",
+        help=(
+            "Skip launching a vLLM server; assume one is already serving "
+            "--model_name at http://localhost:<--port>/v1. Useful when a "
+            "driver (run_human_baseline.sh) starts vLLM once and calls this "
+            "script N times per seed."
+        ),
     )
     args = parser.parse_args()
 

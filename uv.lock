@@ -69,6 +69,11 @@ dependencies = [
     { name = "pyairports" },
     { name = "pydantic" },
     { name = "requests" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "seaborn" },
     { name = "sentence-transformers" },
     { name = "sentencepiece" },
     { name = "setproctitle" },
@@ -104,6 +109,9 @@ requires-dist = [
     { name = "pyairports" },
     { name = "pydantic" },
     { name = "requests" },
+    { name = "scikit-learn", specifier = ">=1.7.2" },
+    { name = "scipy" },
+    { name = "seaborn" },
     { name = "sentence-transformers" },
     { name = "sentencepiece" },
     { name = "setproctitle" },
@@ -2409,7 +2417,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
@@ -2436,9 +2444,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.4.5.107"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
+    { name = "nvidia-cusparse-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/1d/8de1e5c67099015c834315e333911273a8c6aaba78923dd1d1e25fc5f217/nvidia_cusolver_cu12-11.4.5.107-py3-none-manylinux1_x86_64.whl", hash = "sha256:8a7ec542f0412294b15072fa7dab71d31334014a69f953004ea7a118206fe0dd", size = 124161928, upload-time = "2023-04-19T15:51:25.781Z" },
@@ -2449,7 +2457,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.1.0.106"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/65/5b/cfaeebf25cd9fdec14338ccb16f6b2c4c7fa9163aefcf057d86b9cc248bb/nvidia_cusparse_cu12-12.1.0.106-py3-none-manylinux1_x86_64.whl", hash = "sha256:f3b50f42cf363f86ab21f720998517a659a48131e8d538dc02f8768237bd884c", size = 195958278, upload-time = "2023-04-19T15:51:49.939Z" },
@@ -4060,6 +4068,20 @@ wheels = [
 ]
 
 [[package]]
+name = "seaborn"
+version = "0.13.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/11/00d3c3dfc25ad54e731d91449895a79e4bf2384dc3ac01809010ba88f6d5/seaborn-0.13.2-py3-none-any.whl", hash = "sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987", size = 294914, upload-time = "2024-01-25T13:21:49.598Z" },
+]
+
+[[package]]
 name = "sentence-transformers"
 version = "5.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4463,12 +4485,12 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:28bfba084dca52a06c465d7ad0f3cc372c35fc503f3eab881cc17a5fd82914e7" },
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:9244bdc160d701915ae03e14cc25c085aa11e30d711a0b64bef0ee427e04632c" },
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:a9fff32d365e0c74b6909480548b2e291314a204adb29b6bb6f2c6d33f8be26c" },
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:bada31485e04282b9f099da39b774484d3e4c431b7ea0df3663817295ae764e4" },
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:49ac55a6497ddd6d0cdd51b5ea27d8ebe20c9273077855e9c96eb0dc289f07c3" },
-    { url = "https://download.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:b5c27549daf5f3209da6e07607f2bb8d02712555734fcd8cd7a23703a6e7d639" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:28bfba084dca52a06c465d7ad0f3cc372c35fc503f3eab881cc17a5fd82914e7" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:9244bdc160d701915ae03e14cc25c085aa11e30d711a0b64bef0ee427e04632c" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:a9fff32d365e0c74b6909480548b2e291314a204adb29b6bb6f2c6d33f8be26c" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:bada31485e04282b9f099da39b774484d3e4c431b7ea0df3663817295ae764e4" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:49ac55a6497ddd6d0cdd51b5ea27d8ebe20c9273077855e9c96eb0dc289f07c3" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torch-2.4.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:b5c27549daf5f3209da6e07607f2bb8d02712555734fcd8cd7a23703a6e7d639" },
 ]
 
 [[package]]
@@ -4479,12 +4501,12 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:47e1763ebdd41080fa3ad96ff4e4f2287831cfa8dde75233ad1329c613abda50" },
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:8e8b7b574b0697e58a6da9957df9564a9eeedbe8a14c5c1d16c120f41ca5c7ad" },
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:29c8c43a49b4303667bf20cd85c3f6e9ba2b4a0fb4b6aaec2e02b3b2d6cc6cea" },
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:1e399d274eefd35d77224c2c308bdbfcd7300cfa2c080e098aa8f215d7aba482" },
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:813c1ba237a5bd8059a3404e6aff71b5cd3d4979ad095dcfade1592680855031" },
-    { url = "https://download.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:215d6753381fefee6df4fe5d70c047652193c72f6ecec1f969d049e0b26fe745" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:47e1763ebdd41080fa3ad96ff4e4f2287831cfa8dde75233ad1329c613abda50" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:8e8b7b574b0697e58a6da9957df9564a9eeedbe8a14c5c1d16c120f41ca5c7ad" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:29c8c43a49b4303667bf20cd85c3f6e9ba2b4a0fb4b6aaec2e02b3b2d6cc6cea" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:1e399d274eefd35d77224c2c308bdbfcd7300cfa2c080e098aa8f215d7aba482" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:813c1ba237a5bd8059a3404e6aff71b5cd3d4979ad095dcfade1592680855031" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchaudio-2.4.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:215d6753381fefee6df4fe5d70c047652193c72f6ecec1f969d049e0b26fe745" },
 ]
 
 [[package]]
@@ -4497,12 +4519,12 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:5ee103c7eb47f8b08837e0e48b178f7ecc91d769d2b61240b90cb5aa2d06ce77" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:58d6fee17c9617f2bb1bbba67c036c56c6bd7f48d75d9798f18b55a5e07de328" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:3694d527b48fae26c6ac4a435960b8b5793d61c5f1420b6befb94b33c9a6fcd8" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:d1a4e6c75dab38bc1c90950976b40aec9a0d4cb94dde940c8349e77c199084ff" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:f4cec5b9273537a546e55e9e088fbed3590cfb6927f88157d4afecee23c125e9" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:43c7b72a45360959b518a273b1c217ea5992da39e99b498cea8b19766954513c" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:5ee103c7eb47f8b08837e0e48b178f7ecc91d769d2b61240b90cb5aa2d06ce77" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:58d6fee17c9617f2bb1bbba67c036c56c6bd7f48d75d9798f18b55a5e07de328" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp311-cp311-linux_x86_64.whl", hash = "sha256:3694d527b48fae26c6ac4a435960b8b5793d61c5f1420b6befb94b33c9a6fcd8" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp311-cp311-win_amd64.whl", hash = "sha256:d1a4e6c75dab38bc1c90950976b40aec9a0d4cb94dde940c8349e77c199084ff" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp312-cp312-linux_x86_64.whl", hash = "sha256:f4cec5b9273537a546e55e9e088fbed3590cfb6927f88157d4afecee23c125e9" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.0%2Bcu121-cp312-cp312-win_amd64.whl", hash = "sha256:43c7b72a45360959b518a273b1c217ea5992da39e99b498cea8b19766954513c" },
 ]
 
 [[package]]
@@ -4549,7 +4571,7 @@ name = "triton"
 version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock" },
+    { name = "filelock", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and sys_platform == 'win32') or (python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/45/27/14cc3101409b9b4b9241d2ba7deaa93535a217a211c86c4cc7151fb12181/triton-3.0.0-1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e1efef76935b2febc365bfadf74bcb65a6f959a9872e5bddf44cc9e0adce1e1a", size = 209376304, upload-time = "2024-07-19T20:56:41.483Z" },

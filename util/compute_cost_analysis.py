@@ -119,8 +119,10 @@ def load_phase_data(team_dir: Path, team: str) -> dict:
 
     # Final defense quality: rolling avg of last 100 env episodes
     dw_window = 100
-    final_quality = float(np.mean(all_returns[-dw_window:])) if len(all_returns) >= dw_window else (
-        float(np.mean(all_returns)) if all_returns else 0.0
+    final_quality = (
+        float(np.mean(all_returns[-dw_window:]))
+        if len(all_returns) >= dw_window
+        else (float(np.mean(all_returns)) if all_returns else 0.0)
     )
 
     # --- exit_reason.txt ---
@@ -204,31 +206,35 @@ def compute_metrics(iterations: list[dict]) -> dict:
             blue["total_honeypots"] = red.get("total_honeypots", 0)
 
         total_hp = red.get("total_honeypots") or 0
-        ratio = red["eis"] / blue["eis"] if blue["eis"] > 0 else float("inf")
+        ratio = blue["eis"] / red["eis"] if red["eis"] > 0 else float("inf")
 
-        per_iter.append({
-            "iter": it["iter"],
-            # --- Red phase ---
-            "red_eis": red["eis"],
-            "red_ppo_episodes": red["ppo_episodes"],
-            "red_ppo_updates": red["ppo_updates"],
-            "red_env_episodes": red["env_episodes"],
-            "red_tokens_est": estimate_tokens(red),
-            "red_accessed_hp": red["accessed_honeypots"],
-            "red_total_hp": total_hp,
-            "red_yield": red["accessed_honeypots"] / total_hp if total_hp > 0 else None,
-            "red_exit": red["exit_reason"],
-            # --- Blue phase ---
-            "blue_eis": blue["eis"],
-            "blue_ppo_episodes": blue["ppo_episodes"],
-            "blue_ppo_updates": blue["ppo_updates"],
-            "blue_env_episodes": blue["env_episodes"],
-            "blue_tokens_est": estimate_tokens(blue),
-            "blue_quality": blue["final_quality"],
-            "blue_exit": blue["exit_reason"],
-            # --- Ratio ---
-            "eis_ratio": ratio,
-        })
+        per_iter.append(
+            {
+                "iter": it["iter"],
+                # --- Red phase ---
+                "red_eis": red["eis"],
+                "red_ppo_episodes": red["ppo_episodes"],
+                "red_ppo_updates": red["ppo_updates"],
+                "red_env_episodes": red["env_episodes"],
+                "red_tokens_est": estimate_tokens(red),
+                "red_accessed_hp": red["accessed_honeypots"],
+                "red_total_hp": total_hp,
+                "red_yield": red["accessed_honeypots"] / total_hp
+                if total_hp > 0
+                else None,
+                "red_exit": red["exit_reason"],
+                # --- Blue phase ---
+                "blue_eis": blue["eis"],
+                "blue_ppo_episodes": blue["ppo_episodes"],
+                "blue_ppo_updates": blue["ppo_updates"],
+                "blue_env_episodes": blue["env_episodes"],
+                "blue_tokens_est": estimate_tokens(blue),
+                "blue_quality": blue["final_quality"],
+                "blue_exit": blue["exit_reason"],
+                # --- Ratio ---
+                "eis_ratio": ratio,
+            }
+        )
 
     if not per_iter:
         return {"per_iteration": [], "aggregate": {}}
@@ -250,7 +256,9 @@ def compute_metrics(iterations: list[dict]) -> dict:
         "std_blue_eis": float(np.std(blue_eis_list)),
         "cumulative_red_eis": int(sum(red_eis_list)),
         "cumulative_blue_eis": int(sum(blue_eis_list)),
-        "cumulative_eis_ratio": sum(red_eis_list) / sum(blue_eis_list) if sum(blue_eis_list) > 0 else None,
+        "cumulative_eis_ratio": sum(blue_eis_list) / sum(red_eis_list)
+        if sum(red_eis_list) > 0
+        else None,
         # Ratio distribution
         "mean_eis_ratio": float(np.mean(ratios)),
         "std_eis_ratio": float(np.std(ratios)),
@@ -309,7 +317,7 @@ def format_table(metrics: dict) -> str:
         f"{'Iter':>4}  {'RedEIS':>7}  {'RedEnvEp':>8}  "
         f"{'RedTok(est)':>10}  {'RedYield':>12}  {'RedExit':<15}  "
         f"{'BlueEIS':>7}  {'BlueEnvEp':>8}  {'BlueTok(est)':>10}  "
-        f"{'BlueQual':>10}  {'BlueExit':<15}  {'Ratio':>6}"
+        f"{'BlueQual':>10}  {'BlueExit':<15}  {'B/R':>6}"
     )
     sep = "-" * len(header)
 
@@ -329,7 +337,9 @@ def format_table(metrics: dict) -> str:
     rows.append(sep)
     # Aggregate row
     n = agg["n_iterations"]
-    yield_avg = f"{agg['mean_red_yield']:.2f}" if agg["mean_red_yield"] is not None else "?"
+    yield_avg = (
+        f"{agg['mean_red_yield']:.2f}" if agg["mean_red_yield"] is not None else "?"
+    )
     rows.append(
         f"{'Avg':>4}  {agg['mean_red_eis']:>7,.0f}  "
         f"{'-':>8}  {agg['mean_red_tokens_est']:>10,.0f}  "
@@ -344,11 +354,17 @@ def format_table(metrics: dict) -> str:
 
     lines.append("\n=== Aggregate Cost Metrics ===")
     lines.append(f"  Iterations analyzed         : {n}")
-    lines.append(f"  Mean EIS ratio (red/blue)   : {agg['mean_eis_ratio']:.2f}x  ±{agg['std_eis_ratio']:.2f}  "
-                 f"[{agg['min_eis_ratio']:.1f}x – {agg['max_eis_ratio']:.1f}x]")
-    lines.append(f"  Cumulative EIS ratio        : {agg['cumulative_eis_ratio']:.2f}x  "
-                 f"(red={agg['cumulative_red_eis']:,}, blue={agg['cumulative_blue_eis']:,})")
-    lines.append(f"  Cumul. token est (red/blue) : {agg['cumulative_red_tokens_est']:,} / {agg['cumulative_blue_tokens_est']:,}")
+    lines.append(
+        f"  Mean EIS ratio (blue/red)   : {agg['mean_eis_ratio']:.2f}x  ±{agg['std_eis_ratio']:.2f}  "
+        f"[{agg['min_eis_ratio']:.1f}x – {agg['max_eis_ratio']:.1f}x]"
+    )
+    lines.append(
+        f"  Cumulative EIS ratio (b/r)  : {agg['cumulative_eis_ratio']:.2f}x  "
+        f"(blue={agg['cumulative_blue_eis']:,}, red={agg['cumulative_red_eis']:,})"
+    )
+    lines.append(
+        f"  Cumul. token est (red/blue) : {agg['cumulative_red_tokens_est']:,} / {agg['cumulative_blue_tokens_est']:,}"
+    )
     if agg["mean_red_yield"] is not None:
         lines.append(f"  Mean red honeypot yield     : {agg['mean_red_yield']:.1%}")
     lines.append(f"  Mean blue final quality     : {agg['mean_blue_quality']:.3f}")
@@ -372,7 +388,9 @@ _RED_LIGHT = "#f5b7b1"
 _BLUE_LIGHT = "#aed6f1"
 
 
-def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = None) -> str:
+def plot_cost_metrics(
+    metrics: dict, selfplay_dir: str, plot_out: str | None = None
+) -> str:
     """
     Render a 2×2 figure summarising compute cost asymmetry.
 
@@ -394,13 +412,15 @@ def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = N
     red_eis = [r["red_eis"] for r in per_iter]
     blue_eis = [r["blue_eis"] for r in per_iter]
     ratios = [r["eis_ratio"] for r in per_iter]
-    red_yields = [r["red_yield"] * 100 if r["red_yield"] is not None else 0 for r in per_iter]
+    red_yields = [
+        r["red_yield"] * 100 if r["red_yield"] is not None else 0 for r in per_iter
+    ]
     blue_qualities = [r["blue_quality"] * 100 for r in per_iter]
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     run_name = Path(selfplay_dir).name
     fig.suptitle(
-        f"Compute Cost Asymmetry: {run_name}",
+        "Compute Cost Asymmetry",
         fontsize=13,
         fontweight="bold",
     )
@@ -410,15 +430,24 @@ def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = N
 
     # ── (0,0) EIS per iteration ──────────────────────────────────────────────
     ax = axes[0, 0]
-    bars_r = ax.bar(x - bar_w / 2, red_eis, width=bar_w, color=_RED, alpha=0.85, label="Red team")
-    bars_b = ax.bar(x + bar_w / 2, blue_eis, width=bar_w, color=_BLUE, alpha=0.85, label="Blue team")
+    bars_r = ax.bar(
+        x - bar_w / 2, red_eis, width=bar_w, color=_RED, alpha=0.85, label="Red team"
+    )
+    bars_b = ax.bar(
+        x + bar_w / 2, blue_eis, width=bar_w, color=_BLUE, alpha=0.85, label="Blue team"
+    )
 
     # Annotate ratio above each pair
     for i, (re_, be_, ratio) in enumerate(zip(red_eis, blue_eis, ratios)):
         ax.text(
-            x[i], max(re_, be_) * 1.03,
+            x[i],
+            max(re_, be_) * 1.03,
             f"{ratio:.1f}×",
-            ha="center", va="bottom", fontsize=7.5, fontweight="bold", color="#555555",
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#555555",
         )
 
     ax.set_title("EIS per Iteration (ratio annotated)")
@@ -437,19 +466,23 @@ def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = N
 
     ax.fill_between(iters, 0, cum_red, color=_RED, alpha=0.25)
     ax.fill_between(iters, 0, cum_blue, color=_BLUE, alpha=0.35)
-    ax.plot(iters, cum_red, marker="o", color=_RED, linewidth=2, label="Red (cumulative)")
-    ax.plot(iters, cum_blue, marker="s", color=_BLUE, linewidth=2, label="Blue (cumulative)")
+    ax.plot(
+        iters, cum_red, marker="o", color=_RED, linewidth=2, label="Red (cumulative)"
+    )
+    ax.plot(
+        iters, cum_blue, marker="s", color=_BLUE, linewidth=2, label="Blue (cumulative)"
+    )
 
-    # Annotate final cumulative ratio
+    # Annotate final cumulative ratio (blue/red)
     final_ratio = agg.get("cumulative_eis_ratio") or 0
     ax.annotate(
-        f"Final ratio: {final_ratio:.1f}×",
-        xy=(iters[-1], cum_red[-1]),
-        xytext=(-40, -20),
+        f"Blue/Red: {final_ratio:.1f}×",
+        xy=(iters[-1], cum_blue[-1]),
+        xytext=(-40, 20),
         textcoords="offset points",
         fontsize=8,
-        color=_RED,
-        arrowprops=dict(arrowstyle="->", color=_RED, lw=1),
+        color=_BLUE,
+        arrowprops=dict(arrowstyle="->", color=_BLUE, lw=1),
     )
 
     ax.set_title("Cumulative EIS across Iterations")
@@ -461,21 +494,34 @@ def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = N
 
     # ── (1,0) EIS ratio per iteration ────────────────────────────────────────
     ax = axes[1, 0]
-    bar_colors = [_RED if r >= agg["mean_eis_ratio"] else _RED_LIGHT for r in ratios]
-    ax.bar(x, ratios, width=0.55, color=bar_colors, alpha=0.85, label="Red/Blue EIS ratio")
+    bar_colors = [_BLUE if r >= agg["mean_eis_ratio"] else _BLUE_LIGHT for r in ratios]
+    ax.bar(
+        x, ratios, width=0.55, color=bar_colors, alpha=0.85, label="Blue/Red EIS ratio"
+    )
 
     mean_r = agg["mean_eis_ratio"]
-    ax.axhline(mean_r, color="#555555", linewidth=1.4, linestyle="--",
-               label=f"Mean {mean_r:.1f}×")
+    ax.axhline(
+        mean_r,
+        color="#555555",
+        linewidth=1.4,
+        linestyle="--",
+        label=f"Mean {mean_r:.1f}×",
+    )
 
     # ±1 std band
     std_r = agg["std_eis_ratio"]
-    ax.axhspan(mean_r - std_r, mean_r + std_r, color="#dddddd", alpha=0.4, label=f"±1 SD ({std_r:.1f})")
+    ax.axhspan(
+        mean_r - std_r,
+        mean_r + std_r,
+        color="#dddddd",
+        alpha=0.4,
+        label=f"±1 SD ({std_r:.1f})",
+    )
 
     for i, r in enumerate(ratios):
         ax.text(x[i], r + 0.1, f"{r:.1f}×", ha="center", va="bottom", fontsize=7.5)
 
-    ax.set_title("EIS Ratio (Red / Blue) per Iteration")
+    ax.set_title("EIS Ratio (Blue / Red) per Iteration")
     ax.set_xlabel("Self-play iteration")
     ax.set_ylabel("Ratio (×)")
     ax.set_xticks(x)
@@ -488,14 +534,34 @@ def plot_cost_metrics(metrics: dict, selfplay_dir: str, plot_out: str | None = N
     ax = axes[1, 1]
     ax2 = ax.twinx()
 
-    ax.bar(x - bar_w / 2, red_yields, width=bar_w, color=_RED, alpha=0.7, label="Red yield (%)")
-    ax2.plot(iters, blue_qualities, marker="s", color=_BLUE, linewidth=2,
-             label="Blue quality (×100)")
+    ax.bar(
+        x - bar_w / 2,
+        red_yields,
+        width=bar_w,
+        color=_RED,
+        alpha=0.7,
+        label="Red yield (%)",
+    )
+    ax2.plot(
+        iters,
+        blue_qualities,
+        marker="s",
+        color=_BLUE,
+        linewidth=2,
+        label="Blue quality (×100)",
+    )
 
     # Reference lines
-    ax.axhline(100 * (agg.get("mean_red_yield") or 0), color=_RED, linestyle=":",
-               linewidth=1, alpha=0.7)
-    ax2.axhline(np.mean(blue_qualities), color=_BLUE, linestyle=":", linewidth=1, alpha=0.7)
+    ax.axhline(
+        100 * (agg.get("mean_red_yield") or 0),
+        color=_RED,
+        linestyle=":",
+        linewidth=1,
+        alpha=0.7,
+    )
+    ax2.axhline(
+        np.mean(blue_qualities), color=_BLUE, linestyle=":", linewidth=1, alpha=0.7
+    )
 
     ax.set_title("Outcome Quality per Iteration")
     ax.set_xlabel("Self-play iteration")

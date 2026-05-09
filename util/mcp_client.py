@@ -78,8 +78,22 @@ class MCPClient:
             for tool in response.tools
         ]
 
-    async def call_tool(self, tool, tool_input):
+    async def call_tool(self, tool, tool_input, timeout: float | None = 60.0):
+        """Call an MCP tool, optionally with a hard timeout.
+
+        A stdio MCP session with no timeout can wedge the entire event loop if
+        the server stops responding mid-request. Defaulting to 60s lets callers
+        surface a timeout instead of hanging forever. Callers that already wrap
+        the call in asyncio.wait_for should pass timeout=None.
+        """
+        async def _do_call():
+            if timeout is None:
+                return await self.session.call_tool(tool, tool_input)
+            return await asyncio.wait_for(
+                self.session.call_tool(tool, tool_input), timeout=timeout
+            )
+
         if self._sem:
             async with self._sem:
-                return await self.session.call_tool(tool, tool_input)
-        return await self.session.call_tool(tool, tool_input)
+                return await _do_call()
+        return await _do_call()

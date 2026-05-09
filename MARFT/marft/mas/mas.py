@@ -140,6 +140,9 @@ class MAS(ABC):
             raise NotImplementedError
         if critic_path is not None:
             candidates = [
+                # Current layout (mas.save): value_head.pth lives inside the first
+                # agent's role subdir alongside the LoRA adapter files.
+                os.path.join(critic_path, self.agents[0].role, "value_head.pth"),
                 os.path.join(critic_path, "value_head.pth"),
                 # Legacy layout: value_head.pth was saved one level up from the LoRA dir.
                 os.path.join(os.path.dirname(critic_path.rstrip("/")), "value_head.pth"),

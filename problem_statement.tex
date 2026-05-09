@@ -1,0 +1,65 @@
+\section{Problem Statement}
+\textcolor{blue}{This section needs editing/review}
+
+In this section, we formalize the challenge of a SQL agent $A$ enforcing a policy $P$ over a database $D$ when subjected to an adaptive red-teamer $R$. 
+
+\subsection{Policy Enforcement on Database Resources}
+
+We define the ground-truth policy as a function $P : q \times D \to \{\texttt{allow}, \texttt{deny}\}$ that determines whether a SQL query $q$ is permissible given the state of database $D$. For a fixed $D$, the policy partitions the space of all possible queries into the denied set $Q^P_{\texttt{deny}}$ and the allowed set $Q^P_{\texttt{allow}}$.
+
+The agent $A_P$ acts as the enforcement layer. We say $A_P$ successfully enforces $P$ if, for any user request $r_t$ and history $c_{t-1}$, the agent's internal query generation $q$ satisfies the following consistency with $P$:
+\begin{equation}
+\text{If } A_P(c_{t-1}, r_t) \rightarrow q, \text{ then } 
+\begin{cases} 
+q \in Q^P_{\texttt{allow}} & \implies a_t = D(q) \\
+q \in Q^P_{\texttt{deny}} & \implies a_t = \bot
+\end{cases}
+\end{equation}
+An enforcement failure occurs if $A_P$ produces a query $q \in Q^P_{\texttt{deny}}$ that is subsequently executed by $D$, resulting in $a_t \neq \bot$.
+
+\subsection{Adaptive Red Teaming}
+
+Following the interaction model in \S\ref{sec:background}, given an objective $i$, the red-teamer $R$ attempts to generate requests $r_t$ that induce a policy violation. 
+% A \textit{conversation} is a sequence $c = \bigl(r_1, a_1, \dots, r_{\ell_c}, a_{\ell_c}\bigr)$.
+The goal of $R$ is to generate a set of conversations $C_R$ such that at least one turn $t$ yields $q \in Q^P_{\texttt{deny}}$ while $a_t \neq \bot$.
+
+To evaluate the security--utility tradeoff, we also consider a set of benign conversations $C_B$ consisting of legitimate enterprise requests where every intended query $q$ lies in $Q^P_{\texttt{allow}}$. 
+We restrict our evaluation to resource-accessing turns, where $a_t \neq \bot$.
+% where $A_P$ attempts to generate a query $q$ to interface with $D$. 
+Let $\mathcal{T}^\star_R$ and $\mathcal{T}^\star_B$ denote the sets of resource-accessing turns (represented as $(r_t, a_t)$ pairs) for the red-team and benign datasets, respectively.
+
+\subsection{Evaluation Metrics}
+
+We quantify the agent's behavior using two primary metrics:
+
+\textbf{Policy Violation Rate (PVR):} This measures the frequency of successful exploitations by $R$. We define $\mathrm{PVR}_{\text{turn}}$ as the ratio of resource-accessing turns where the agent allows a prohibited query:
+\begin{equation}
+\label{eq:pvr-turn}
+\mathrm{PVR}_{\text{turn}} = \frac{1}{|\mathcal{T}^\star_R|} \sum_{(r_t, c_{t-1}) \in \mathcal{T}^\star_R} \mathbf{1}[A_P(c_{t-1}, r_t) \in Q^P_{\texttt{deny}}]
+\end{equation}
+
+We additionally report two related security metrics:
+
+\begin{itemize}
+\item \textbf{Conversation-level Policy Violation Rate}  \  $\mathrm{PVR}_{\text{conv}}$, which credits $R$ with success if \textit{any} turn within a conversation $c \in C_R$ yields a violation, reflecting that a single successful exfiltration compromises the session:
+
+    \begin{equation}
+    \label{eq:pvr-conv}
+    \begin{aligned}
+    \mathrm{PVR}_{\text{conv}} = \frac{1}{|C^\star_\mathcal{R}|} \sum_{c \in C^\star_\mathcal{R}} \mathbf{1} \Bigl[ \, \exists t \leq \ell_c : &\ (q^{(t)}, c_{<t}) \in \mathcal{T}^\star_\mathcal{R} \\
+    & \wedge \mathcal{A}(q^{(t)}, c_{<t}, P) = \text{allow} \, \Bigr]
+    \end{aligned}
+    \end{equation}
+    where $C^\star_\mathcal{R} \subseteq C_\mathcal{R}$ is the subset of red-team conversations containing at least one turn in $\mathcal{T}^\star_\mathcal{R}$,
+
+\item \textbf{Work Factor} \ $\mathrm{WF} = \dfrac{1}{\mathrm{PVR}_{\text{turn}}}$, which represents the expected number of resource-accessing attacker turns required to produce one successful policy violation. We report it separately from pVR because PVR (both turn-level and conversation-level variants) compresses towards 0 as defense improves and our adaptive attacker's training budget can be informed by the progress of policy violations (e.g., attacker training should halt when no new policy violations are being discovered).
+\end{itemize}
+
+\textbf{Benign Refusal Rate (BRR):} This measures the loss of utility on legitimate requests. $\mathrm{BRR}$ is the rate at which $A_P$ denies ($a_t = \bot$) benign turns. Let $\mathcal{T}_B$ denote the set of all benign turns (resource-accessing or refused) across $C_B$:
+\begin{equation}
+\label{eq:brr}
+\mathrm{BRR} = \frac{1}{|\mathcal{T}_B|} \sum_{(r_t, c_{t-1}) \in \mathcal{T}_B} \mathbf{1}[a_t = \bot]
+\end{equation}
+We compute BRR over $\mathcal{T}_B$ rather than $\mathcal{T}^\star_B$ so that wrongly-refused benign requests are observable (under $\mathcal{T}^\star_B$ the indicator is identically zero by construction).
+
+Together, these metrics characterize the equilibrium of the deployment. A robust agent must minimize $\mathrm{PVR}$ without a corresponding increase in $\mathrm{BRR}$, ensuring that defensive adaptation does not render the agent unusable for legitimate enterprise tasks.

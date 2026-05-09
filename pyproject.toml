@@ -8,13 +8,11 @@ dependencies = [
     "torch",
     "torchvision",
     "torchaudio",
-
     # vLLM and model dependencies
     "transformers[torch]==4.57.3",
     "vllm==0.6.3",
     "lm-format-enforcer",
     "xformers==0.0.27.post2",
-
     # Database and server
     "psycopg2-binary==2.9.11",
     "gpustat==1.1.1",
@@ -24,7 +22,6 @@ dependencies = [
     "asyncpg",
     "pyairports",
     "requests",
-
     # MARFT dependencies
     "absl-py",
     "cloudpickle",
@@ -43,6 +40,7 @@ dependencies = [
     "matplotlib",
     "scipy",
     "seaborn",
+    "scikit-learn>=1.7.2",
 ]
 
 [tool.uv]
