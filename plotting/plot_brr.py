@@ -64,16 +64,38 @@ DESCRIPTION = (
     "train_rollouts source: population-weighted denial rate across plain / "
     "multi_turn / adversarial-framed benign turns seen during training — "
     "matches plot_per_style_refusal population (~13–15% for the canonical run). "
-    "benign_eval source: same denial predicate on the held-out plain-heavy eval "
-    "corpus — near-floor (~1–3%) because adversarial-framed turns are under-represented. "
+    "benign_eval source: same denial predicate on the held-out eval corpus; the "
+    "empirical style mix is shown in the plot title. "
     "human_eval source: from iter_N/summary.json."
 )
 
 _SOURCE_TITLE = {
     "train_rollouts": "BRR — training-time rollouts (all benign styles)",
-    "benign_eval":    "BRR — held-out benign eval corpus (plain-heavy)",
     "human_eval":     "BRR — human evaluation",
 }
+
+
+def _style_mix_label(rows: list[dict]) -> str:
+    """Return e.g. 'plain 67%, adversarial 22%, multi_turn 11%' from benign_style counts."""
+    counts: dict[str, int] = {}
+    for r in rows:
+        s = r.get("benign_style")
+        if s:
+            counts[s] = counts.get(s, 0) + 1
+    total = sum(counts.values())
+    if total == 0:
+        return "style mix unknown"
+    # Largest-remainder rounding so integer percentages sum to 100.
+    ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    raw = [(s, c * 100 / total) for s, c in ordered]
+    floors = [(s, int(p), p - int(p)) for s, p in raw]
+    deficit = 100 - sum(f for _, f, _ in floors)
+    by_remainder = sorted(range(len(floors)), key=lambda i: floors[i][2], reverse=True)
+    pcts = {s: f for s, f, _ in floors}
+    for i in by_remainder[:deficit]:
+        s = floors[i][0]
+        pcts[s] += 1
+    return ", ".join(f"{s} {pcts[s]}%" for s, _ in ordered if pcts[s] > 0)
 _SOURCE_YLABEL = "BRR (%)"
 
 
@@ -88,6 +110,7 @@ def plot_brr(
     sources: tuple[str, ...] = ("train_rollouts",),
     human_eval_parent: str | None = None,
     cross_eval_subdir: str = "cross_eval",
+    show_ci: bool = True,
 ) -> dict[str, Path]:
     """
     Plot BRR (%) vs. self-play iteration; one PNG per source.
@@ -129,6 +152,7 @@ def plot_brr(
     for src in sources:
         out_path = out_dir / f"{filename_prefix}_{src}.png"
         fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+        benign_eval_all_rows: list[dict] = []
 
         for run_idx, (label, selfplay_dir) in enumerate(results):
             color = colors[run_idx]
@@ -151,7 +175,7 @@ def plot_brr(
                     hi_errs.append(max(0.0, hi - rate) if not np.isnan(rate) else 0.0)
                 yerr = [lo_errs, hi_errs] if any(v > 0 for v in lo_errs + hi_errs) else None
                 ax.errorbar(
-                    iters, vals, yerr=yerr,
+                    iters, vals, yerr=(yerr if show_ci else None),
                     label=label, color=color,
                     marker="o", linewidth=2, markersize=7, capsize=4,
                 )
@@ -165,6 +189,8 @@ def plot_brr(
                         file=sys.stderr,
                     )
                     continue
+                for _rows in rows_by_iter.values():
+                    benign_eval_all_rows.extend(_rows)
                 iters = sorted(rows_by_iter)
                 vals, lo_errs, hi_errs = [], [], []
                 for i in iters:
@@ -174,7 +200,7 @@ def plot_brr(
                     hi_errs.append(max(0.0, hi - rate) if not np.isnan(rate) else 0.0)
                 yerr = [lo_errs, hi_errs] if any(v > 0 for v in lo_errs + hi_errs) else None
                 ax.errorbar(
-                    iters, vals, yerr=yerr,
+                    iters, vals, yerr=(yerr if show_ci else None),
                     label=label, color=color,
                     marker="s", linewidth=2, markersize=7, capsize=4,
                 )
@@ -207,14 +233,18 @@ def plot_brr(
                         hi_errs.append(max(0.0, ci[1] - val))
                 yerr = [lo_errs, hi_errs] if any(v > 0 for v in lo_errs + hi_errs) else None
                 ax.errorbar(
-                    iters, vals, yerr=yerr,
+                    iters, vals, yerr=(yerr if show_ci else None),
                     label=label, color=color,
                     marker="*", linewidth=2, markersize=9, capsize=4,
                 )
 
         ax.set_xlabel("Self-play iteration")
         ax.set_ylabel(_SOURCE_YLABEL)
-        ax.set_title(_SOURCE_TITLE.get(src, f"BRR — {src}"))
+        if src == "benign_eval":
+            mix = _style_mix_label(benign_eval_all_rows)
+            ax.set_title(f"BRR — held-out benign eval corpus ({mix})")
+        else:
+            ax.set_title(_SOURCE_TITLE.get(src, f"BRR — {src}"))
         ax.set_ylim(0, 105)
         _integer_xticks(ax)
         if ax.get_legend_handles_labels()[0]:

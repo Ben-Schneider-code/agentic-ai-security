@@ -81,6 +81,7 @@ def _delta_pvr(pts: list[dict]) -> tuple[list[float], list[float], list[float]]:
 def plot_pvr_vs_normalized_eis(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     """
     Plot ΔPVRconv vs normalized EIS for red and blue teams on shared axes.
@@ -122,7 +123,7 @@ def plot_pvr_vs_normalized_eis(
             yerr = np.array([
                 [v - l for v, l in zip(d_pvr, d_lo)],
                 [h - v for v, h in zip(d_pvr, d_hi)],
-            ])
+            ]) if show_ci else None
             ax.errorbar(
                 x_red, d_pvr, yerr=yerr,
                 fmt="-o", color=RED_COL, linewidth=2.0, markersize=6,
@@ -144,7 +145,7 @@ def plot_pvr_vs_normalized_eis(
             yerr = np.array([
                 [v - l for v, l in zip(d_pvr, d_lo)],
                 [h - v for v, h in zip(d_pvr, d_hi)],
-            ])
+            ]) if show_ci else None
             ax.errorbar(
                 x_blue, d_pvr, yerr=yerr,
                 fmt="-s", color=BLUE_COL, linewidth=2.0, markersize=6,

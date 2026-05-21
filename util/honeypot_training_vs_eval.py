@@ -36,7 +36,11 @@ import numpy as np
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from util.honeypot_stats import find_iteration_logs, load_records  # noqa: E402
+from util.honeypot_stats import (  # noqa: E402
+    find_iteration_logs,
+    load_records,
+    load_reward_config,
+)
 
 DESCRIPTION = (
     "Training-time vs eval-time hits per honeypot, grouped by diagonal-eval "
@@ -72,13 +76,7 @@ def declared_universe_from_reward_config(results_dir: Path) -> list[str]:
     )
     if not candidates:
         sys.exit(f"reward_config.yaml not found under {results_dir}/iter_1/redteam")
-    try:
-        import yaml
-    except ImportError:
-        sys.exit("PyYAML required to parse reward_config.yaml")
-    # reward_config.yaml uses Python tuple tags (!!python/tuple); unsafe_load handles them.
-    with candidates[0].open() as f:
-        cfg = yaml.unsafe_load(f)
+    cfg = load_reward_config(candidates[0])
 
     ids: list[str] = []
     for tbl in cfg.get("honeypot_tables", []) or []:

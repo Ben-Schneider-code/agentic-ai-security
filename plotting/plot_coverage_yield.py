@@ -66,6 +66,7 @@ def plot_coverage_yield(
     out_path: str | Path,
     *,
     subdir: str = "cross_eval",
+    show_ci: bool = True,
 ) -> Path:
     """
     Coverage vs. yield line chart: one subplot per Red iter, x=Blue iter.
@@ -164,7 +165,7 @@ def plot_coverage_yield(
         yld_arr = np.array(yld_vals, dtype=float)
         ax.errorbar(
             x, yld_arr,
-            yerr=[np.array(yld_lo), np.array(yld_hi)],
+            yerr=([np.array(yld_lo), np.array(yld_hi)] if show_ci else None),
             color=RED_COL, linestyle="--",
             label="Yield (accessed)" if not legend_added else "_nolegend_",
             **kwargs_base,
@@ -175,7 +176,7 @@ def plot_coverage_yield(
         if has_coverage and not np.all(np.isnan(cov_arr)):
             ax.errorbar(
                 x, cov_arr,
-                yerr=[np.array(cov_lo), np.array(cov_hi)],
+                yerr=([np.array(cov_lo), np.array(cov_hi)] if show_ci else None),
                 color=GRAY_COL, linestyle="-",
                 label="Coverage (referenced)" if not legend_added else "_nolegend_",
                 **kwargs_base,

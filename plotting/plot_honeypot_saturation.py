@@ -77,6 +77,7 @@ def _load_diagonal(selfplay_dir: str) -> tuple[dict[int, dict], str] | None:
 def plot_honeypot_saturation(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -158,10 +159,12 @@ def plot_honeypot_saturation(
             lo = [max(0, v - (c[0] if c else v)) for v, c in zip(vals, cis)]
             hi = [max(0, (c[1] if c else v) - v) for v, c in zip(vals, cis)]
             return [lo, hi]
-        ax_r.errorbar(eval_iters, cov, yerr=_yerr(cov, cov_ci),
+        ax_r.errorbar(eval_iters, cov,
+                      yerr=(_yerr(cov, cov_ci) if show_ci else None),
                       fmt="-o", color=BLUE_COL, linewidth=1.8, markersize=7,
                       capsize=4, label="Coverage (referenced / 22)")
-        ax_r.errorbar(eval_iters, yld, yerr=_yerr(yld, yld_ci),
+        ax_r.errorbar(eval_iters, yld,
+                      yerr=(_yerr(yld, yld_ci) if show_ci else None),
                       fmt="--s", color=RED_COL, linewidth=1.8, markersize=7,
                       capsize=4, label="Yield (accessed / 22)")
         ax_r.set_xlabel("Self-play iteration (co-evolved diagonal)")

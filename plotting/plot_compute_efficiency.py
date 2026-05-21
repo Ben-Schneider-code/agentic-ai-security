@@ -234,6 +234,7 @@ def _plot_sweep(
     marker: str,
     label: str,
     annotate: bool = True,
+    show_ci: bool = True,
 ) -> None:
     if not points:
         return
@@ -244,7 +245,7 @@ def _plot_sweep(
     yerr = np.array([
         [v - l for v, l in zip(pvr, lo)],
         [h - v for v, h in zip(pvr, hi)],
-    ])
+    ]) if show_ci else None
     ax.errorbar(
         eis, pvr, yerr=yerr,
         fmt=f"-{marker}", color=color, linewidth=1.8, markersize=6,
@@ -272,6 +273,7 @@ _EIS_FMT = matplotlib.ticker.FuncFormatter(
 def plot_compute_efficiency(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     """
     Plot PVR_conv vs each team's own cumulative EIS using fixed-opponent sweeps.
@@ -309,13 +311,13 @@ def plot_compute_efficiency(
 
         # ── Left: red team learning curve ────────────────────────────────────
         _plot_sweep(ax_red, red_pts, "pvr_conv", RED_COL, "o",
-                    f"PVR_conv (vs blue_{max_blue_iter})")
+                    f"PVR_conv (vs blue_{max_blue_iter})", show_ci=show_ci)
 
         # ── Right: blue team defense curve ───────────────────────────────────
         _plot_sweep(ax_blue, blue_pts, "pvr_conv", RED_COL, "o",
-                    f"PVR_conv (vs red_{max_red_iter})")
+                    f"PVR_conv (vs red_{max_red_iter})", show_ci=show_ci)
         _plot_sweep(ax_blue, blue_pts, "brr", BLUE_COL, "s",
-                    "BRR", annotate=False)
+                    "BRR", annotate=False, show_ci=show_ci)
 
     # ── Shared reference: PVR of base model at 0 EIS ─────────────────────────
     # Mark 0 EIS explicitly so readers see the pre-training baseline

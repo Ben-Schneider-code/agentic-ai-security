@@ -26,12 +26,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-try:
-    import yaml
-
-    _HAVE_YAML = True
-except ImportError:
-    _HAVE_YAML = False
+import yaml
 
 
 # ---------------------------------------------------------------------------
@@ -55,20 +50,33 @@ def find_iteration_logs(results_dir: Path) -> dict[int, Path]:
     return iters
 
 
+def load_reward_config(path: Path) -> dict:
+    """Load a training-saved ``reward_config.yaml`` as a plain dict.
+
+    Uses ``yaml.safe_load``. The writer
+    (``MARFT/marft/scripts/train_sql.py::save_reward_config_to_yaml``) is
+    guaranteed to emit only YAML-safe types. Pre-migration files contain
+    ``!!python/tuple`` tags and will raise ``yaml.constructor.ConstructorError``
+    — run ``util/migrate_reward_configs.py`` once to clean them.
+    """
+    with path.open() as f:
+        return yaml.safe_load(f)
+
+
 def find_total_honeypots(results_dir: Path, iter_k: int) -> int | None:
-    """Return total_honeypots from reward_config.yaml if available."""
-    if not _HAVE_YAML:
-        return None
+    """Return ``total_honeypots`` from the iteration's saved reward config.
+
+    Returns ``None`` only when no ``reward_config.yaml`` is present for the
+    iteration. If a file exists but cannot be parsed (e.g. pre-migration
+    tuple-tagged YAML) or lacks the ``total_honeypots`` key, the underlying
+    exception propagates — no silent fallback.
+    """
     iter_dir = results_dir / f"iter_{iter_k}"
     candidates = list(iter_dir.glob("redteam/**/reward_config.yaml"))
     if not candidates:
         return None
-    try:
-        with candidates[0].open() as f:
-            cfg = yaml.safe_load(f)
-        return int(cfg.get("total_honeypots", 0)) or None
-    except Exception:
-        return None
+    cfg = load_reward_config(candidates[0])
+    return int(cfg["total_honeypots"]) or None
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +208,7 @@ def compute_iter_stats(
 _SEP = "=" * 60
 
 
-def _bar(pct: float, width: int = 20) -> str:
+def bar(pct: float, width: int = 20) -> str:
     filled = round(pct / 100 * width)
     return "#" * filled
 
@@ -247,7 +255,7 @@ def print_iter_stats(k: int, path: Path, stats: dict) -> None:
         count = conv_dist[length]
         pct = 100 * count / total_conv if total_conv else 0.0
         print(
-            f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {_bar(pct)}"
+            f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {bar(pct)}"
         )
 
     sql_len_dist = stats["conv_length_sql_dist"]
@@ -256,7 +264,7 @@ def print_iter_stats(k: int, path: Path, stats: dict) -> None:
         for length in sorted(sql_len_dist):
             count = sql_len_dist[length]
             pct = 100 * count / n_sql if n_sql else 0.0
-            print(f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {_bar(pct)}")
+            print(f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {bar(pct)}")
     else:
         print("    (none)")
 
@@ -266,7 +274,7 @@ def print_iter_stats(k: int, path: Path, stats: dict) -> None:
         for length in sorted(hp_len_dist):
             count = hp_len_dist[length]
             pct = 100 * count / n_hp if n_hp else 0.0
-            print(f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {_bar(pct)}")
+            print(f"    Length {length}: {count:>5}  ({pct:5.1f}%)  {bar(pct)}")
     else:
         print("    (none)")
 
@@ -322,6 +330,56 @@ def print_aggregate(iter_stats: dict[int, dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# High-level orchestration
+# ---------------------------------------------------------------------------
+
+
+def load_run_stats(results_dir: Path, *, progress: bool = False) -> dict:
+    """Discover iterations under ``results_dir`` and compute per-iter stats.
+
+    Returns a dict with keys:
+        ``results_dir`` (Path), ``logs`` (dict[int, Path] mapping iter index
+        to ``reward_debug.jsonl``), ``iter_stats`` (dict[int, dict] from
+        ``compute_iter_stats``), and ``total_honeypots`` (int | None — the
+        first non-None universe size discovered across iterations).
+
+    Raises ``FileNotFoundError`` if no ``iter_*/redteam`` debug logs are found.
+
+    When ``progress`` is True, prints the same per-iteration loading lines that
+    ``honeypot_stats.py`` has always emitted from its ``__main__`` path.
+    """
+    logs = find_iteration_logs(results_dir)
+    if not logs:
+        raise FileNotFoundError(
+            f"No iter_*/redteam debug logs found under {results_dir}"
+        )
+    if progress:
+        print(f"Found {len(logs)} iteration(s) in {results_dir}")
+
+    iter_stats: dict[int, dict] = {}
+    total_honeypots: int | None = None
+    for k, path in sorted(logs.items()):
+        if progress:
+            print(f"  [iter {k}] reading {path} ...", end=" ", flush=True)
+        records = load_records(path)
+        conversations = reconstruct_conversations(records)
+        total_hp = find_total_honeypots(results_dir, k)
+        if total_honeypots is None and total_hp:
+            total_honeypots = total_hp
+        stats = compute_iter_stats(conversations, total_hp)
+        iter_stats[k] = stats
+        if progress:
+            print(f"{len(records)} records → {len(conversations)} conversations")
+
+    return {
+        "results_dir": results_dir,
+        "logs": logs,
+        "iter_stats": iter_stats,
+        "total_honeypots": total_honeypots,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -332,26 +390,14 @@ def main() -> int:
     args = ap.parse_args()
 
     results_dir: Path = args.results_dir
-    logs = find_iteration_logs(results_dir)
-    if not logs:
-        print(
-            f"No iter_*/redteam debug logs found under {results_dir}",
-            file=sys.stderr,
-        )
+    try:
+        run = load_run_stats(results_dir, progress=True)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
         return 1
 
-    print(f"Found {len(logs)} iteration(s) in {results_dir}")
-
-    iter_stats: dict[int, dict] = {}
-    for k, path in sorted(logs.items()):
-        print(f"  [iter {k}] reading {path} ...", end=" ", flush=True)
-        records = load_records(path)
-        conversations = reconstruct_conversations(records)
-        total_hp = find_total_honeypots(results_dir, k)
-        stats = compute_iter_stats(conversations, total_hp)
-        iter_stats[k] = stats
-        print(f"{len(records)} records → {len(conversations)} conversations")
-
+    iter_stats = run["iter_stats"]
+    logs = run["logs"]
     for k, stats in sorted(iter_stats.items()):
         print_iter_stats(k, logs[k], stats)
 

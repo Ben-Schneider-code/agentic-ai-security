@@ -83,6 +83,7 @@ def _plateau_estimate(pts: list[dict]) -> tuple[float, float, int]:
 def plot_blue_convergence(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     """
     Plot blue team PVR_conv plateau and marginal efficiency bars.
@@ -123,7 +124,7 @@ def plot_blue_convergence(
         yerr = np.array([
             [v - l for v, l in zip(pvr, lo)],
             [h - v for v, h in zip(pvr, hi)],
-        ])
+        ]) if show_ci else None
 
         # ── Left: PVR_conv with plateau band ─────────────────────────────────
         ax_pvr.errorbar(
@@ -148,13 +149,14 @@ def plot_blue_convergence(
             plat_mean, color=BLUE_COL, linewidth=1.5, linestyle="--", zorder=2,
             label=f"Plateau mean ({plat_mean:.1f}%)",
         )
-        ax_pvr.fill_between(
-            [plateau_start_eis, extrap_end],
-            plat_mean - plat_std,
-            plat_mean + plat_std,
-            color=BLUE_COL, alpha=0.15, zorder=1,
-            label=f"±1σ  ({plat_std:.1f} pp)",
-        )
+        if show_ci:
+            ax_pvr.fill_between(
+                [plateau_start_eis, extrap_end],
+                plat_mean - plat_std,
+                plat_mean + plat_std,
+                color=BLUE_COL, alpha=0.15, zorder=1,
+                label=f"±1σ  ({plat_std:.1f} pp)",
+            )
         # Extrapolation arrow: "more compute doesn't push this lower"
         ax_pvr.annotate(
             "",

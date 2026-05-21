@@ -169,6 +169,7 @@ def compute_decomposition(selfplay_dir: str) -> dict[int, dict]:
 def plot_tier_decomposition(
     results: list[tuple[str, str]],
     out_path: str | Path = "figures/tier_pvr_decomposition.png",
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_path)
     label, selfplay_dir = results[0]
@@ -222,7 +223,7 @@ def plot_tier_decomposition(
                color=TIER_COLORS[t], label=TIER_LABELS[t],
                edgecolor="white", linewidth=0.4)
         # Error bars only for the largest tier (pii_dominant) for clarity
-        if t == "pii_dominant":
+        if t == "pii_dominant" and show_ci:
             errs = [
                 [max(0.0, pct - lo) for pct, lo in zip(tier_pvr[t], tier_lo[t])],
                 [max(0.0, hi - pct) for pct, hi in zip(tier_pvr[t], tier_hi[t])],

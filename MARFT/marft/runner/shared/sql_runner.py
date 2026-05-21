@@ -11,93 +11,6 @@ import matplotlib.pyplot as plt
 from marft.mas import MAS
 
 
-def _log_lure(
-    log_dir: str,
-    episode: int,
-    thread_idx: int,
-    honeypot_ids: list,
-    reward: float,
-    blueteam_context: tuple,
-    red_team_actions: list,
-):
-    """Append a lure entry to lure_log.jsonl for future Blue Team training."""
-    system_prompt, victim_conversation = blueteam_context
-    entry = {
-        "episode": episode,
-        "thread": thread_idx,
-        "honeypot_ids": honeypot_ids,
-        "reward": reward,
-        "blueteam_system_prompt": system_prompt,
-        "victim_conversation": victim_conversation,
-        "red_team_actions": red_team_actions,
-    }
-    lure_path = os.path.join(log_dir, "lure_log.jsonl")
-    with open(lure_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
-def _log_augmentation(
-    log_dir: str,
-    episode: int,
-    thread_idx: int,
-    coach_model: str,
-    action_details: list,
-    n_injected: int,
-):
-    """Append a coach augmentation event to coach_augment_log.jsonl.
-
-    Each record stores the full per-action detail: original text, every raw
-    variation the coach generated, and the quality-gate verdict (cosine_sim,
-    jaccard_sim, accepted/rejected reason) for each one.  Existing records are
-    never modified; the file is always opened in append mode.
-
-    Schema (one JSON object per line)::
-
-        {
-          "episode": int,
-          "thread": int,
-          "timestamp": str,          # ISO-8601 UTC
-          "coach_model": str,
-          "n_injected": int,
-          "actions": [
-            {
-              "original_action": str,
-              "raw_variations": [str, ...],   # all strings returned by coach
-              "stats": {
-                "total": int,
-                "passed": int,
-                "rejected_semantic": int,
-                "rejected_diversity": int,
-                "padded": int,              # slots filled with original
-                "details": [
-                  {
-                    "text":        str,
-                    "cosine_sim":  float | null,
-                    "jaccard_sim": float | null,
-                    "verdict":     "accepted" | "rejected",
-                    "reason":      "semantic" | "diversity" | null
-                  }, ...
-                ]
-              }
-            }, ...
-          ]
-        }
-    """
-    import datetime
-
-    entry = {
-        "episode": episode,
-        "thread": thread_idx,
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-        "coach_model": coach_model,
-        "n_injected": n_injected,
-        "actions": action_details,
-    }
-    log_path = os.path.join(log_dir, "coach_augment_log.jsonl")
-    with open(log_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
 class SQLRunner:
     """Runner class to perform training, evaluation. and data collection. See parent class for details."""
 
@@ -162,31 +75,9 @@ class SQLRunner:
         self._make_log_dir()
         self.writter = SummaryWriter(self.log_dir)
 
-        # Initialize SIL coach augmenter (Phase 2) if coach URL is configured
+        # SIL coach augmenter REMOVED in redesign (was a major source of OOM
+        # and complexity, often outweighing its marginal benefit).
         self.sil_augmenter = None
-        coach_url = getattr(self.all_args, "coach_vllm_url", None)
-        is_redteam = "blueteam" not in getattr(self.all_args, "env_name", "")
-        if coach_url and self.algo == "APPO" and is_redteam:
-            try:
-                from marft.coach import SILCoachAugmenter
-
-                coach_model = getattr(
-                    self.all_args,
-                    "coach_model_name",
-                    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-                )
-                self.sil_augmenter = SILCoachAugmenter(
-                    coach_model_name=coach_model,
-                    vllm_base_url=coach_url,
-                )
-                print(
-                    f"[Runner] SIL Phase 2 coach augmenter initialized: {coach_model} @ {coach_url}"
-                )
-            except Exception as e:
-                print(
-                    f"[Runner] WARNING: Failed to init SIL coach augmenter, using naive duplication: {e}"
-                )
-                self.sil_augmenter = None
 
         # Store resume state for training loop
         self.resume_state = config.get("resume_state", None)
@@ -263,61 +154,41 @@ class SQLRunner:
         # Dynamic config detection based on env_name
         env_name = getattr(self.all_args, "env_name", "")
         if "blueteam" in env_name:
-            from marft.envs.blueteam_sql.blueteam_sql_env import CONFIG as REWARD_CONFIG
+            from marft.envs.blueteam_sql.blueteam_sql_env import CONFIG as REWARD_CONFIG  # noqa: F401
 
-            try:
-                from marft.envs.blueteam_sql.blueteam_sql_env import get_total_honeypots
-
-                total_honeypots = get_total_honeypots()
-            except ImportError:
-                total_honeypots = 0
-        else:
-            from marft.envs.redteam_sql.redteam_sql_env import (
-                REWARD_CONFIG,
-                get_total_honeypots,
-            )
-
-            total_honeypots = get_total_honeypots()
+        from marft.envs.redteam_sql.redteam_sql_env import (
+            get_total_honeypots,
+            get_honeypot_type,
+        )
+        total_honeypots = get_total_honeypots()
+        honeypot_type = get_honeypot_type()
 
         print("[Runner] Starting environment reset...")
         next_obs = self.envs.reset()
         self.buffer.obs[self.buffer.cur_batch_index, 0] = next_obs.copy()
 
-        calculated_episodes = (
-            int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
+        # Termination is now driven SOLELY by num_env_steps. No max_episodes cap,
+        # no convergence-based early stop. The runner consumes the full env-step
+        # budget and exits cleanly.
+        episodes = max(
+            1,
+            int(self.num_env_steps) // self.episode_length // self.n_rollout_threads,
         )
-        # Cap at max_episodes from frozen config (auto-stop at configured limit)
-        # USER_REQUEST: Fix total number of episodes to max_episodes no matter what
-        episodes = REWARD_CONFIG.max_episodes
         print(
-            f"[Runner] Training for {episodes} TRAINING episodes (fixed to config max)"
+            f"[Runner] Training for {episodes} PPO updates "
+            f"(num_env_steps={self.num_env_steps}, episode_length={self.episode_length}, "
+            f"n_rollout_threads={self.n_rollout_threads})"
         )
-        if calculated_episodes < episodes:
-            print(
-                f"[Runner] WARNING: num_env_steps ({self.num_env_steps}) would imply fewer episodes ({calculated_episodes}). Forcing {episodes}."
-            )
 
         print(
             f"[Runner] Each training episode = {self.episode_length} steps; "
             f"environment episode horizon = {self.all_args.horizon} steps"
         )
         print(
-            f"[Runner] Expected ~{self.episode_length // self.all_args.horizon} environment episodes per training episode"
+            f"[Runner] Expected ~{self.episode_length // max(self.all_args.horizon, 1)} environment episodes per training episode"
         )
-        print(f"[Runner] Total honeypots to discover: {total_honeypots}")
+        print(f"[Runner] HONEYPOT_TYPE arm: {honeypot_type} (universe size: {total_honeypots})")
 
-        # Pre-compute SIL info for startup summary
-        _sil_enabled = (
-            getattr(self.all_args, "enable_sil", False)
-            and "blueteam" not in env_name
-        )
-        if self.sil_augmenter:
-            _coach_summary = (
-                f"{getattr(self.all_args, 'coach_model_name', 'N/A')}"
-                f" @ {getattr(self.all_args, 'coach_vllm_url', 'N/A')}"
-            )
-        else:
-            _coach_summary = "None"
         print("=" * 60)
         print("[Runner] === TRAINING CONFIGURATION ===")
         print(f"  env_name:          {env_name}")
@@ -326,11 +197,10 @@ class SQLRunner:
         print(f"  n_rollout_threads: {self.n_rollout_threads}")
         print(f"  episode_length:    {self.episode_length}")
         print(f"  horizon:           {self.all_args.horizon}")
-        print(f"  max_episodes:      {episodes}")
+        print(f"  num_env_steps:     {self.num_env_steps}")
+        print(f"  ppo_updates:       {episodes}")
+        print(f"  honeypot_type:     {honeypot_type}")
         print(f"  total_honeypots:   {total_honeypots}")
-        print(f"  enable_sil:        {_sil_enabled}")
-        print(f"  sil_coach:         {_coach_summary}")
-        print(f"  oversample_factor: {getattr(self.all_args, 'oversample_factor', 5)}")
         print(f"  normalization:     {self.all_args.normalization_mode}")
         print(f"  load_in_4bit:      {getattr(self.all_args, 'load_in_4bit', False)}")
         print(f"  load_path:         {self.all_args.load_path}")
@@ -397,14 +267,6 @@ class SQLRunner:
             torch.cuda.empty_cache()
             self._log_gpu_memory("episode_start", total_num_steps)
 
-            # --- Self-Imitation Learning: track successful trajectories ---
-            enable_sil = (
-                getattr(self.all_args, "enable_sil", False)
-                and "blueteam" not in getattr(self.all_args, "env_name", "")
-            )
-            oversample_factor = getattr(self.all_args, "oversample_factor", 5)
-            sil_successes = []  # list of (thread_idx, step, reward)
-
             self.trainer.prep_rollout()
             for step in range(self.episode_length):
                 print(
@@ -466,60 +328,6 @@ class SQLRunner:
                                 "terminal_success", 1.0, global_step
                             )
 
-                            # === SELF-IMITATION LEARNING: capture successful trajectory ===
-                            if enable_sil and self.algo == "APPO":
-                                sil_successes.append(
-                                    {
-                                        "thread_idx": i,
-                                        "success_step": step,
-                                        "reward": float(episodic_return),
-                                    }
-                                )
-                                # print(  # aggregate in TensorBoard sil/successes_captured
-                                #     f"[SIL] Captured successful trajectory: "
-                                #     f"thread={i}, step={step}, reward={episodic_return:.2f}"
-                                # )
-
-                                # Log lure context for future Blue Team training
-                                try:
-                                    if hasattr(self.envs, "envs") and i < len(
-                                        self.envs.envs
-                                    ):
-                                        env = self.envs.envs[i]
-                                        if hasattr(env, "get_blueteam_context"):
-                                            bt_context = env.get_blueteam_context()
-                                            # Collect red team actions from buffer
-                                            # Use episode_length to slice only the
-                                            # current env episode's steps, not all
-                                            # training-window steps 0..step.
-                                            batch = self.buffer.cur_batch_index
-                                            red_actions = []
-                                            ep_len = env_episode_length if isinstance(env_episode_length, int) else (step + 1)
-                                            ep_start = max(0, step + 1 - ep_len)
-                                            for s in range(ep_start, step + 1):
-                                                act = self.buffer.actions[
-                                                    batch, s, i, :
-                                                ]
-                                                red_actions.append(
-                                                    [str(a) for a in act]
-                                                )
-                                            episode_hp_ids = []
-                                            if hasattr(self.envs, "envs") and i < len(self.envs.envs):
-                                                env_i = self.envs.envs[i]
-                                                if hasattr(env_i, "episode_honeypot_ids"):
-                                                    episode_hp_ids = list(env_i.episode_honeypot_ids)
-                                            _log_lure(
-                                                self.log_dir,
-                                                episode,
-                                                i,
-                                                episode_hp_ids,
-                                                float(episodic_return),
-                                                bt_context,
-                                                red_actions,
-                                            )
-                                except Exception as e:
-                                    print(f"[SIL] Warning: Failed to log lure: {e}")
-
                         # Log episode length for analysis
                         if env_episode_length is not None and env_episode_length != "?":
                             self.writter.add_scalar(
@@ -534,170 +342,6 @@ class SQLRunner:
                         #     self._save_reward_plot(all_episodic_returns)
 
             self._log_gpu_memory("post_rollout", total_num_steps)
-
-            # === SELF-IMITATION LEARNING: inject oversampled copies into on-policy batch ===
-            if sil_successes and enable_sil and self.algo == "APPO":
-                batch = self.buffer.cur_batch_index
-                total_injected = 0
-                for traj_info in sil_successes:
-                    tid = traj_info["thread_idx"]
-                    traj_injected = 0
-
-                    # Phase 2: Use SIL coach augmenter for diverse variations
-                    if self.sil_augmenter is not None:
-                        try:
-                            # Collect the successful action texts
-                            success_step = traj_info["success_step"]
-                            action_texts = []
-                            for s in range(self.episode_length):
-                                act = self.buffer.actions[batch, s, tid, :]
-                                action_texts.append([str(a) for a in act])
-
-                            # Generate diverse variations via 32B coach
-                            flat_actions = [
-                                acts[0] for acts in action_texts[: success_step + 1]
-                            ]
-                            augmented, action_details = (
-                                self.sil_augmenter.augment_redteam_trajectory_sync(
-                                    flat_actions, oversample_factor
-                                )
-                            )
-
-                            # --- CHUNKED scoring: one variation at a time to avoid OOM ---
-                            # GPU 2 already holds the student model + critic (~65 GB).
-                            # Scoring all variations at once causes OOM, so we process
-                            # each variation individually (episode_length items per pass).
-                            torch.cuda.empty_cache()
-
-                            step_obs = self.buffer.obs[
-                                batch, : self.episode_length, tid, :
-                            ].copy()
-
-                            for var_actions in augmented:
-                                padded_actions = (
-                                    list(var_actions) + flat_actions[len(var_actions) :]
-                                )
-                                while len(padded_actions) < self.episode_length:
-                                    padded_actions.append("")
-                                text_actions_2d = [
-                                    [a] * self.num_agents for a in padded_actions
-                                ]
-
-                                # Score this single variation (episode_length items)
-                                var_tokens, var_log_probs, var_value_preds = (
-                                    self.mas.tokenize_and_score_actions(
-                                        step_obs, text_actions_2d
-                                    )
-                                )
-
-                                trajectory_data = {
-                                    "obs": self.buffer.obs[batch, :, tid, :].copy(),
-                                    "actions": np.array(text_actions_2d, dtype=object),
-                                    "rollout_obs": self.buffer.rollout_obs[
-                                        batch, :, tid, :
-                                    ].copy(),
-                                    "rewards": self.buffer.rewards[
-                                        batch, :, tid, :
-                                    ].copy(),
-                                    "masks": self.buffer.masks[batch, :, tid, :].copy(),
-                                    "action_tokens": var_tokens,
-                                    "log_probs": var_log_probs,
-                                    "value_preds": var_value_preds,
-                                }
-                                inj = self.buffer.sil_inject(
-                                    trajectory_data, 1
-                                )
-                                traj_injected += inj
-                                total_injected += inj
-
-                            # print(  # aggregate in TensorBoard sil/copies_injected
-                            #     f"[SIL] Phase 2: Injected {traj_injected} augmented copies "
-                            #     f"for thread {tid} (reward={traj_info['reward']:.2f})"
-                            # )
-
-                            # Write structured debug log for this augmentation event
-                            try:
-                                coach_model_name = getattr(
-                                    self.all_args,
-                                    "coach_model_name",
-                                    "unknown",
-                                )
-                                _log_augmentation(
-                                    self.log_dir,
-                                    episode,
-                                    tid,
-                                    coach_model_name,
-                                    action_details,
-                                    traj_injected,
-                                )
-                            except Exception as log_err:
-                                print(
-                                    f"[SIL] Warning: Failed to write coach_augment_log: {log_err}"
-                                )
-                        except Exception as e:
-                            print(
-                                f"[SIL] Phase 2 augmentation failed, falling back to naive: {e}"
-                            )
-                            # Fall back to Phase 1 naive duplication
-                            trajectory_data = {
-                                "obs": self.buffer.obs[batch, :, tid, :].copy(),
-                                "actions": self.buffer.actions[batch, :, tid, :].copy(),
-                                "rollout_obs": self.buffer.rollout_obs[
-                                    batch, :, tid, :
-                                ].copy(),
-                                "rewards": self.buffer.rewards[batch, :, tid, :].copy(),
-                                "masks": self.buffer.masks[batch, :, tid, :].copy(),
-                                "action_tokens": self.buffer.action_tokens[
-                                    batch, :, tid, :, :
-                                ].copy(),
-                                "log_probs": self.buffer.action_level_log_probs[
-                                    batch, :, tid, :
-                                ].copy(),
-                                "value_preds": self.buffer.action_level_v_values[
-                                    batch, : self.episode_length, tid, :
-                                ].copy(),
-                            }
-                            injected = self.buffer.sil_inject(
-                                trajectory_data, oversample_factor
-                            )
-                            total_injected += injected
-                    else:
-                        # Phase 1: Naive duplication
-                        trajectory_data = {
-                            "obs": self.buffer.obs[batch, :, tid, :].copy(),
-                            "actions": self.buffer.actions[batch, :, tid, :].copy(),
-                            "rollout_obs": self.buffer.rollout_obs[
-                                batch, :, tid, :
-                            ].copy(),
-                            "rewards": self.buffer.rewards[batch, :, tid, :].copy(),
-                            "masks": self.buffer.masks[batch, :, tid, :].copy(),
-                            "action_tokens": self.buffer.action_tokens[
-                                batch, :, tid, :, :
-                            ].copy(),
-                            "log_probs": self.buffer.action_level_log_probs[
-                                batch, :, tid, :
-                            ].copy(),
-                            "value_preds": self.buffer.action_level_v_values[
-                                batch, : self.episode_length, tid, :
-                            ].copy(),
-                        }
-                        injected = self.buffer.sil_inject(
-                            trajectory_data, oversample_factor
-                        )
-                        total_injected += injected
-                        # print(  # aggregate in TensorBoard sil/copies_injected
-                        #     f"[SIL] Phase 1: Injected {injected}/{oversample_factor} copies "
-                        #     f"for thread {tid} (reward={traj_info['reward']:.2f})"
-                        # )
-
-                self.writter.add_scalar(
-                    "sil/successes_captured",
-                    len(sil_successes),
-                    total_num_steps,
-                )
-                self.writter.add_scalar(
-                    "sil/copies_injected", total_injected, total_num_steps
-                )
 
             print(
                 f"[Ep {episode+1}/{episodes}] PPO update starting...",
@@ -715,78 +359,11 @@ class SQLRunner:
                 flush=True,
             )
 
+            # No early-stop / convergence checks. The runner consumes the entire
+                # num_env_steps budget. Tracking honeypot discovery for stdout reporting only.
             current_honeypot_count = (
                 len(self.shared_honeypots) if self.shared_honeypots else 0
             )
-            if current_honeypot_count > self.last_honeypot_count:
-                self.last_honeypot_count = current_honeypot_count
-                self.last_honeypot_step = total_num_steps
-
-            if total_honeypots > 0:
-                if current_honeypot_count >= total_honeypots:
-                    self.exit_reason = "all_honeypots_accessed"
-                    self._should_stop_early = True
-                elif total_num_steps - self.last_honeypot_step >= 1000:
-                    self.exit_reason = "no_new_honeypot_for_1000_steps"
-                    self._should_stop_early = True
-            elif "blueteam" in env_name:
-                # ──────────────────────────────────────────────────────────
-                # Blueteam halting logic (total_honeypots == 0 branch)
-                # All thresholds read from REWARD_CONFIG (single source of truth).
-                # BLUETEAM_DISABLE_EARLY_STOP=1 bypasses convergence-based halts
-                # (decisive_win and plateau) while keeping the hard episode cap,
-                # so the full training budget is always consumed. Default (unset)
-                # preserves existing behaviour exactly.
-                # ──────────────────────────────────────────────────────────
-                _disable_convergence = os.environ.get("BLUETEAM_DISABLE_EARLY_STOP", "") == "1"
-
-                if not _disable_convergence:
-                    _dw_thresh = REWARD_CONFIG.decisive_win_threshold
-                    _dw_win = REWARD_CONFIG.decisive_win_window
-
-                    if len(all_episodic_returns) >= _dw_win:
-                        recent_returns = all_episodic_returns[-_dw_win:]
-                        avg_return = float(np.mean(recent_returns))
-                        if avg_return >= _dw_thresh:
-                            self.exit_reason = "blueteam_decisive_win"
-                            self._should_stop_early = True
-                            print(
-                                f"\n[Runner] blueteam_decisive_win: rolling-{_dw_win} avg "
-                                f"= {avg_return:.4f} >= {_dw_thresh} → halting."
-                            )
-
-                    # Plateau logic
-                    _plat_win = REWARD_CONFIG.plateau_window
-                    _plat_min = REWARD_CONFIG.plateau_min_improvement
-                    if (
-                        not self._should_stop_early
-                        and len(all_episodic_returns) >= _plat_win * 2
-                    ):
-                        recent_avg = float(np.mean(all_episodic_returns[-_plat_win:]))
-                        past_avg = float(
-                            np.mean(
-                                all_episodic_returns[-_plat_win * 2 : -_plat_win]
-                            )
-                        )
-                        if recent_avg - past_avg < _plat_min:
-                            self.exit_reason = "blueteam_plateaued"
-                            self._should_stop_early = True
-                            print(
-                                f"\n[Runner] blueteam_plateaued: recent={recent_avg:.4f} "
-                                f"past={past_avg:.4f} improvement={recent_avg - past_avg:.4f} < {_plat_min} → halting."
-                            )
-
-                # Hard episode limit — always enforced regardless of BLUETEAM_DISABLE_EARLY_STOP.
-                # BLUETEAM_MAX_TRAINING_EPISODES env var overrides the config default
-                # (used by ablations to cap training at a reduced budget).
-                _max_eps_override = os.environ.get("BLUETEAM_MAX_TRAINING_EPISODES", "")
-                _max_eps = int(_max_eps_override) if _max_eps_override else REWARD_CONFIG.max_training_episodes
-                if not self._should_stop_early and (episode + 1) >= _max_eps:
-                    self.exit_reason = "blueteam_max_episodes_reached"
-                    self._should_stop_early = True
-                    print(
-                        f"\n[Runner] blueteam_max_episodes_reached: {episode + 1} >= {_max_eps} → halting."
-                    )
 
             # save model and training state
             step_increment = self.episode_length * self.n_rollout_threads
@@ -813,43 +390,44 @@ class SQLRunner:
                     self.buffer.rewards[self.buffer.pre_batch_index, :, :, -1]
                 )
 
-                # GRPO-specific: log fraction of zero-variance groups
-                if self.algo == "GRPO" and "frac_reward_zero_std" in train_infos:
-                    progress_bar.set_description(
-                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
-                        f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | "
-                        f"zero_var: {train_infos['frac_reward_zero_std']:.2%}"
-                    )
-                elif "blueteam" in env_name:
-                    # Compute and show blueteam decisive-win metric in progress bar
-                    _n_ep = len(all_episodic_returns)
-                    _pbar_dw_win = REWARD_CONFIG.decisive_win_window
-                    _pbar_dw_thr = REWARD_CONFIG.decisive_win_threshold
-                    if _n_ep >= _pbar_dw_win:
-                        _dw_avg = float(np.mean(all_episodic_returns[-_pbar_dw_win:]))
-                        _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr}"
-                    else:
-                        _dw_avg = float(np.mean(all_episodic_returns)) if _n_ep > 0 else 0.0
-                        _dw_str = f"dw_avg={_dw_avg:.3f}/{_pbar_dw_thr} ({_n_ep}<{_pbar_dw_win}ep)"
-                    progress_bar.set_description(
-                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
-                        f"discovered: {len(self.shared_honeypots)}/{total_honeypots} | {_dw_str}"
-                    )
-                else:
-                    progress_bar.set_description(
-                        f"Ep {episode}/{episodes} | steps: {total_num_steps} | reward: {avg_step_reward:.4f} | "
-                        f"reward_avg: {float(np.mean(all_episodic_returns)):.4f}"
-                    )
+                progress_bar.set_description(
+                    f"Ep {episode}/{episodes} | steps: {total_num_steps} | "
+                    f"reward: {avg_step_reward:.4f} | "
+                    f"discovered: {current_honeypot_count}/{total_honeypots} | "
+                    f"reward_avg: {float(np.mean(all_episodic_returns)) if all_episodic_returns else 0:.4f}"
+                )
                 train_infos["average_step_rewards"] = avg_step_reward
                 self.log_train(train_infos, total_num_steps)
             progress_bar.update(1)
+
+            # === Per-epoch security metrics: PVR / BRR / honeypot-found ===
+            # Read from reward_debug.jsonl (env writes one line per turn) and
+            # print + persist a one-line summary to summary.jsonl.
+            try:
+                from util.metrics import emit_per_epoch_metrics
+                reward_debug_path = os.path.join(self.log_dir, "reward_debug.jsonl")
+                summary = emit_per_epoch_metrics(
+                    reward_debug_path,
+                    prefix=f"[METRICS Ep {episode+1}/{episodes}]",
+                )
+                if summary:
+                    summary["episode"] = episode
+                    summary["total_num_steps"] = total_num_steps
+                    summary["honeypot_type"] = honeypot_type
+                    summary["env_name"] = env_name
+                    sj_path = os.path.join(self.log_dir, "summary.jsonl")
+                    with open(sj_path, "a") as f:
+                        f.write(json.dumps(summary) + "\n")
+            except Exception as metric_err:
+                print(f"[Runner] WARNING: per-epoch metrics emit failed: {metric_err}")
 
             if self.all_args.use_eval and episode % self.all_args.eval_interval == 0:
                 self.eval(total_num_steps)
 
             if self._should_stop_early:
+                # Only fired by graceful_stop() / emergency_save(); no convergence-based stops.
                 print(
-                    f"\n[Runner] Graceful early stop triggered at episode {episode}. Reason: {self.exit_reason}. Exiting training loop."
+                    f"\n[Runner] Forced stop at episode {episode}. Reason: {self.exit_reason}."
                 )
                 break
 

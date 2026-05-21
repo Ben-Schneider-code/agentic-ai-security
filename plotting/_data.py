@@ -295,6 +295,54 @@ def load_benign_eval_per_turn(selfplay_dir: str) -> "dict[int, list[dict]]":
     return result
 
 
+def load_cross_eval_benign_per_turn(
+    selfplay_dir: str, subdir: str = "cross_eval"
+) -> "dict[int, list[dict]]":
+    """
+    Load per-turn rows from <selfplay_dir>/<subdir>/benign_only/blue_*/reward_debug.jsonl.
+
+    These are the benign turns collected as part of the cross-eval pass (one
+    benign run per blue checkpoint, independent of red). Returns {blue_iter:
+    [row, ...]}; rows are filtered to turn_type == "benign" when the field is
+    present, else kept as-is (the directory is benign-only by construction).
+    Falls back to <subdir>_quick if the primary subdir is absent.
+    """
+    base_root = Path(selfplay_dir)
+    base: Path | None = None
+    for candidate in (subdir, f"{subdir}_quick"):
+        cand = base_root / candidate / "benign_only"
+        if cand.is_dir():
+            base = cand
+            break
+    if base is None:
+        return {}
+
+    result: dict[int, list[dict]] = {}
+    for entry in sorted(base.iterdir()):
+        m = re.match(r"^blue_(\d+)$", entry.name)
+        if not m:
+            continue
+        iter_num = int(m.group(1))
+        jsonl = entry / "reward_debug.jsonl"
+        if not jsonl.is_file():
+            continue
+        rows: list[dict] = []
+        with open(jsonl) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                tt = r.get("turn_type")
+                if tt is None or tt == "benign":
+                    rows.append(r)
+        result[iter_num] = rows
+    return result
+
+
 def load_train_rollout_benign_turns(selfplay_dir: str) -> "dict[int, list[dict]]":
     """
     Load training-time benign turns from iter_*/blueteam/**/debug_logs/reward_debug.jsonl.

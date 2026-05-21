@@ -116,6 +116,7 @@ def plot_security_utility_pareto(
     out_path: str | Path,
     cross_eval_subdir: str = "cross_eval",
     annotate_iters: bool = True,
+    show_ci: bool = True,
 ) -> Path:
     """Plot Security–Utility Pareto frontier for all checkpoints. Returns resolved Path.
 
@@ -206,19 +207,20 @@ def plot_security_utility_pareto(
         ax.plot(fu, fs, color=color, linewidth=2, alpha=0.9, zorder=3)
 
         # Error bars on Pareto points only
-        sec_yerr = _ci_to_yerr(ps, [p["security_ci"] for p in pareto_pts])
-        util_xerr = _ci_to_yerr(pu, [p["utility_ci"] for p in pareto_pts])
-        if sec_yerr is not None or util_xerr is not None:
-            ax.errorbar(
-                pu, ps,
-                yerr=sec_yerr,
-                xerr=util_xerr,
-                fmt="none",
-                color=color,
-                capsize=4,
-                linewidth=1.2,
-                zorder=3,
-            )
+        if show_ci:
+            sec_yerr = _ci_to_yerr(ps, [p["security_ci"] for p in pareto_pts])
+            util_xerr = _ci_to_yerr(pu, [p["utility_ci"] for p in pareto_pts])
+            if sec_yerr is not None or util_xerr is not None:
+                ax.errorbar(
+                    pu, ps,
+                    yerr=sec_yerr,
+                    xerr=util_xerr,
+                    fmt="none",
+                    color=color,
+                    capsize=4,
+                    linewidth=1.2,
+                    zorder=3,
+                )
 
         # Iteration labels on Pareto points only
         if annotate_iters:

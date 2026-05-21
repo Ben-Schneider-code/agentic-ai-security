@@ -111,6 +111,7 @@ def make_train_env(all_args, shared_honeypots=None):
                 max_tokens=all_args.victim_max_tokens,
                 opponent_model_name=getattr(all_args, "opponent_model_name", None),
                 opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
+                seed=all_args.seed,
             )
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -144,6 +145,7 @@ def make_eval_env(all_args):
                 max_tokens=all_args.victim_max_tokens,
                 opponent_model_name=getattr(all_args, "opponent_model_name", None),
                 opponent_lora_path=getattr(all_args, "opponent_lora_path", None),
+                seed=all_args.seed,
                 # Reward config now uses frozen REWARD_CONFIG - no CLI args
             )
             env.seed(all_args.seed + rank * 5000)
@@ -157,9 +159,58 @@ def make_eval_env(all_args):
 
 
 def parse_args(args, parser):
+    # Ablation knobs added by the redesign. We register them on the existing
+    # parser so they show up in --help and feed through to env construction
+    # (via env vars set immediately after parse).
+    parser.add_argument(
+        "--vanilla-size",
+        type=int,
+        default=None,
+        help="Number of plain-style benign queries used for blue training.",
+    )
+    parser.add_argument(
+        "--bordercase-size",
+        type=int,
+        default=None,
+        help="Number of adversarial-style (legitimate) benign queries used for blue training.",
+    )
+    parser.add_argument(
+        "--honeypot-type",
+        choices=["rowcol", "row", "col"],
+        default=None,
+        help="Honeypot ablation arm. Default rowcol (full universe).",
+    )
+    parser.add_argument(
+        "--red-lora-pool",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of red LoRA adapter names (matching --lora-modules) "
+            "for blue history-based training. e.g. 'red_iter_1,red_iter_2'."
+        ),
+    )
+    parser.add_argument(
+        "--opponent-sampler-seed",
+        type=int,
+        default=None,
+        help="Seed for the per-env opponent sampler RNG (combines with rank).",
+    )
     all_args = parser.parse_known_args(args)[0]
-    # Use full model identifier for vLLM (not just last path component)
     all_args.base_model = all_args.model_name_or_path
+
+    # Translate ablation flags to env vars so the BlueTeamSQLEnv (constructed
+    # below in make_train_env) picks them up at __init__.
+    if all_args.honeypot_type is not None:
+        os.environ["HONEYPOT_TYPE"] = all_args.honeypot_type
+    if all_args.vanilla_size is not None:
+        os.environ["VANILLA_BENIGN_SIZE"] = str(all_args.vanilla_size)
+    if all_args.bordercase_size is not None:
+        os.environ["BORDERCASE_BENIGN_SIZE"] = str(all_args.bordercase_size)
+    if all_args.red_lora_pool:
+        os.environ["REDTEAM_LORA_POOL"] = all_args.red_lora_pool
+    if all_args.opponent_sampler_seed is not None:
+        os.environ["OPPONENT_SAMPLER_SEED"] = str(all_args.opponent_sampler_seed)
+
     return all_args
 
 
@@ -169,16 +220,31 @@ def save_args_to_yaml(args, filename="args.yaml"):
         yaml.dump(vars(args), f, default_flow_style=False, sort_keys=False)
 
 
+def _to_yaml_safe(obj):
+    """Recursively convert tuples to lists so yaml.safe_dump accepts the value.
+
+    RewardConfig uses tuple-typed fields for immutability. Without this,
+    yaml.dump emits ``!!python/tuple`` tags that yaml.safe_load rejects.
+    """
+    if isinstance(obj, tuple):
+        return [_to_yaml_safe(v) for v in obj]
+    if isinstance(obj, list):
+        return [_to_yaml_safe(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _to_yaml_safe(v) for k, v in obj.items()}
+    return obj
+
+
 def save_reward_config_to_yaml(run_dir, all_args):
     """Save immutable reward config to YAML for reproducibility."""
     _, REWARD_CONFIG, get_total_honeypots = get_env_components(all_args.env_name)
 
     config_dict = dataclasses.asdict(REWARD_CONFIG)
-    # Add computed properties that aren't fields in the dataclass
     config_dict["total_honeypots"] = get_total_honeypots()
+    config_dict = _to_yaml_safe(config_dict)
 
     with open(run_dir / "reward_config.yaml", "w") as f:
-        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
 def _checkpoint_is_complete(folder: Path) -> bool:

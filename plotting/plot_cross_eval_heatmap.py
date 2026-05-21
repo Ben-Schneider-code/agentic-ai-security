@@ -45,7 +45,6 @@ try:
         load_cross_eval_results,
         load_pairing_metrics_with_decomposed,
         parse_results_arg,
-        FIG_SIZE_SINGLE,
         build_diagonal_matrix,
     )
 except ImportError:
@@ -55,7 +54,6 @@ except ImportError:
         load_cross_eval_results,
         load_pairing_metrics_with_decomposed,
         parse_results_arg,
-        FIG_SIZE_SINGLE,
         build_diagonal_matrix,
     )
 
@@ -180,6 +178,7 @@ def _render_heatmap_axes(
     cmap: str = "YlOrRd",
     show_marginals: bool = True,
     unbounded: bool = False,
+    clim: tuple[float, float] | None = None,
 ) -> None:
     """
     Render a metric heatmap onto an existing (fig, ax).
@@ -187,6 +186,9 @@ def _render_heatmap_axes(
     Handles cell annotation (value + Wilson CI + asterisk), diagonal borders,
     optional row/col means, axis labels, title, and colorbar.
     All parameters after the matrices are keyword-only.
+
+    clim: explicit (vmin, vmax) color limits. When given (e.g. shared across a
+          row of replicate panels) it overrides the per-matrix auto-range.
     """
     row_means = np.nanmean(mat, axis=1)
     col_means = np.nanmean(mat, axis=0)
@@ -194,7 +196,9 @@ def _render_heatmap_axes(
 
     vmin = float(np.nanmin(mat)) if not np.all(np.isnan(mat)) else 0.0
     vmax = float(np.nanmax(mat)) if not np.all(np.isnan(mat)) else 100.0
-    if unbounded:
+    if clim is not None:
+        im_vmin, im_vmax = clim
+    elif unbounded:
         im_vmin = max(0.0, vmin - (vmax - vmin) * 0.05)
         im_vmax = vmax + (vmax - vmin) * 0.05
     else:
@@ -370,6 +374,20 @@ def _render_heatmap_axes(
 # ---------------------------------------------------------------------------
 
 
+def _shared_clim(
+    mats: list[np.ndarray], unbounded: bool
+) -> tuple[float, float]:
+    """Color limits shared across a row of replicate panels."""
+    finite = np.concatenate([m[~np.isnan(m)].ravel() for m in mats]) if mats else np.array([])
+    if finite.size == 0:
+        return 0.0, 100.0
+    vmin, vmax = float(finite.min()), float(finite.max())
+    if unbounded:
+        pad = (vmax - vmin) * 0.05
+        return max(0.0, vmin - pad), vmax + pad
+    return max(0.0, vmin - 2.0), min(100.0, vmax + 2.0)
+
+
 def plot_heatmap(
     results: list[tuple[str, str]],
     out_path: str | Path,
@@ -382,51 +400,82 @@ def plot_heatmap(
 
     subdir: one of "cross_eval", "cross_eval_quick", "diagonal_eval".
     metric: "asr" (PVR_conv) or "pvr_turn" (PVR_turn).
-    Only the first result entry is used.
+    Every result entry is rendered as its own side-by-side panel, sharing a
+    common color scale so replicates are directly comparable.
     """
     out_path = Path(out_path)
-    if len(results) > 1:
-        print(
-            "[plot_heatmap] Multiple runs given; using first run only.",
-            file=sys.stderr,
-        )
+    mm = _METRIC_META[metric]
+    sd_desc = _SUBDIR_META.get(subdir, subdir)
 
-    _label, selfplay_dir = results[0]
-    cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
-    if cross_eval is None:
+    # Load each replicate up front so the shared color scale can be computed.
+    panels: list[dict] = []
+    for label, selfplay_dir in results:
+        cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
+        if cross_eval is None:
+            print(
+                f"[plot_heatmap] No data for subdir={subdir!r} in {selfplay_dir}.",
+                file=sys.stderr,
+            )
+            panels.append({"label": label, "data": None})
+            continue
+        mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters = build_pvr_matrix(
+            cross_eval, metric=metric
+        )
+        # Derive actual ep/cell (median n_attack_episodes across pairings).
+        pairings_data = cross_eval.get("pairings", {})
+        ep_counts = [
+            v.get("n_attack_episodes", 0)
+            for v in pairings_data.values()
+            if v.get("n_attack_episodes")
+        ]
+        ep_note = (
+            f"{int(sorted(ep_counts)[len(ep_counts) // 2])} ep/cell" if ep_counts else ""
+        )
+        panels.append({
+            "label": label,
+            "data": (mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters),
+            "ep_note": ep_note,
+        })
+
+    if not any(p["data"] for p in panels):
         print(
-            f"[plot_heatmap] No data for subdir={subdir!r} in {selfplay_dir}.",
+            f"[plot_heatmap] No data for subdir={subdir!r} in any replicate.",
             file=sys.stderr,
         )
         return out_path
 
-    mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters = build_pvr_matrix(
-        cross_eval, metric=metric
-    )
-    mm = _METRIC_META[metric]
-    sd_desc = _SUBDIR_META.get(subdir, subdir)
-
-    # Derive actual ep/cell from data (median n_attack_episodes across pairings)
-    pairings_data = cross_eval.get("pairings", {})
-    ep_counts = [v.get("n_attack_episodes", 0) for v in pairings_data.values() if v.get("n_attack_episodes")]
-    ep_note = f"{int(sorted(ep_counts)[len(ep_counts)//2])} ep/cell" if ep_counts else ""
-    sd_full = f"{sd_desc} ({ep_note})" if ep_note else sd_desc
-
-    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
-    _render_heatmap_axes(
-        fig,
-        ax,
-        mat,
-        ci_lo_mat,
-        ci_hi_mat,
-        red_iters,
-        blue_iters,
-        title=f"Heatmap: {mm['display']} — {sd_full}\n({mm['note']})",
-        metric_label=mm["label"],
-        cmap=mm["cmap"],
-        show_marginals=True,
+    clim = _shared_clim(
+        [p["data"][0] for p in panels if p["data"]],
         unbounded=mm.get("unbounded", False),
     )
+
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(7.3 * n, 4.8), squeeze=False)
+    for ax, p in zip(axes[0], panels):
+        if not p["data"]:
+            ax.text(0.5, 0.5, f"{p['label']}\n(no data)", ha="center", va="center",
+                    transform=ax.transAxes, color="#888888")
+            ax.set_axis_off()
+            continue
+        mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters = p["data"]
+        sd_full = f"{sd_desc} ({p['ep_note']})" if p["ep_note"] else sd_desc
+        _render_heatmap_axes(
+            fig,
+            ax,
+            mat,
+            ci_lo_mat,
+            ci_hi_mat,
+            red_iters,
+            blue_iters,
+            title=f"{p['label']} — {sd_full}",
+            metric_label=mm["label"],
+            cmap=mm["cmap"],
+            show_marginals=True,
+            unbounded=mm.get("unbounded", False),
+            clim=clim,
+        )
+
+    fig.suptitle(f"Heatmap: {mm['display']} — {sd_desc}  ({mm['note']})", fontsize=11)
     fig.tight_layout(pad=0.4)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path)
@@ -444,42 +493,66 @@ def plot_training_diagonal(
     Each cell (N, N) shows PVR_conv computed by compute_pairing_metrics on all
     non-eval training records (is_eval=False) — identical episode-level
     definition to the cross_eval heatmap. Uses 99% Wilson CIs.
-    Only the first result entry is used.
+    Every result entry is rendered as its own side-by-side panel.
     """
     out_path = Path(out_path)
-    if len(results) > 1:
-        print(
-            "[plot_training_diagonal] Multiple runs given; using first run only.",
-            file=sys.stderr,
-        )
 
-    _label, selfplay_dir = results[0]
-    mat, ci_lo_mat, ci_hi_mat, iter_nums, metric_label = build_diagonal_matrix(
-        selfplay_dir, source="training"
-    )
-    if not iter_nums:
+    panels: list[dict] = []
+    metric_label = "PVR_conv"
+    for label, selfplay_dir in results:
+        mat, ci_lo_mat, ci_hi_mat, iter_nums, m_label = build_diagonal_matrix(
+            selfplay_dir, source="training"
+        )
+        if not iter_nums:
+            print(
+                f"[plot_training_diagonal] No blueteam training data in {selfplay_dir}.",
+                file=sys.stderr,
+            )
+            panels.append({"label": label, "data": None})
+            continue
+        metric_label = m_label
+        panels.append({
+            "label": label,
+            "data": (mat, ci_lo_mat, ci_hi_mat, iter_nums),
+        })
+
+    if not any(p["data"] for p in panels):
         print(
-            f"[plot_training_diagonal] No blueteam training data in {selfplay_dir}.",
+            "[plot_training_diagonal] No blueteam training data in any replicate.",
             file=sys.stderr,
         )
         return out_path
 
-    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
-    _render_heatmap_axes(
-        fig,
-        ax,
-        mat,
-        ci_lo_mat,
-        ci_hi_mat,
-        iter_nums,
-        iter_nums,
-        title=(
-            r"Training Diagonal: $\mathrm{PVR_{conv}}$ (%) — co-evolved pairings"
-            "\n(all training episodes, is_eval=False; 99% CI; darker = higher attack success)"
-        ),
-        metric_label=f"{metric_label} (%)",
-        cmap="YlOrRd",
-        show_marginals=False,
+    clim = _shared_clim([p["data"][0] for p in panels if p["data"]], unbounded=False)
+
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(7.3 * n, 4.8), squeeze=False)
+    for ax, p in zip(axes[0], panels):
+        if not p["data"]:
+            ax.text(0.5, 0.5, f"{p['label']}\n(no data)", ha="center", va="center",
+                    transform=ax.transAxes, color="#888888")
+            ax.set_axis_off()
+            continue
+        mat, ci_lo_mat, ci_hi_mat, iter_nums = p["data"]
+        _render_heatmap_axes(
+            fig,
+            ax,
+            mat,
+            ci_lo_mat,
+            ci_hi_mat,
+            iter_nums,
+            iter_nums,
+            title=f"{p['label']} — co-evolved pairings",
+            metric_label=f"{metric_label} (%)",
+            cmap="YlOrRd",
+            show_marginals=False,
+            clim=clim,
+        )
+
+    fig.suptitle(
+        r"Training Diagonal: $\mathrm{PVR_{conv}}$ (%) — "
+        "all training episodes (is_eval=False; 99% CI; darker = higher attack success)",
+        fontsize=11,
     )
     fig.tight_layout(pad=0.4)
     out_path.parent.mkdir(parents=True, exist_ok=True)

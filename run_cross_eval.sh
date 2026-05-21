@@ -60,6 +60,9 @@ QUICK_EPISODES=40
 QUICK_HORIZON=3
 SINGLE_GPU=false
 GPU_ID=0                 # GPU index for single-GPU mode
+RED_PORT=8001            # vLLM port for red server (dual-GPU mode); override for parallel runs
+BLUE_PORT=8003           # vLLM port for blue server (dual-GPU mode); override for parallel runs
+SKIP_INIT=false          # skip ./script/init.sh (postgres + MCP) — set when another run already started them
 GPU_MEM=""               # gpu-memory-utilization (default varies by mode)
 MAX_MODEL_LEN=""         # max-model-len (default varies by mode)
 CONCURRENCY=""           # passed to cross_evaluate.py (default varies by mode)
@@ -96,6 +99,9 @@ while [[ "$#" -gt 0 ]]; do
         --resume) RESUME=true ;;
         --blueteam-system-prompt-file) BLUETEAM_SYSTEM_PROMPT_FILE="$2"; shift ;;
         --output-dir) OUTPUT_DIR_OVERRIDE="$2"; shift ;;
+        --red-port) RED_PORT="$2"; shift ;;
+        --blue-port) BLUE_PORT="$2"; shift ;;
+        --skip-init) SKIP_INIT=true ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -310,15 +316,42 @@ trap cleanup_vllm EXIT
 # 1. Start Postgres + MCP
 # ============================================
 echo ""
-_step "[1/3] Starting Postgres and MCP..."
-./script/init.sh
-_ok "Postgres and MCP ready."
+if [[ "$SKIP_INIT" == "true" ]]; then
+    _step "[1/3] Skipping Postgres and MCP init (--skip-init)."
+else
+    _step "[1/3] Starting Postgres and MCP..."
+    ./script/init.sh
+    _ok "Postgres and MCP ready."
+fi
 
 # ============================================
 # 2. Start vLLM server(s) with all LoRAs
 # ============================================
 echo ""
 _step "[2/3] Starting vLLM server(s)..."
+
+# Pre-flight: reap leftover vLLM workers ONLY on the ports we're about to use.
+# Avoids killing parallel sibling cross-eval runs that are using different ports.
+# Selfplay uses 8001/8002; cross_eval defaults to 8001/8003 but can be overridden
+# via --red-port / --blue-port for parallel multi-rep dispatch.
+echo "[cross_eval] Pre-flight: reaping leftover vLLM workers on ports $RED_PORT and $BLUE_PORT..."
+for p in $RED_PORT $BLUE_PORT; do
+    if command -v lsof >/dev/null 2>&1; then
+        pids=$(lsof -ti :$p 2>/dev/null || true)
+        if [[ -n "$pids" ]]; then
+            echo "[cross_eval] Killing PIDs holding port $p: $pids"
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+done
+sleep 3
+for p in $RED_PORT $BLUE_PORT; do
+    if command -v lsof >/dev/null 2>&1 && lsof -ti :$p >/dev/null 2>&1; then
+        echo "[cross_eval] FATAL: port $p still in use after cleanup:" >&2
+        lsof -i :$p >&2
+        exit 1
+    fi
+done
 
 LOG_DIR="/tmp/vllm_logs"
 mkdir -p "$LOG_DIR"
@@ -397,8 +430,8 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
 
 else
     # --- DUAL-GPU MODE: separate red and blue vLLM servers ---
-    echo "  Red server:  GPU $RED_GPU, port 8001"
-    echo "  Blue server: GPU $BLUE_GPU, port 8002"
+    echo "  Red server:  GPU $RED_GPU, port $RED_PORT"
+    echo "  Blue server: GPU $BLUE_GPU, port $BLUE_PORT"
 
     RED_LORA_MODULES=""
     for iter in "${!RED_LORAS[@]}"; do
@@ -425,7 +458,7 @@ else
     echo "Starting red team vLLM server..."
     CUDA_VISIBLE_DEVICES=$RED_GPU python3 -m vllm.entrypoints.openai.api_server \
         --model "$BASE_MODEL" \
-        --port 8001 \
+        --port $RED_PORT \
         --host 0.0.0.0 \
         --gpu-memory-utilization $GPU_MEM \
         --max-model-len $MAX_MODEL_LEN \
@@ -437,14 +470,14 @@ else
         --max-lora-rank 64 \
         --max-loras $MAX_RED_LORAS \
         --lora-modules $RED_LORA_MODULES \
-        > "$LOG_DIR/crosseval_red.log" 2>&1 &
+        > "$LOG_DIR/crosseval_red_${RED_PORT}.log" 2>&1 &
     RED_VLLM_PID=$!
     echo "  Red vLLM PID: $RED_VLLM_PID"
 
     echo "Starting blue team vLLM server..."
     CUDA_VISIBLE_DEVICES=$BLUE_GPU python3 -m vllm.entrypoints.openai.api_server \
         --model "$BASE_MODEL" \
-        --port 8002 \
+        --port $BLUE_PORT \
         --host 0.0.0.0 \
         --gpu-memory-utilization $GPU_MEM \
         --max-model-len $MAX_MODEL_LEN \
@@ -456,7 +489,7 @@ else
         --max-lora-rank 64 \
         --max-loras $MAX_BLUE_LORAS \
         --lora-modules $BLUE_LORA_MODULES \
-        > "$LOG_DIR/crosseval_blue.log" 2>&1 &
+        > "$LOG_DIR/crosseval_blue_${BLUE_PORT}.log" 2>&1 &
     BLUE_VLLM_PID=$!
     echo "  Blue vLLM PID: $BLUE_VLLM_PID"
 
@@ -470,27 +503,27 @@ else
         ELAPSED=$(($(date +%s) - START_TIME))
         if [[ $ELAPSED -ge $TIMEOUT ]]; then
             echo "ERROR: vLLM servers did not become ready within ${TIMEOUT}s"
-            echo "Check logs: $LOG_DIR/crosseval_red.log and crosseval_blue.log"
+            echo "Check logs: $LOG_DIR/crosseval_red_${RED_PORT}.log and crosseval_blue_${BLUE_PORT}.log"
             exit 1
         fi
 
         if ! kill -0 $RED_VLLM_PID 2>/dev/null; then
-            echo "ERROR: Red vLLM server died. Check $LOG_DIR/crosseval_red.log"
+            echo "ERROR: Red vLLM server died. Check $LOG_DIR/crosseval_red_${RED_PORT}.log"
             exit 1
         fi
         if ! kill -0 $BLUE_VLLM_PID 2>/dev/null; then
-            echo "ERROR: Blue vLLM server died. Check $LOG_DIR/crosseval_blue.log"
+            echo "ERROR: Blue vLLM server died. Check $LOG_DIR/crosseval_blue_${BLUE_PORT}.log"
             exit 1
         fi
 
         if [[ "$RED_READY" == "false" ]]; then
-            if curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
+            if curl -s http://localhost:$RED_PORT/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
                 RED_READY=true
                 _ok "Red vLLM ready (${ELAPSED}s)"
             fi
         fi
         if [[ "$BLUE_READY" == "false" ]]; then
-            if curl -s http://localhost:8002/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
+            if curl -s http://localhost:$BLUE_PORT/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
                 BLUE_READY=true
                 _ok "Blue vLLM ready (${ELAPSED}s)"
             fi
@@ -503,8 +536,8 @@ else
     done
     _ok "Both vLLM servers ready."
 
-    RED_VLLM_URL="http://localhost:8001/v1"
-    BLUE_VLLM_URL="http://localhost:8002/v1"
+    RED_VLLM_URL="http://localhost:$RED_PORT/v1"
+    BLUE_VLLM_URL="http://localhost:$BLUE_PORT/v1"
 fi
 
 # ============================================

@@ -7,12 +7,17 @@ from marft.envs.redteam_sql.redteam_sql_env import (
     is_victim_refusal,
     detect_sql_generated,
     detect_sensitive_data_query,
-    detect_degenerate_input,
+    detect_short_input,
     extract_sql_query,
     extract_groundtruth,
     judge_correct,
     EXEC_RESULT_DELIMITER,
 )
+
+
+# Backwards-compat alias for legacy tests (detect_degenerate_input was renamed
+# to detect_short_input in the redesign — same shape, simpler logic).
+detect_degenerate_input = detect_short_input
 
 
 class TestRedTeamSQLEnv(unittest.TestCase):

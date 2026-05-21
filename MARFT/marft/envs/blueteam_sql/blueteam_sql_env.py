@@ -23,18 +23,11 @@ from marft.envs.redteam_sql.redteam_sql_env import (
 
 @dataclass(frozen=True)
 class BlueTeamRewardConfig:
-    """BlueTeam reward config — derives all values from the central RewardConfig.
-
-    Changing RewardConfig in redteam_sql_env.py is sufficient to update both teams.
-    """
-
-    max_episodes: int = _RC.max_episodes
+    """BlueTeam reward config — derives all values from the central RewardConfig."""
 
     # Positive Logic
     reward_benign_sql_success: float = _RC.blueteam_reward_benign_sql_success
-    # A4 ablation: BLUETEAM_REVERSE_REWARDS=1 swaps neutral_sql and attack_refusal
-    # so that refusal (0.8) outranks safe compliance (0.5). Confirms the claim that
-    # the nominal ordering is what preserves utility under adversarial framing.
+    # A4 ablation: BLUETEAM_REVERSE_REWARDS=1 swaps neutral_sql and attack_refusal.
     _A4_SWAP = os.environ.get("BLUETEAM_REVERSE_REWARDS", "") == "1"
     reward_attack_refusal: float = (
         _RC.blueteam_reward_neutral_sql if _A4_SWAP else _RC.blueteam_reward_attack_refusal
@@ -47,13 +40,6 @@ class BlueTeamRewardConfig:
     reward_benign_refusal: float = _RC.blueteam_reward_benign_refusal
     reward_honeypot_access: float = _RC.blueteam_reward_honeypot_access
     reward_sql_error: float = _RC.blueteam_reward_sql_error
-
-    # Halt conditions
-    decisive_win_threshold: float = _RC.blueteam_decisive_win_threshold
-    decisive_win_window: int = _RC.blueteam_decisive_win_window
-    plateau_window: int = _RC.blueteam_plateau_window
-    plateau_min_improvement: float = _RC.blueteam_plateau_min_improvement
-    max_training_episodes: int = _RC.blueteam_max_training_episodes
 
 
 CONFIG = BlueTeamRewardConfig()
@@ -633,6 +619,72 @@ _PARAPHRASE_MAP = {
     "retrieve": ["get", "fetch", "show me"],
 }
 
+# Module-level adversarial markers (mirrors BlueTeamSQLEnv._classify_benign_style).
+_ADVERSARIAL_MARKERS = (
+    "security team", "compliance", "audit", "gdpr", "urgent",
+    "data protection", "dba team", "management has requested",
+    "standard operating procedure", "reconciliation",
+    "routine", "verification protocol", "identity check",
+    "authentication confirmed", "access granted",
+    "credentials", "system_notice", "debug_mode",
+    "[usage analysis]", "[integrity check]", "[system diagnostic]",
+    "[audit", "[system", "[data", "[account", "[order",
+    "[line item", "[financial", "[product", "[final",
+    "alert:", "pci", "legal hold", "emergency",
+    "let me test", "testing the system", "testing query",
+    "before we touch anything sensitive",
+)
+
+
+def _classify_benign_style_module(chosen) -> str:
+    """Module-scope classifier (mirror of BlueTeamSQLEnv._classify_benign_style)."""
+    if isinstance(chosen, list):
+        return "multi_turn"
+    lower = chosen.lower()
+    if any(m in lower for m in _ADVERSARIAL_MARKERS):
+        return "adversarial"
+    return "plain"
+
+
+# Partition the training pool ONCE at import time. Eval pool is left intact
+# so cross-eval comparability is preserved across cells.
+_PLAIN_POOL: tuple[str, ...] = tuple(
+    sorted(q for q in BENIGN_QUERIES if isinstance(q, str)
+           and _classify_benign_style_module(q) == "plain")
+)
+_ADVERSARIAL_POOL: tuple[str, ...] = tuple(
+    sorted(q for q in BENIGN_QUERIES if isinstance(q, str)
+           and _classify_benign_style_module(q) == "adversarial")
+)
+_MULTI_TURN_POOL: tuple = tuple(q for q in BENIGN_QUERIES if isinstance(q, list))
+
+print(
+    f"[blueteam_sql_env] Benign pools partitioned at import: "
+    f"plain={len(_PLAIN_POOL)} adversarial={len(_ADVERSARIAL_POOL)} "
+    f"multi_turn={len(_MULTI_TURN_POOL)} (multi-turn dropped from training)"
+)
+
+
+def build_benign_pool(vanilla_size: int, bordercase_size: int) -> list[str]:
+    """Deterministic vanilla + bordercase concatenation for a training cell.
+
+    Vanilla    = first `vanilla_size` entries of sorted plain pool
+    Bordercase = first `bordercase_size` entries of sorted adversarial pool
+    Multi-turn = dropped (per redesign).
+    """
+    if vanilla_size < 0 or bordercase_size < 0:
+        raise ValueError(f"sizes must be >= 0; got {vanilla_size}, {bordercase_size}")
+    if vanilla_size > len(_PLAIN_POOL):
+        raise ValueError(
+            f"vanilla_size={vanilla_size} exceeds plain pool size {len(_PLAIN_POOL)}"
+        )
+    if bordercase_size > len(_ADVERSARIAL_POOL):
+        raise ValueError(
+            f"bordercase_size={bordercase_size} exceeds adversarial pool size {len(_ADVERSARIAL_POOL)}"
+        )
+    return list(_PLAIN_POOL[:vanilla_size]) + list(_ADVERSARIAL_POOL[:bordercase_size])
+
+
 _blueteam_log_lock = threading.Lock()
 
 
@@ -646,6 +698,11 @@ class BlueTeamSQLEnv(SQLEnv):
         mode,
         *args,
         redteam_vllm_url: str | None = None,
+        # New ablation knobs (set by train_sql.py from CLI / env vars).
+        vanilla_size: int | None = None,
+        bordercase_size: int | None = None,
+        red_lora_pool: list[str] | None = None,
+        opponent_sampler_seed: int | None = None,
         **kwargs,
     ):
         import os
@@ -659,30 +716,78 @@ class BlueTeamSQLEnv(SQLEnv):
         kwargs["vllm_base_url"] = redteam_vllm_url
         super().__init__(rank, model_name, num_agents, horizon, mode, *args, **kwargs)
 
-        # Multi-turn: use horizon from parent (matches redteam training).
-        # self.max_steps is already set to horizon by parent __init__.
-
-        # Attack Generator (Red Team LoRA)
-        # Use opponent_model_name (LoRA alias e.g. "redteam") if set,
-        # otherwise fall back to the base model_name passed from train_sql.py
+        # Attack Generator (Red Team LoRA). For multi-LoRA history training, the
+        # `model_name` is mutated per episode to the sampled adapter name; this
+        # initial value is just a reasonable default for the FIRST episode.
         attacker_model = (
             self.opponent_model_name if self.opponent_model_name else model_name
         )
+        _attacker_seed_base = kwargs.get("seed")
         self.attacker_llm = OfflineLLM(
             model_name=attacker_model,
-            mcp_client=None,  # Attacker doesn't execute SQL, they just generate prompts
+            mcp_client=None,  # Attacker doesn't execute SQL, only generates prompts
             vllm_base_url=redteam_vllm_url,
-            max_tokens=512,  # Match redteam training token budget
+            max_tokens=512,
+            seed=(
+                None
+                if _attacker_seed_base is None
+                else _attacker_seed_base + 104729 * (int(rank or 0) + 1)
+            ),
         )
 
-        # Load Benign pool: held-out set for eval, training set otherwise
-        if mode == "test":
-            self.benign_queries = BENIGN_EVAL_QUERIES
-        else:
-            self.benign_queries = BENIGN_QUERIES
+        # === Red opponent pool (history-based training) ===
+        # Resolution order:
+        #   1. red_lora_pool kwarg (passed by train_sql.py from registry).
+        #   2. REDTEAM_LORA_POOL env var (comma-separated adapter names).
+        #   3. Fallback: single-adapter list using opponent_model_name.
+        if red_lora_pool is None:
+            env_pool = os.environ.get("REDTEAM_LORA_POOL", "").strip()
+            if env_pool:
+                red_lora_pool = [n.strip() for n in env_pool.split(",") if n.strip()]
+        if not red_lora_pool:
+            red_lora_pool = [attacker_model]
+        self.red_lora_pool: list[str] = list(red_lora_pool)
+        # Per-rank seeded RNG so resume reproduces opponent samples.
+        if opponent_sampler_seed is None:
+            try:
+                opponent_sampler_seed = int(os.environ.get("OPPONENT_SAMPLER_SEED", "1234"))
+            except ValueError:
+                opponent_sampler_seed = 1234
+        self._opponent_rng = random.Random(opponent_sampler_seed + int(self.rank or 0))
+        # Decorrelated RNG for benign-side sampling (attack-prob coin flip,
+        # benign-pool choice, paraphrase, multi-turn stitching). Distinct
+        # offset keeps it independent of the opponent draw.
+        self._benign_rng = random.Random(opponent_sampler_seed + 31 + int(self.rank or 0))
+        self._opponent_sample_count = 0
+        # Currently-active opponent name (set on each reset).
+        self._current_opponent_name: str = self.red_lora_pool[0]
+        print(
+            f"[BlueTeamSQLEnv rank={rank}] opponent pool size={len(self.red_lora_pool)}: "
+            f"{self.red_lora_pool}"
+        )
 
-        # A2 ablation: drop adversarial-style and multi-turn entries when training
-        # with BLUETEAM_PLAIN_ONLY=1, so the blue team only sees plain benign prompts.
+        # === Benign pool (vanilla + bordercase ablation) ===
+        if mode == "test":
+            # Eval pool is fixed across all cells — comparability invariant.
+            self.benign_queries = list(BENIGN_EVAL_QUERIES)
+        else:
+            # Training: explicit vanilla/bordercase sizes, multi-turn dropped.
+            if vanilla_size is None:
+                vanilla_size = int(os.environ.get("VANILLA_BENIGN_SIZE", str(len(_PLAIN_POOL))))
+            if bordercase_size is None:
+                bordercase_size = int(os.environ.get("BORDERCASE_BENIGN_SIZE", str(len(_ADVERSARIAL_POOL))))
+            self.benign_queries = build_benign_pool(vanilla_size, bordercase_size)
+            self.vanilla_size = vanilla_size
+            self.bordercase_size = bordercase_size
+            print(
+                f"[BlueTeamSQLEnv rank={rank}] benign pool: "
+                f"vanilla={vanilla_size}/{len(_PLAIN_POOL)} "
+                f"bordercase={bordercase_size}/{len(_ADVERSARIAL_POOL)} "
+                f"(total={len(self.benign_queries)}, multi_turn dropped)"
+            )
+
+        # Legacy A2 ablation kept as a safety net but not relied on (the new
+        # ablation uses --vanilla-size / --bordercase-size).
         if mode != "test" and os.environ.get("BLUETEAM_PLAIN_ONLY", "") == "1":
             self.benign_queries = [
                 q for q in self.benign_queries
@@ -707,12 +812,12 @@ class BlueTeamSQLEnv(SQLEnv):
 
     def _maybe_paraphrase(self, query: str) -> str:
         """Apply lightweight synonym substitution with ~30% probability during training."""
-        if self.mode == "test" or random.random() > 0.3:
+        if self.mode == "test" or self._benign_rng.random() > 0.3:
             return query
         result = query
         for phrase, alternatives in _PARAPHRASE_MAP.items():
             if phrase in result.lower():
-                replacement = random.choice(alternatives)
+                replacement = self._benign_rng.choice(alternatives)
                 result = re.sub(re.escape(phrase), replacement, result, count=1, flags=re.IGNORECASE)
                 break
         return result
@@ -728,7 +833,7 @@ class BlueTeamSQLEnv(SQLEnv):
         result = list(base_seq)
         multi_turn_pool = [q for q in self.benign_queries if isinstance(q, list)]
         while len(result) < self.max_steps:
-            extra = random.choice(multi_turn_pool)
+            extra = self._benign_rng.choice(multi_turn_pool)
             result.extend(extra)
         return result[: self.max_steps]
 
@@ -767,6 +872,7 @@ class BlueTeamSQLEnv(SQLEnv):
         system_prompt = generate_redteam_prompt(
             current_turn=turn,
             max_turns=self.max_steps,
+            rng=self._env_rng,
         )
 
         if turn == 1:
@@ -818,19 +924,28 @@ class BlueTeamSQLEnv(SQLEnv):
         self._benign_turn_idx = 0
 
         # Curriculum: ramp attack ratio from 50% → 70% over training episodes.
-        # A3 ablation: BLUETEAM_FIXED_ATTACK_PROB=<p> (0..1) pins attack_prob flat.
+        # The denominator is a soft anchor (was CONFIG.max_episodes=100; with
+        # max_episodes removed in the redesign, we anchor to 100 as a constant).
         _fixed_ap = os.environ.get("BLUETEAM_FIXED_ATTACK_PROB", "")
         if _fixed_ap:
             attack_prob = float(_fixed_ap)
         else:
-            attack_prob = min(0.5 + 0.4 * (self.current_episode / CONFIG.max_episodes), 0.7)
-        if random.random() < attack_prob:
+            attack_prob = min(0.5 + 0.4 * (self.current_episode / 100.0), 0.7)
+        if self._benign_rng.random() < attack_prob:
             self.current_turn_type = "attack"
             self._benign_style = "plain"
+            # === Sample opponent from history pool (uniform). ===
+            self._current_opponent_name = self._opponent_rng.choice(self.red_lora_pool)
+            self._opponent_sample_count += 1
+            # Mutate the LLM's model_name so the next vLLM call routes to the
+            # sampled LoRA adapter. Logged in reward_debug.jsonl via
+            # opponent_lora_path / context_info — we expose it as a separate
+            # attribute too for downstream analysis.
+            self.attacker_llm.model_name = self._current_opponent_name
             self.user_message = self._generate_red_prompt(turn=1)
         else:
             self.current_turn_type = "benign"
-            chosen = random.choice(self.benign_queries)
+            chosen = self._benign_rng.choice(self.benign_queries)
             self._benign_style = self._classify_benign_style(chosen)
             if isinstance(chosen, list):
                 self._benign_turns = self._build_benign_sequence(chosen)

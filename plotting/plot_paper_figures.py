@@ -201,6 +201,7 @@ def run_all(
     training_dynamics_smooth: int = 7,
     baseline_cross_eval_subdir: str = "cross_eval_baseline",
     human_eval_json: str | None = "data/human_eval/comparison.json",
+    show_ci: bool = True,
 ) -> list[tuple[str, Path]]:
     """
     Run all paper figure plots in a fixed order.
@@ -235,53 +236,69 @@ def run_all(
 
     # 1. PVR_turn
     if "pvr" not in skip:
-        path = plot_pvr(
-            results,
-            out_dir / "pvr.png",
-            sources=pvr_sources,
-            human_eval_parent=human_eval_parent,
-            cross_eval_subdir=cross_eval_subdir,
-        )
-        produced.append((DESC_PVR, path))
-        write_sidecar(path, DESC_PVR, results)
+        try:
+            path = plot_pvr(
+                results,
+                out_dir / "pvr.png",
+                sources=pvr_sources,
+                human_eval_parent=human_eval_parent,
+                cross_eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+            )
+            produced.append((DESC_PVR, path))
+            write_sidecar(path, DESC_PVR, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] pvr skipped: {e}", file=sys.stderr)
 
     # 2. PVR_conv
     if "pvr_conv" not in skip:
-        path = plot_pvr_conv(
-            results,
-            out_dir / "pvr_conv.png",
-            sources=pvr_sources,
-            human_eval_parent=human_eval_parent,
-            cross_eval_subdir=cross_eval_subdir,
-        )
-        produced.append((DESC_PVR_CONV, path))
-        write_sidecar(path, DESC_PVR_CONV, results)
+        try:
+            path = plot_pvr_conv(
+                results,
+                out_dir / "pvr_conv.png",
+                sources=pvr_sources,
+                human_eval_parent=human_eval_parent,
+                cross_eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+            )
+            produced.append((DESC_PVR_CONV, path))
+            write_sidecar(path, DESC_PVR_CONV, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] pvr_conv skipped: {e}", file=sys.stderr)
 
     # 3. Work Factor (WF = 1/PVR_turn)
     if "work_factor" not in skip:
-        path = plot_work_factor(
-            results,
-            out_dir / "work_factor.png",
-            sources=pvr_sources,
-            human_eval_parent=human_eval_parent,
-            cross_eval_subdir=cross_eval_subdir,
-        )
-        produced.append((DESC_WF, path))
-        write_sidecar(path, DESC_WF, results)
+        try:
+            path = plot_work_factor(
+                results,
+                out_dir / "work_factor.png",
+                sources=pvr_sources,
+                human_eval_parent=human_eval_parent,
+                cross_eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+            )
+            produced.append((DESC_WF, path))
+            write_sidecar(path, DESC_WF, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] work_factor skipped: {e}", file=sys.stderr)
 
     # 4. BRR — one PNG per source
     if "brr" not in skip:
-        brr_paths = plot_brr(
-            results,
-            out_dir=out_dir,
-            filename_prefix="brr",
-            sources=brr_sources,
-            human_eval_parent=human_eval_parent,
-            cross_eval_subdir=cross_eval_subdir,
-        )
-        for src, path in brr_paths.items():
-            produced.append((DESC_BRR, path))
-            write_sidecar(path, DESC_BRR, results)
+        try:
+            brr_paths = plot_brr(
+                results,
+                out_dir=out_dir,
+                filename_prefix="brr",
+                sources=brr_sources,
+                human_eval_parent=human_eval_parent,
+                cross_eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+            )
+            for src, path in brr_paths.items():
+                produced.append((DESC_BRR, path))
+                write_sidecar(path, DESC_BRR, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] brr skipped: {e}", file=sys.stderr)
 
     # 5. Semantic diversity
     if "diversity" not in skip:
@@ -308,115 +325,163 @@ def run_all(
             # ("SFR_MISTRAL", "Salesforce/SFR-Embedding-Mistral"),
         ]
 
-        for id, embedder in EMBEDDERS:
-            path, sem_metrics = plot_semantic_diversity(
-                results,
-                out_dir / f"semantic_diversity_{id}.png",
-                human_queries_path=human_queries,
-                query_mode=query_mode,
-                tail_pct=tail_pct,
-                embedder=embedder,
-                cross_eval_subdir=cross_eval_subdir,
-                benign_queries_path=benign_queries,
-            )
-            produced.append((DESC_DIV, path))
-            write_sidecar(path, DESC_DIV, results, sem_metrics)
+        try:
+            for id, embedder in EMBEDDERS:
+                path, sem_metrics = plot_semantic_diversity(
+                    results,
+                    out_dir / f"semantic_diversity_{id}.png",
+                    human_queries_path=human_queries,
+                    query_mode=query_mode,
+                    tail_pct=tail_pct,
+                    embedder=embedder,
+                    cross_eval_subdir=cross_eval_subdir,
+                    benign_queries_path=benign_queries,
+                )
+                produced.append((DESC_DIV, path))
+                write_sidecar(path, DESC_DIV, results, sem_metrics)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] diversity skipped: {e}", file=sys.stderr)
 
     # 5. Running time (EIS)
     if "running_time" not in skip:
-        path = plot_running_time(results, out_dir / "running_time.png")
-        produced.append((DESC_RT, path))
-        write_sidecar(path, DESC_RT, results)
+        try:
+            path = plot_running_time(results, out_dir / "running_time.png")
+            produced.append((DESC_RT, path))
+            write_sidecar(path, DESC_RT, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] running_time skipped: {e}", file=sys.stderr)
 
     # 6. Training dynamics (reward-vs-EIS learning curves, process visualization)
     if "training_dynamics" not in skip:
-        path = plot_training_dynamics(
-            results,
-            out_dir / "training_dynamics.png",
-            smooth_window=training_dynamics_smooth,
-        )
-        produced.append((DESC_DYN, path))
-        write_sidecar(path, DESC_DYN, results)
+        try:
+            path = plot_training_dynamics(
+                results,
+                out_dir / "training_dynamics.png",
+                smooth_window=training_dynamics_smooth,
+            )
+            produced.append((DESC_DYN, path))
+            write_sidecar(path, DESC_DYN, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] training_dynamics skipped: {e}", file=sys.stderr)
 
     # 7. Compute efficiency (PVR_conv and BRR vs cumulative EIS)
     if "compute_efficiency" not in skip:
-        path = plot_compute_efficiency(results, out_dir / "compute_efficiency.png")
-        produced.append((DESC_EFF, path))
-        write_sidecar(path, DESC_EFF, results)
+        try:
+            path = plot_compute_efficiency(
+                results, out_dir / "compute_efficiency.png", show_ci=show_ci,
+            )
+            produced.append((DESC_EFF, path))
+            write_sidecar(path, DESC_EFF, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] compute_efficiency skipped: {e}", file=sys.stderr)
 
     # 7b. Security–Utility Pareto frontier across checkpoints
     if "security_utility_pareto" not in skip:
-        path = plot_security_utility_pareto(
-            results,
-            out_dir / "security_utility_pareto.png",
-            cross_eval_subdir=cross_eval_subdir,
-        )
-        produced.append((DESC_PARETO, path))
-        write_sidecar(path, DESC_PARETO, results)
+        try:
+            path = plot_security_utility_pareto(
+                results,
+                out_dir / "security_utility_pareto.png",
+                cross_eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+            )
+            produced.append((DESC_PARETO, path))
+            write_sidecar(path, DESC_PARETO, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] security_utility_pareto skipped: {e}", file=sys.stderr)
 
     # 8. Cross-eval heatmaps — PVR_conv + PVR_turn for all available subdirs.
     #    Each call is a no-op (prints a warning) if the subdir doesn't exist.
     if "heatmaps" not in skip:
-        for subdir, metric, fname in HEATMAP_JOBS:
-            path = plot_heatmap(results, out_dir / fname, subdir=subdir, metric=metric)
-            desc = _heatmap_desc(subdir, metric)
-            produced.append((desc, path))
-            write_sidecar(path, desc, results)
+        try:
+            for subdir, metric, fname in HEATMAP_JOBS:
+                path = plot_heatmap(results, out_dir / fname, subdir=subdir, metric=metric)
+                desc = _heatmap_desc(subdir, metric)
+                produced.append((desc, path))
+                write_sidecar(path, desc, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] heatmaps skipped: {e}", file=sys.stderr)
 
     # 9. Training-log diagonal: PVR_conv from per-iteration blueteam logs.
     if "training_diagonal" not in skip:
-        path = plot_training_diagonal(results, out_dir / "diagonal_training.png")
-        produced.append((DESC_TRAINING_DIAG, path))
-        write_sidecar(path, DESC_TRAINING_DIAG, results)
+        try:
+            path = plot_training_diagonal(results, out_dir / "diagonal_training.png")
+            produced.append((DESC_TRAINING_DIAG, path))
+            write_sidecar(path, DESC_TRAINING_DIAG, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] training_diagonal skipped: {e}", file=sys.stderr)
 
     # 10. ΔPVRconv vs normalized EIS — direct cross-team efficiency comparison
     if "pvr_vs_normalized_eis" not in skip:
-        path = plot_pvr_vs_normalized_eis(
-            results, out_dir / "pvr_vs_normalized_eis.png"
-        )
-        produced.append((DESC_NORM_EIS, path))
-        write_sidecar(path, DESC_NORM_EIS, results)
+        try:
+            path = plot_pvr_vs_normalized_eis(
+                results, out_dir / "pvr_vs_normalized_eis.png", show_ci=show_ci,
+            )
+            produced.append((DESC_NORM_EIS, path))
+            write_sidecar(path, DESC_NORM_EIS, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] pvr_vs_normalized_eis skipped: {e}", file=sys.stderr)
 
     # 11. Blue team convergence — plateau analysis and marginal efficiency
     if "blue_convergence" not in skip:
-        path = plot_blue_convergence(results, out_dir / "blue_convergence.png")
-        produced.append((DESC_BLUE_CONV, path))
-        write_sidecar(path, DESC_BLUE_CONV, results)
+        try:
+            path = plot_blue_convergence(
+                results, out_dir / "blue_convergence.png", show_ci=show_ci,
+            )
+            produced.append((DESC_BLUE_CONV, path))
+            write_sidecar(path, DESC_BLUE_CONV, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] blue_convergence skipped: {e}", file=sys.stderr)
 
     # 12. Decomposed-PVR: attempts-to-compromise CDF
     if "attempts_cdf" not in skip:
-        for subdir_name, fname in ATTEMPTS_CDF_JOBS:
-            path = plot_attempts_cdf(results, out_dir / fname, subdir=subdir_name)
-            produced.append((DESC_ATTEMPTS, path))
-            write_sidecar(path, DESC_ATTEMPTS, results)
+        try:
+            for subdir_name, fname in ATTEMPTS_CDF_JOBS:
+                path = plot_attempts_cdf(results, out_dir / fname, subdir=subdir_name)
+                produced.append((DESC_ATTEMPTS, path))
+                write_sidecar(path, DESC_ATTEMPTS, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] attempts_cdf skipped: {e}", file=sys.stderr)
 
     # 13. Decomposed-PVR: honeypot coverage vs. yield
     if "coverage_yield" not in skip:
-        for subdir_name, fname in COVERAGE_YIELD_JOBS:
-            path = plot_coverage_yield(results, out_dir / fname, subdir=subdir_name)
-            produced.append((DESC_COV, path))
-            write_sidecar(path, DESC_COV, results)
+        try:
+            for subdir_name, fname in COVERAGE_YIELD_JOBS:
+                path = plot_coverage_yield(
+                    results, out_dir / fname, subdir=subdir_name, show_ci=show_ci,
+                )
+                produced.append((DESC_COV, path))
+                write_sidecar(path, DESC_COV, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] coverage_yield skipped: {e}", file=sys.stderr)
 
     # 14. Diagonal convergence — PVR_conv, PVR_turn, BRR for adjacent pairings
     if "diagonal_convergence" not in skip:
-        path, dc_metrics = plot_diagonal_convergence(
-            results,
-            out_dir / "diagonal_convergence.png",
-            eval_subdir=cross_eval_subdir,
-        )
-        produced.append((DESC_DIAG_CONV, path))
-        write_sidecar(path, DESC_DIAG_CONV, results, dc_metrics)
+        try:
+            path, dc_metrics = plot_diagonal_convergence(
+                results,
+                out_dir / "diagonal_convergence.png",
+                eval_subdir=cross_eval_subdir,
+                show_ci=show_ci,
+                individual_out_dir=out_dir,
+            )
+            produced.append((DESC_DIAG_CONV, path))
+            write_sidecar(path, DESC_DIAG_CONV, results, dc_metrics)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] diagonal_convergence skipped: {e}", file=sys.stderr)
 
     # 15. LoRA diversity (three output files)
     if "lora" not in skip:
-        drift, delta, cosine = plot_lora_diversity(
-            results,
-            out_dir,
-            base_model=lora_base_model,
-        )
-        for p in (drift, delta, cosine):
-            produced.append((DESC_LORA, p))
-            write_sidecar(p, DESC_LORA, results)
+        try:
+            drift, delta, cosine = plot_lora_diversity(
+                results,
+                out_dir,
+                base_model=lora_base_model,
+            )
+            for p in (drift, delta, cosine):
+                produced.append((DESC_LORA, p))
+                write_sidecar(p, DESC_LORA, results)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] lora skipped: {e}", file=sys.stderr)
 
     # 16. Pillar 1 headline: utility by query style (replaces brr.png as headline)
     if "utility_by_style" not in skip:
@@ -425,7 +490,9 @@ def run_all(
                 plot_utility_by_style,
                 DESCRIPTION as DESC_UTIL_STYLE,
             )
-            path = plot_utility_by_style(results, out_dir / "utility_by_style.png")
+            path = plot_utility_by_style(
+                results, out_dir / "utility_by_style.png", show_ci=show_ci,
+            )
             produced.append((DESC_UTIL_STYLE, path))
             write_sidecar(path, DESC_UTIL_STYLE, results)
         except Exception as e:  # pragma: no cover
@@ -438,7 +505,9 @@ def run_all(
                 plot_per_style_refusal,
                 DESCRIPTION as DESC_PER_STYLE,
             )
-            path = plot_per_style_refusal(results, out_dir / "per_style_refusal.png")
+            path = plot_per_style_refusal(
+                results, out_dir / "per_style_refusal.png", show_ci=show_ci,
+            )
             produced.append((DESC_PER_STYLE, path))
             write_sidecar(path, DESC_PER_STYLE, results)
         except Exception as e:  # pragma: no cover
@@ -455,6 +524,7 @@ def run_all(
                 results,
                 out_dir / "generalization.png",
                 subdir=cross_eval_subdir,
+                show_ci=show_ci,
             )
             produced.append((DESC_GEN, path))
             write_sidecar(path, DESC_GEN, results)
@@ -484,7 +554,7 @@ def run_all(
                 DESCRIPTION as DESC_HP_SAT,
             )
             path = plot_honeypot_saturation(
-                results, out_dir / "honeypot_saturation.png"
+                results, out_dir / "honeypot_saturation.png", show_ci=show_ci,
             )
             produced.append((DESC_HP_SAT, path))
             write_sidecar(path, DESC_HP_SAT, results)
@@ -551,7 +621,8 @@ def run_all(
                 DESCRIPTION as DESC_HELD_OUT,
             )
             path = plot_held_out_per_style_refusal(
-                results, cross_eval_subdir=cross_eval_subdir, out_dir=str(out_dir)
+                results, cross_eval_subdir=cross_eval_subdir, out_dir=str(out_dir),
+                show_ci=show_ci,
             )
             produced.append((DESC_HELD_OUT, path))
         except Exception as e:  # pragma: no cover
@@ -590,7 +661,9 @@ def run_all(
                 plot_pvr_asymptote,
                 DESCRIPTION as DESC_ASYM,
             )
-            path, asym_metrics = plot_pvr_asymptote(results, out_dir / "pvr_asymptote.png")
+            path, asym_metrics = plot_pvr_asymptote(
+                results, out_dir / "pvr_asymptote.png", show_ci=show_ci,
+            )
             produced.append((DESC_ASYM, path))
             write_sidecar(path, DESC_ASYM, results, asym_metrics)
         except Exception as e:  # pragma: no cover
@@ -627,7 +700,9 @@ def run_all(
         try:
             from plotting.plot_tier_decomposition import plot_tier_decomposition
             DESC_TIER = "Per-tier PVR_conv decomposition with 99% Wilson CIs"
-            path = plot_tier_decomposition(results, out_path=out_dir / "tier_pvr_decomposition.png")
+            path = plot_tier_decomposition(
+                results, out_path=out_dir / "tier_pvr_decomposition.png", show_ci=show_ci,
+            )
             produced.append((DESC_TIER, path))
             # NOTE: plot_tier_decomposition writes its own per-iter sidecar; do not overwrite.
         except Exception as e:  # pragma: no cover
@@ -645,6 +720,7 @@ def run_all(
                 out_dir=str(out_dir),
                 cross_eval_subdir=cross_eval_subdir,
                 baseline_subdir=baseline_cross_eval_subdir,
+                show_ci=show_ci,
             )
             produced.append((DESC_BASELINE, path))
         except Exception as e:  # pragma: no cover
@@ -713,7 +789,8 @@ def run_all(
                     DESCRIPTION as DESC_HUMAN,
                 )
                 path = plot_human_eval_comparison(
-                    results, human_eval_json=str(human_eval_path), out_dir=str(out_dir)
+                    results, human_eval_json=str(human_eval_path), out_dir=str(out_dir),
+                    show_ci=show_ci,
                 )
                 produced.append((DESC_HUMAN, path))
         except Exception as e:  # pragma: no cover
@@ -858,6 +935,20 @@ def main() -> None:
         help="Override base model for LoRA diversity plot.",
     )
 
+    # CI rendering toggle
+    parser.add_argument(
+        "--ci",
+        default="true",
+        type=lambda s: s.strip().lower(),
+        choices=["true", "false"],
+        metavar="true|false",
+        help=(
+            "Render confidence-interval overlays on plots (default: true). "
+            "Pass --ci=false to omit error bars / Wilson CI bands / plateau bands. "
+            "Sidecar JSON metrics are unaffected and always include CI fields."
+        ),
+    )
+
     # Skip flags
     parser.add_argument(
         "--skip",
@@ -902,6 +993,7 @@ def main() -> None:
         skip=skip,
         baseline_cross_eval_subdir=args.baseline_cross_eval_subdir,
         human_eval_json=(args.human_eval_json or None),
+        show_ci=(args.ci == "true"),
     )
 
     print(f"\n{'=' * 60}")

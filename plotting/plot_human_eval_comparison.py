@@ -49,6 +49,7 @@ def plot_human_eval_comparison(
     results: list[tuple[str, str]],
     human_eval_json: str = "data/human_eval/comparison.json",
     out_dir: str = "figures/",
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_dir) / "human_eval_comparison.png"
     sidecar_path = Path(out_dir) / "human_eval_comparison.json"
@@ -89,7 +90,7 @@ def plot_human_eval_comparison(
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
 
-    bars = ax_l.bar(x, pvr_turn, color=colors, yerr=pvr_yerr, capsize=4, ecolor="black")
+    bars = ax_l.bar(x, pvr_turn, color=colors, yerr=(pvr_yerr if show_ci else None), capsize=4, ecolor="black")
     ax_l.set_xticks(x)
     ax_l.set_xticklabels(labels, fontsize=9)
     ax_l.set_ylabel("PVR_turn (%)")
@@ -118,7 +119,7 @@ def plot_human_eval_comparison(
     except (ValueError, IndexError):
         pass
 
-    bars2 = ax_r.bar(x, wf, color=colors, yerr=wf_yerr, capsize=4, ecolor="black")
+    bars2 = ax_r.bar(x, wf, color=colors, yerr=(wf_yerr if show_ci else None), capsize=4, ecolor="black")
     ax_r.set_xticks(x)
     ax_r.set_xticklabels(labels, fontsize=9)
     ax_r.set_ylabel("Work Factor (1 / PVR_turn)")

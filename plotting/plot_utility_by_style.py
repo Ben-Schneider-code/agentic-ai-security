@@ -123,6 +123,7 @@ def _load_plain_brr(selfplay_dir: Path) -> dict[int, dict] | None:
 def plot_utility_by_style(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -169,7 +170,7 @@ def plot_utility_by_style(
         if not present:
             continue
         yerr = np.array([[v - l for v, l in zip(rates, ci_lo)],
-                         [h - v for v, h in zip(rates, ci_hi)]])
+                         [h - v for v, h in zip(rates, ci_hi)]]) if show_ci else None
         ax.errorbar(present, rates, yerr=yerr,
                     fmt=f"-{marker}", color=color, label=display,
                     linewidth=1.8, markersize=7, capsize=4, capthick=1.0,

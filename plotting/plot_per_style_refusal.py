@@ -64,6 +64,7 @@ _STYLE_META = [
 def plot_per_style_refusal(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -112,7 +113,7 @@ def plot_per_style_refusal(
         if not present_iters:
             continue
         yerr = np.array([[v - l for v, l in zip(rates, ci_lo)],
-                         [h - v for v, h in zip(rates, ci_hi)]])
+                         [h - v for v, h in zip(rates, ci_hi)]]) if show_ci else None
         ax.errorbar(present_iters, rates, yerr=yerr,
                     fmt=f"-{marker}", color=color, label=display,
                     linewidth=1.8, markersize=7, capsize=4, capthick=1.0,

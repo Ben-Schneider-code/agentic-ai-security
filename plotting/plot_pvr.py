@@ -85,6 +85,7 @@ def _plot_pvr_impl(
     ylabel: str,
     title: str,
     log_tag: str,
+    show_ci: bool = True,
 ) -> Path:
     fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
     colors = RUN_COLORS * (len(results) // len(RUN_COLORS) + 1)
@@ -102,7 +103,7 @@ def _plot_pvr_impl(
                     yerr = _ci_to_yerr(vals, [diag[i].get(xeval_ci_key) for i in iters])
                     lbl = f"{label} (cross-eval)" if "human_eval" in sources else label
                     ax.errorbar(
-                        iters, vals, yerr=yerr,
+                        iters, vals, yerr=(yerr if show_ci else None),
                         label=lbl, color=color,
                         linestyle=_LINESTYLE["cross_eval"],
                         marker=_MARKER["cross_eval"],
@@ -130,7 +131,7 @@ def _plot_pvr_impl(
                     yerr = _ci_to_yerr(vals, ci_pct)
                     lbl = f"{label} (human-eval)" if "cross_eval" in sources else label
                     ax.errorbar(
-                        iters, vals, yerr=yerr,
+                        iters, vals, yerr=(yerr if show_ci else None),
                         label=lbl, color=color,
                         linestyle=_LINESTYLE["human_eval"],
                         marker=_MARKER["human_eval"],
@@ -165,6 +166,7 @@ def plot_pvr(
     sources: tuple[str, ...] = ("cross_eval",),
     human_eval_parent: str | None = None,
     cross_eval_subdir: str = "cross_eval",
+    show_ci: bool = True,
 ) -> Path:
     """Plot PVR_turn (%) vs. self-play iteration. Returns the resolved Path written."""
     return _plot_pvr_impl(
@@ -176,6 +178,7 @@ def plot_pvr(
         ylabel=r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)",
         title="Turn-level Policy Violation Rate vs. Iteration",
         log_tag="plot_pvr",
+        show_ci=show_ci,
     )
 
 
@@ -185,6 +188,7 @@ def plot_pvr_conv(
     sources: tuple[str, ...] = ("cross_eval",),
     human_eval_parent: str | None = None,
     cross_eval_subdir: str = "cross_eval",
+    show_ci: bool = True,
 ) -> Path:
     """Plot PVR_conv (%) vs. self-play iteration. Returns the resolved Path written."""
     return _plot_pvr_impl(
@@ -196,6 +200,7 @@ def plot_pvr_conv(
         ylabel=r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)",
         title="Conversation-level Policy Violation Rate vs. Iteration",
         log_tag="plot_pvr_conv",
+        show_ci=show_ci,
     )
 
 
@@ -205,6 +210,7 @@ def plot_work_factor(
     sources: tuple[str, ...] = ("cross_eval",),
     human_eval_parent: str | None = None,
     cross_eval_subdir: str = "cross_eval",
+    show_ci: bool = True,
 ) -> Path:
     """Plot Work Factor (WF = 1/PVR_turn) vs. self-play iteration. Returns the resolved Path written."""
     out_path = Path(out_path)
@@ -225,7 +231,7 @@ def plot_work_factor(
                     pvr_cis  = [diag[i].get("pvr_turn_ci") for i in iters]
                     wf_cis   = [_invert_pvr_pct_ci(ci) for ci in pvr_cis]
                     lbl = f"{label} (cross-eval)" if "human_eval" in sources else label
-                    _errorbar_wf(ax, iters, wf_vals, wf_cis, color=color,
+                    _errorbar_wf(ax, iters, wf_vals, wf_cis, show_ci=show_ci, color=color,
                                  linestyle=_LINESTYLE["cross_eval"],
                                  marker=_MARKER["cross_eval"], label=lbl)
                 else:
@@ -250,7 +256,7 @@ def plot_work_factor(
                     pvr_cis  = [[c * 100 for c in ci] if ci else None for ci in pvr_cis_raw]
                     wf_cis   = [_invert_pvr_pct_ci(ci) for ci in pvr_cis]
                     lbl = f"{label} (human-eval)" if "cross_eval" in sources else label
-                    _errorbar_wf(ax, iters, wf_vals, wf_cis, color=color,
+                    _errorbar_wf(ax, iters, wf_vals, wf_cis, show_ci=show_ci, color=color,
                                  linestyle=_LINESTYLE["human_eval"],
                                  marker=_MARKER["human_eval"], label=lbl)
                 else:
@@ -298,6 +304,8 @@ def _errorbar_wf(
     iters: list[int],
     wf_vals: list[float],
     wf_cis: list[list[float] | None],
+    *,
+    show_ci: bool = True,
     **kwargs: object,
 ) -> None:
     """Plot work-factor errorbar, filtering out NaN points (PVR_turn = 0)."""
@@ -305,7 +313,7 @@ def _errorbar_wf(
     if not valid:
         return
     vi, vw, vci = zip(*valid)
-    yerr = _ci_to_yerr(list(vw), list(vci))
+    yerr = _ci_to_yerr(list(vw), list(vci)) if show_ci else None
     ax.errorbar(vi, vw, yerr=yerr, linewidth=2, markersize=7, capsize=4, **kwargs)
 
 

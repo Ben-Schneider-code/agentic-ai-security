@@ -120,7 +120,7 @@ def _series(pairings: dict, fix_key: str, fix_val: int,
     return rows
 
 
-def _plot_series(ax, rows, color, label, marker):
+def _plot_series(ax, rows, color, label, marker, show_ci: bool = True):
     if not rows:
         return
     xs = [r[0] for r in rows]
@@ -130,7 +130,7 @@ def _plot_series(ax, rows, color, label, marker):
     yerr = [
         [max(0.0, y - (l if not np.isnan(l) else y)) for y, l in zip(ys, los)],
         [max(0.0, (h if not np.isnan(h) else y) - y) for y, h in zip(ys, his)],
-    ]
+    ] if show_ci else None
     ax.errorbar(xs, ys, yerr=yerr,
                 fmt=f"-{marker}", color=color, linewidth=1.8, markersize=7,
                 capsize=4, capthick=1.1, elinewidth=1.0, label=label)
@@ -140,6 +140,7 @@ def plot_generalization(
     results: list[tuple[str, str]],
     out_path: str | Path,
     subdir: str | None = None,
+    show_ci: bool = True,
 ) -> Path:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -179,7 +180,7 @@ def plot_generalization(
 
     # ---- (a) Column 0: iterative red vs frozen blue_0 ----
     _plot_series(ax_l, col0, RED_COL,
-                 r"iterative red vs frozen blue$_0$", "o")
+                 r"iterative red vs frozen blue$_0$", "o", show_ci=show_ci)
     if diag_rows:
         xs = [r[0] for r in diag_rows]
         ys = [r[1] for r in diag_rows]
@@ -200,7 +201,7 @@ def plot_generalization(
 
     # ---- (b) Row 0: iterative blue vs frozen red_0 ----
     _plot_series(ax_r, row0, BLUE_COL,
-                 r"iterative blue vs frozen red$_0$", "s")
+                 r"iterative blue vs frozen red$_0$", "s", show_ci=show_ci)
     if diag_rows:
         xs = [r[0] for r in diag_rows]
         ys = [r[1] for r in diag_rows]

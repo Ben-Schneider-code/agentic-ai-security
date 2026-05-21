@@ -111,6 +111,7 @@ def plot_held_out_per_style_refusal(
     results: list[tuple[str, str]],
     cross_eval_subdir: str = "cross_eval",
     out_dir: str = "figures/",
+    show_ci: bool = True,
 ) -> Path:
     fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
 
@@ -148,7 +149,7 @@ def plot_held_out_per_style_refusal(
         ax.errorbar(
             blue_iters,
             rates,
-            yerr=[lo_errs, hi_errs],
+            yerr=([lo_errs, hi_errs] if show_ci else None),
             label=STYLE_LABELS[style],
             color=STYLE_COLORS[style],
             marker=STYLE_MARKERS[style],

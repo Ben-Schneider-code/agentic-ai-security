@@ -23,7 +23,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 from collections import defaultdict, Counter
-import yaml
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from util.honeypot_stats import load_reward_config  # noqa: E402
 
 
 def compute_tfidf_cosine_similarity(texts):
@@ -765,13 +770,12 @@ def plot_training_results(run_dir: str, output_dir: str | None = None) -> None:
         reward_config_path = os.path.join(run_dir, "reward_config.yaml")
         if os.path.exists(reward_config_path):
             try:
-                with open(reward_config_path, "r") as f:
-                    config = yaml.unsafe_load(f)
-                    if "total_honeypots" in config:
-                        TOTAL_HONEYPOTS = config["total_honeypots"]
-                        print(
-                            f"Loaded TOTAL_HONEYPOTS={TOTAL_HONEYPOTS} from reward_config.yaml"
-                        )
+                config = load_reward_config(Path(reward_config_path))
+                if "total_honeypots" in config:
+                    TOTAL_HONEYPOTS = config["total_honeypots"]
+                    print(
+                        f"Loaded TOTAL_HONEYPOTS={TOTAL_HONEYPOTS} from reward_config.yaml"
+                    )
             except Exception as e:
                 print(f"Failed to load reward_config.yaml: {e}")
 

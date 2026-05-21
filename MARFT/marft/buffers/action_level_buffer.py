@@ -11,6 +11,7 @@ class ActionBuffer(BaseBuffer):
 
     def __init__(self, args, num_agents):
         super().__init__(args, num_agents)
+        self._shuffle_rng = np.random.default_rng(getattr(args, "seed", 0))
         # action-level preservations
         self.action_level_v_values = np.zeros(
             (
@@ -129,7 +130,7 @@ class ActionBuffer(BaseBuffer):
             mini_batch_size = batch_size // num_mini_batch
 
         rand = np.arange(batch_size)
-        np.random.shuffle(rand)
+        self._shuffle_rng.shuffle(rand)
         sampler = [
             rand[i * mini_batch_size : (i + 1) * mini_batch_size]
             for i in range(num_mini_batch)

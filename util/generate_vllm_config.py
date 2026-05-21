@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""
-Generate dynamic vLLM configs for actor models (student/opponent)
-depending on the training target.
+"""Generate dynamic vLLM configs for actor models (student/opponent).
+
+Blueteam mode supports a *pool* of opponent LoRAs (the red checkpoint registry)
+so blue trains against the entire history of red iterations within a self-play
+cell. Adapters are pre-loaded via --lora-modules at server start (NEVER via the
+runtime /v1/load_lora_adapter endpoint; vLLM <0.6 leaks GPU mem on dynamic load).
+
+Redteam mode runs a single student vLLM with optional student/opponent LoRAs.
 """
 
 import argparse
@@ -11,6 +16,29 @@ import os
 MAX_LORA_RANK = 64
 DEFAULT_MAX_MODEL_LEN = 16384
 DEFAULT_GPU_MEMORY_UTIL = 0.90
+
+# Bound on simultaneously-loaded adapters in vLLM. Each rank-64 LoRA on a 7B
+# model is ~80–120 MB BF16 in GPU mem; --max-cpu-loras can exceed this since
+# CPU RAM swaps in/out. Iteration count must satisfy K <= max_cpu_loras.
+DEFAULT_MAX_LORAS = 8
+DEFAULT_MAX_CPU_LORAS = 16
+
+
+def _load_red_pool(pool_path: str | None) -> list[dict]:
+    """Read the red LoRA registry. Returns [{name, path}, ...]."""
+    if not pool_path:
+        return []
+    if not os.path.exists(pool_path):
+        print(f"[generate_vllm_config] WARNING: pool path {pool_path} does not exist")
+        return []
+    with open(pool_path) as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "entries" in data:
+        return data["entries"]
+    if isinstance(data, list):
+        return data
+    print(f"[generate_vllm_config] WARNING: pool {pool_path} has unexpected shape")
+    return []
 
 
 def main():
@@ -22,7 +50,18 @@ def main():
         help="The agent being trained",
     )
     parser.add_argument(
-        "--opponent-lora", help="Path to opponent LoRA (required if target is blueteam)"
+        "--opponent-lora",
+        help=(
+            "Path to a single opponent LoRA. For blueteam this is treated as a "
+            "fallback pool of size 1 if --opponent-lora-pool is not given."
+        ),
+    )
+    parser.add_argument(
+        "--opponent-lora-pool",
+        help=(
+            "Path to red_lora_registry.json (blueteam only). When provided, blue's "
+            "vLLM pre-loads every adapter listed and the env samples one per episode."
+        ),
     )
     parser.add_argument(
         "--student-lora",
@@ -42,10 +81,24 @@ def main():
         default=1,
         help="GPU index for actor vLLM servers (default: 1)",
     )
+    parser.add_argument(
+        "--max-loras",
+        type=int,
+        default=DEFAULT_MAX_LORAS,
+        help="vLLM --max-loras (concurrent on-GPU adapters)",
+    )
+    parser.add_argument(
+        "--max-cpu-loras",
+        type=int,
+        default=DEFAULT_MAX_CPU_LORAS,
+        help="vLLM --max-cpu-loras (CPU-resident adapter pool)",
+    )
     args = parser.parse_args()
 
-    if args.target == "blueteam" and not args.opponent_lora:
-        parser.error("--opponent-lora is required when target is blueteam")
+    if args.target == "blueteam" and not (args.opponent_lora or args.opponent_lora_pool):
+        parser.error(
+            "--opponent-lora or --opponent-lora-pool is required when target is blueteam"
+        )
 
     config = {
         "_comment": f"Dynamic vLLM config generated for '{args.target}' training",
@@ -56,20 +109,22 @@ def main():
     }
 
     if args.target == "redteam":
-        # Redteam training: student vLLM on actor_gpu
+        # Redteam training: single student vLLM with student + opponent LoRAs.
         student_extra_args = ["--dtype", "auto"]
-        lora_modules = []
+        lora_modules: list[str] = []
         if args.student_lora:
             lora_modules.append(f"student={args.student_lora}")
         if args.opponent_lora:
             lora_modules.append(f"opponent_lora={args.opponent_lora}")
 
         if lora_modules:
-            student_extra_args.append("--enable-lora")
-            student_extra_args.append("--max-lora-rank")
-            student_extra_args.append(str(MAX_LORA_RANK))
-            student_extra_args.append("--lora-modules")
-            student_extra_args.extend(lora_modules)
+            student_extra_args += [
+                "--enable-lora",
+                "--max-lora-rank", str(MAX_LORA_RANK),
+                "--max-loras", str(max(args.max_loras, len(lora_modules))),
+                "--max-cpu-loras", str(max(args.max_cpu_loras, len(lora_modules))),
+                "--lora-modules", *lora_modules,
+            ]
         config["servers"].append(
             {
                 "id": "student",
@@ -82,8 +137,51 @@ def main():
             }
         )
     else:
-        # Blueteam training: NO student vLLM — the blueteam env calls redteam vLLM
-        # directly, so the student vLLM would just waste a GPU.
+        # Blueteam training: redteam vLLM holds the full red checkpoint pool
+        # so the env can swap adapters per episode.
+        red_pool = _load_red_pool(args.opponent_lora_pool)
+        # Fallback: if no pool but a single --opponent-lora was passed, build a
+        # one-entry pool keyed as `redteam` (legacy compatibility).
+        if not red_pool and args.opponent_lora:
+            red_pool = [{"name": "redteam", "path": args.opponent_lora}]
+        if not red_pool:
+            raise SystemExit(
+                "[generate_vllm_config] No red adapters to load — pool empty and "
+                "no --opponent-lora given."
+            )
+
+        # Validate pool: every adapter must have a name and existing path.
+        validated: list[tuple[str, str]] = []
+        seen_names: set[str] = set()
+        for entry in red_pool:
+            name = entry.get("name")
+            path = entry.get("path")
+            if not name or not path:
+                print(f"[generate_vllm_config] WARNING: malformed pool entry: {entry!r}")
+                continue
+            if name in seen_names:
+                print(f"[generate_vllm_config] WARNING: duplicate adapter name '{name}' — skipping")
+                continue
+            if not os.path.exists(path):
+                print(f"[generate_vllm_config] WARNING: adapter path missing: {path} (name={name})")
+                continue
+            validated.append((name, path))
+            seen_names.add(name)
+
+        if not validated:
+            raise SystemExit(
+                "[generate_vllm_config] All adapters in pool are invalid — aborting."
+            )
+
+        # Auto-scale the LoRA caps to the pool size.
+        max_loras = max(args.max_loras, len(validated))
+        max_cpu_loras = max(args.max_cpu_loras, len(validated))
+
+        lora_modules = [f"{name}={path}" for name, path in validated]
+
+        config["_pool_size"] = len(validated)
+        config["_pool_names"] = [name for name, _ in validated]
+
         config["servers"].append(
             {
                 "id": "redteam",
@@ -93,18 +191,16 @@ def main():
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "extra_args": [
-                    "--dtype",
-                    "auto",
+                    "--dtype", "auto",
                     "--enable-lora",
-                    "--max-lora-rank",
-                    str(MAX_LORA_RANK),
-                    "--lora-modules",
-                    f"redteam={args.opponent_lora}",
+                    "--max-lora-rank", str(MAX_LORA_RANK),
+                    "--max-loras", str(max_loras),
+                    "--max-cpu-loras", str(max_cpu_loras),
+                    "--lora-modules", *lora_modules,
                 ],
             }
         )
-        # Placeholder student entry so run_training.sh registry reads don't fail.
-        # The blueteam env ignores STUDENT_VLLM_URL and uses REDTEAM_VLLM_URL.
+        # Placeholder student entry so registry-readers don't fail.
         config["servers"].append(
             {
                 "id": "student",

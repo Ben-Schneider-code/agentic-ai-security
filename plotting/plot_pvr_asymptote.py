@@ -75,11 +75,12 @@ def _plateau(vals: list[float]) -> tuple[float, float, int]:
     return float(np.mean(tail)), float(np.std(tail)), n_tail
 
 
-def _render(ax, iters, vals, lo, hi, metric_label: str, color: str) -> None:
+def _render(ax, iters, vals, lo, hi, metric_label: str, color: str,
+            show_ci: bool = True) -> None:
     iters = np.array(iters)
     vals = np.array(vals)
     yerr = np.array([[v - l for v, l in zip(vals, lo)],
-                     [h - v for v, h in zip(vals, hi)]])
+                     [h - v for v, h in zip(vals, hi)]]) if show_ci else None
     ax.errorbar(
         iters, vals, yerr=yerr,
         fmt="-o", color=color, linewidth=1.8, markersize=7,
@@ -91,18 +92,20 @@ def _render(ax, iters, vals, lo, hi, metric_label: str, color: str) -> None:
     x1 = iters[-1] + (iters[-1] - iters[0]) * 0.18
     ax.axhline(plat_mean, color=GRAY_COL, linewidth=1.5, linestyle="--", zorder=2,
                label=f"plateau mean = {plat_mean:.1f}%")
-    ax.fill_between([x0, x1], plat_mean - plat_std, plat_mean + plat_std,
-                    color=GRAY_COL, alpha=0.18, zorder=1,
-                    label=f"±1σ ({plat_std:.1f} pp, tail-{n_tail})")
+    if show_ci:
+        ax.fill_between([x0, x1], plat_mean - plat_std, plat_mean + plat_std,
+                        color=GRAY_COL, alpha=0.18, zorder=1,
+                        label=f"±1σ ({plat_std:.1f} pp, tail-{n_tail})")
     ax.annotate(
         "", xy=(x1, plat_mean),
         xytext=(iters[-1] + 1e-6, plat_mean),
         arrowprops=dict(arrowstyle="->", color=GRAY_COL, lw=1.3),
     )
-    for x, v, l, h in zip(iters, vals, lo, hi):
-        ax.text(x, v + (h - l) * 0.55 + 0.5,
-                f"[{l:.0f}, {h:.0f}]",
-                ha="center", va="bottom", fontsize=7, color="#555555")
+    if show_ci:
+        for x, v, l, h in zip(iters, vals, lo, hi):
+            ax.text(x, v + (h - l) * 0.55 + 0.5,
+                    f"[{l:.0f}, {h:.0f}]",
+                    ha="center", va="bottom", fontsize=7, color="#555555")
     ax.set_xlabel("Self-play iteration (co-evolved diagonal)")
     ax.set_ylabel(metric_label)
     ax.set_xticks(iters)
@@ -113,6 +116,7 @@ def _render(ax, iters, vals, lo, hi, metric_label: str, color: str) -> None:
 def plot_pvr_asymptote(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    show_ci: bool = True,
 ) -> tuple[Path, dict]:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -152,11 +156,11 @@ def plot_pvr_asymptote(
     _render(ax_c, iters, pvr_conv,
             [c[0] for c in pvr_conv_ci],
             [c[1] for c in pvr_conv_ci],
-            r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)", RED_COL)
+            r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)", RED_COL, show_ci=show_ci)
     _render(ax_t, iters, pvr_turn,
             [c[0] for c in pvr_turn_ci],
             [c[1] for c in pvr_turn_ci],
-            r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)", BLUE_COL)
+            r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)", BLUE_COL, show_ci=show_ci)
 
     ax_c.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{conv}}$")
     ax_t.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{turn}}$")

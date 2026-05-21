@@ -11,6 +11,7 @@ class TokenBuffer(BaseBuffer):
 
     def __init__(self, args, num_agents, pad_token_id):
         super().__init__(args, num_agents)
+        self._shuffle_rng = np.random.default_rng(getattr(args, "seed", 0))
         # for token-level preservations
         self.tppo_values = np.zeros((self.max_batch, self.episode_length + 1, self.n_rollout_threads, self.num_agents, self.max_new_tokens), dtype=np.float32)
         self.tppo_returns = np.zeros((self.max_batch, self.episode_length, self.n_rollout_threads, self.num_agents, self.max_new_tokens), dtype=np.float32)
@@ -98,7 +99,7 @@ class TokenBuffer(BaseBuffer):
             mini_batch_size = batch_size // num_mini_batch
 
         rand = np.arange(batch_size)
-        np.random.shuffle(rand)
+        self._shuffle_rng.shuffle(rand)
         sampler = [rand[i * mini_batch_size : (i + 1) * mini_batch_size] for i in range(num_mini_batch)]
 
         # keep (num_agent, (max_new_tokens))
