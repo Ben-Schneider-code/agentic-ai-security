@@ -35,7 +35,7 @@ def mse_loss(e):
 
 
 def to_cuda(
-    x: torch.Tensor | np.ndarray | tuple, device: str = "cuda:1"
+    x: torch.Tensor | np.ndarray | tuple, device: str = "cuda:0"
 ) -> torch.Tensor | np.ndarray | tuple:
     if isinstance(x, np.ndarray):
         if x.dtype == np.object_:

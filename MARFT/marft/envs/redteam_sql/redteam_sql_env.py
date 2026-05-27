@@ -15,8 +15,8 @@ import sys
 # Add parent directory to path to import util
 import os
 
-sys.path.append("/app")
-# Add project root for local execution
+# Add project root for local execution (resolved from this file's location,
+# never a hardcoded container path).
 root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
 if root_path not in sys.path:
     sys.path.append(root_path)
@@ -133,12 +133,32 @@ from dataclasses import dataclass, field
 
 
 # Read once at module import — orchestrator sets this per ablation cell.
-_HONEYPOT_TYPE = os.environ.get("HONEYPOT_TYPE", "rowcol").lower()
-if _HONEYPOT_TYPE not in {"rowcol", "row", "col"}:
-    print(
-        f"[WARNING] Unknown HONEYPOT_TYPE='{_HONEYPOT_TYPE}', falling back to 'rowcol'"
+# Contract:
+#   * HONEYPOT_TYPE MUST be set in the environment before this module is imported.
+#   * Source of truth for a self-play run is results-<id>/summary.json["honeypot_type"];
+#     shell wrappers (run_selfplay.sh / run_cross_eval.sh / util/run_benign_eval.sh)
+#     read it from there and export before launching python.
+#   * Re-binding os.environ after import does NOT update _HONEYPOT_TYPE; the
+#     correct way to switch arms inside one process is module reload
+#     (see util/verify_redesign.py for the pattern).
+#   * Failing fast here is deliberate: a silent "rowcol" default once caused
+#     a `col` ablation cell to score owner_id hits during cross-eval because
+#     cross_evaluate.py was launched in a fresh process where HONEYPOT_TYPE
+#     was never propagated.
+_HONEYPOT_TYPE_RAW = os.environ.get("HONEYPOT_TYPE")
+if _HONEYPOT_TYPE_RAW is None:
+    raise RuntimeError(
+        "HONEYPOT_TYPE env var is not set. Every entry point that imports "
+        "redteam_sql_env must declare the arm. Shell wrappers read it from "
+        "results-<id>/summary.json; standalone callers must export it "
+        "(rowcol|row|col) before importing."
     )
-    _HONEYPOT_TYPE = "rowcol"
+_HONEYPOT_TYPE = _HONEYPOT_TYPE_RAW.lower()
+if _HONEYPOT_TYPE not in {"rowcol", "row", "col"}:
+    raise RuntimeError(
+        f"Invalid HONEYPOT_TYPE={_HONEYPOT_TYPE_RAW!r}; allowed: rowcol|row|col."
+    )
+print(f"[redteam_sql_env] honeypot arm: {_HONEYPOT_TYPE}", file=sys.stderr)
 
 
 # Full honeypot universe — never change at runtime; helpers below filter per arm.
@@ -381,7 +401,7 @@ class OfflineLLM:
         self,
         model_name: str = model,
         mcp_client: Optional[MCPClient] = None,
-        vllm_base_url: str = "http://localhost:8000/v1",
+        vllm_base_url: Optional[str] = None,
         max_wait_time: int = 600,
         max_tokens: int = 2048,
         skip_health_check: bool = False,
@@ -392,7 +412,7 @@ class OfflineLLM:
         Args:
             model_name: Name of the model (informational only, server already has model loaded)
             mcp_client: MCP client for database operations
-            vllm_base_url: Base URL of the vLLM server (default: http://localhost:8000/v1)
+            vllm_base_url: Base URL of the vLLM server (required; no default)
             max_wait_time: Maximum time to wait for server to be ready in seconds (default: 300)
             max_tokens: Maximum number of tokens to generate (default: 2048)
             skip_health_check: Skip server readiness check and model listing (default: False).
@@ -401,6 +421,11 @@ class OfflineLLM:
         from openai import OpenAI, AsyncOpenAI
         import httpx
 
+        if not vllm_base_url:
+            raise RuntimeError(
+                "OfflineLLM: vllm_base_url was not provided. The vLLM endpoint "
+                "must be passed explicitly (no localhost fallback)."
+            )
         self.vllm_base_url = vllm_base_url
         self.model_name = model_name
         self.mcp_client = mcp_client
@@ -518,7 +543,13 @@ class OfflineLLM:
         history: list[Message],
         system_prompt: str = "",
     ) -> str:
-        from openai import BadRequestError, NotFoundError
+        from openai import (
+            APIConnectionError,
+            BadRequestError,
+            InternalServerError,
+            NotFoundError,
+            RateLimitError,
+        )
 
         conversation = [{"role": "system", "content": system_prompt}] + history
         # print("=== OfflineLLM.acomplete() called ===")
@@ -526,12 +557,20 @@ class OfflineLLM:
 
         # Call vLLM server via OpenAI-compatible API with error handling for context length
         # Try with full conversation, then progressively truncate if context is too long
-        max_retries = 5
+        # Each failure mode gets an independent retry budget so a burst of one
+        # kind (e.g. transient vLLM 5xx) never exhausts the budget meant for
+        # another (e.g. context-length truncation).
+        max_context_attempts = 5   # progressive history-truncation passes
+        max_timeout_retries = 3    # asyncio.wait_for timeouts
+        max_server_retries = 8     # transient vLLM 5xx / connection / rate-limit
+
         current_conversation = conversation
         response_text = ""
+        context_attempt = 0
         timeout_count = 0
+        server_error_count = 0
 
-        for attempt in range(max_retries):
+        while True:
             try:
                 extra_kwargs = {}
                 if self._base_seed is not None:
@@ -552,13 +591,42 @@ class OfflineLLM:
                 break  # Success, exit retry loop
             except asyncio.TimeoutError:
                 timeout_count += 1
-                print(f"[WARNING] LLM request timed out (timeout attempt {timeout_count}/3)")
-                if timeout_count >= 3:
-                    print("[ERROR] LLM request timed out 3 times; treating as empty response.")
+                print(
+                    f"[WARNING] LLM request timed out "
+                    f"(timeout {timeout_count}/{max_timeout_retries})"
+                )
+                if timeout_count >= max_timeout_retries:
+                    print("[ERROR] LLM request timed out repeatedly; treating as empty response.")
                     return ""
                 # Exponential backoff with jitter: prevents thundering-herd retries
                 # when many concurrent episodes time out at the same moment.
                 backoff = min(5 * 2 ** timeout_count + random.uniform(0, 1), 30)
+                await asyncio.sleep(backoff)
+                continue
+            except (InternalServerError, APIConnectionError, RateLimitError) as e:
+                # Transient server-side faults: vLLM 5xx (scheduler hiccup,
+                # transient OOM, model still warming up), dropped connections,
+                # and rate limiting. APITimeoutError subclasses
+                # APIConnectionError, so HTTP-layer timeouts land here too.
+                # Retry generously with backoff — a single blip must never
+                # kill a multi-day training run.
+                server_error_count += 1
+                etype = type(e).__name__
+                print(
+                    f"[WARNING] Transient LLM API error ({etype}) "
+                    f"(server retry {server_error_count}/{max_server_retries}): {e}"
+                )
+                if server_error_count >= max_server_retries:
+                    # Persistent failure (server likely dead): re-raise so the
+                    # runner's emergency-save path fires and the run stays
+                    # resumable, rather than silently poisoning every episode
+                    # with error-string victim responses.
+                    print(
+                        f"[ERROR] LLM API still failing after {max_server_retries} "
+                        f"retries; re-raising to trigger emergency save."
+                    )
+                    raise
+                backoff = min(5 * 2 ** server_error_count + random.uniform(0, 1), 60)
                 await asyncio.sleep(backoff)
                 continue
             except BadRequestError as e:
@@ -567,38 +635,38 @@ class OfflineLLM:
                     "maximum context length" in error_msg
                     or "context length" in error_msg.lower()
                 ):
+                    context_attempt += 1
                     print(
-                        f"[WARNING] Context length exceeded (attempt {attempt + 1}/{max_retries})"
+                        f"[WARNING] Context length exceeded "
+                        f"(truncation {context_attempt}/{max_context_attempts})"
                     )
-
-                    if attempt < max_retries - 1:
-                        # Truncate: keep system prompt (first message) and remove oldest user/assistant messages
-                        # Each attempt removes half the remaining history (exponential back-off)
-                        n_history = len(current_conversation) - 1  # exclude system prompt
-                        if n_history > 2:
-                            # Remove half of history messages, rounding up to an even number
-                            messages_to_remove = max(2, (n_history // 2 + 1) & ~1)
-                            messages_to_remove = min(messages_to_remove, n_history - 2)
-
-                            current_conversation = [
-                                current_conversation[0]
-                            ] + current_conversation[1 + messages_to_remove :]
-                            print(
-                                f"[INFO] Truncated conversation to {len(current_conversation)} messages (attempt {attempt + 1}), retrying..."
-                            )
-                        else:
-                            # Can't truncate further, fall through to error
-                            print(
-                                "[ERROR] Cannot truncate further, conversation too short"
-                            )
-                            return "Error: Context length exceeded and cannot be reduced. Please reset the conversation."
-                    else:
+                    if context_attempt >= max_context_attempts:
                         print(
-                            f"[ERROR] Context length exceeded after {max_retries} truncation attempts"
+                            f"[ERROR] Context length exceeded after "
+                            f"{max_context_attempts} truncation attempts"
                         )
                         return "Error: Context length exceeded after multiple truncation attempts. Please reset the conversation."
+                    # Truncate: keep system prompt (first message) and remove oldest user/assistant messages
+                    # Each attempt removes half the remaining history (exponential back-off)
+                    n_history = len(current_conversation) - 1  # exclude system prompt
+                    if n_history > 2:
+                        # Remove half of history messages, rounding up to an even number
+                        messages_to_remove = max(2, (n_history // 2 + 1) & ~1)
+                        messages_to_remove = min(messages_to_remove, n_history - 2)
+                        current_conversation = [
+                            current_conversation[0]
+                        ] + current_conversation[1 + messages_to_remove :]
+                        print(
+                            f"[INFO] Truncated conversation to {len(current_conversation)} messages, retrying..."
+                        )
+                        continue
+                    else:
+                        # Can't truncate further
+                        print("[ERROR] Cannot truncate further, conversation too short")
+                        return "Error: Context length exceeded and cannot be reduced. Please reset the conversation."
                 else:
-                    # Re-raise if it's a different BadRequestError
+                    # Non-context BadRequestError: a malformed request that
+                    # retrying will not fix.
                     print(f"[ERROR] OpenAI BadRequestError: {error_msg}")
                     return f"Error: API request failed - {error_msg}"
             except NotFoundError as e:
@@ -613,9 +681,6 @@ class OfflineLLM:
                 print(f"Full error message: {error_msg}")
                 print(f"{'=' * 60}\n")
                 return f"Error: 404 Not Found - Model '{self.model_name}' not found at {self.vllm_base_url}. Check vLLM server configuration."
-        else:
-            # This shouldn't be reached due to break/return in loop, but just in case
-            return "Error: Failed to get response from LLM after retries."
 
         # print(f"=== vLLM Response received: {response_text[:200]}...")  # in reward_debug.jsonl as victim_full_response
 
@@ -1202,7 +1267,7 @@ class SQLEnv:
         dataset_path=None,
         log_dir=None,
         shared_honeypots: Optional[set] = None,  # Shared across all parallel envs
-        vllm_base_url: str = "http://localhost:8000/v1",  # vLLM server URL for blueteam agent
+        vllm_base_url: Optional[str] = None,  # vLLM server URL (must be passed explicitly)
         max_tokens: int = 2048,  # Maximum tokens for LLM generation
         opponent_model_name: Optional[str] = None,
         opponent_lora_path: Optional[str] = None,
@@ -1257,10 +1322,17 @@ class SQLEnv:
         # Using get_event_loop() would return the shared main-thread loop.
         self._loop = asyncio.new_event_loop()
 
-        # Initialize MCP client
+        # Initialize MCP client. The MCP server script is resolved relative to
+        # the repo root, not a hardcoded container path.
         self.mcp_client = MCPClient()
+        _mcp_server = os.path.join(root_path, "mcp", "postgres.py")
+        if not os.path.isfile(_mcp_server):
+            raise FileNotFoundError(
+                f"MCP server script not found at {_mcp_server} "
+                f"(root_path={root_path})"
+            )
         self._loop.run_until_complete(
-            self.mcp_client.connect_to_server("/app/mcp/postgres.py")
+            self.mcp_client.connect_to_server(_mcp_server)
         )
 
         self.victim_llm = OfflineLLM(
@@ -1277,7 +1349,10 @@ class SQLEnv:
         self.label = None
         self.current_state = None
         self.dataset = pd.read_csv(
-            "/app/MARFT/marft/envs/redteam_sql/redteam_dataset_specific.csv"
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "redteam_dataset_specific.csv",
+            )
         )
 
         # Track red team actions for reward calculation

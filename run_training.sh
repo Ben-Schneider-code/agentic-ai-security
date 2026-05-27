@@ -33,8 +33,8 @@ HOST_ONLY=false
 RESULTS_ID=""
 BASE_MODEL="Snowflake/Arctic-Text2SQL-R1-7B"
 LOAD_IN_4BIT=false
-ACTOR_GPU=1
-TRAINING_GPU=2
+ACTOR_GPU=""
+TRAINING_GPU=""
 HORIZON=5
 NUM_ENV_STEPS=1600
 VANILLA_SIZE=""
@@ -89,11 +89,66 @@ echo "Bordercase size: ${BORDERCASE_SIZE:-<unset>}"
 if [[ "$TARGET" != "redteam" && "$TARGET" != "blueteam" ]]; then
     echo "ERROR: --target must be 'redteam' or 'blueteam'"; exit 1
 fi
+# --- Validate GPU locators (required; no silent fallback to 1/2) ------------
+# --training-gpu pins the trainer process via CUDA_VISIBLE_DEVICES; --actor-gpu
+# pins the vLLM actor fleet (start_vllm.py sets CUDA_VISIBLE_DEVICES per server).
+# An unset/duplicate index would silently allocate on another user's GPU.
+if [[ -z "$ACTOR_GPU" || -z "$TRAINING_GPU" ]]; then
+    echo "ERROR: --actor-gpu and --training-gpu are both required (no GPU defaults)."; exit 1
+fi
+if ! [[ "$ACTOR_GPU" =~ ^[0-9]+$ && "$TRAINING_GPU" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --actor-gpu / --training-gpu must be non-negative integers (got $ACTOR_GPU / $TRAINING_GPU)."; exit 1
+fi
+if [[ "$ACTOR_GPU" == "$TRAINING_GPU" ]]; then
+    echo "ERROR: --actor-gpu and --training-gpu must differ (got $ACTOR_GPU / $TRAINING_GPU)."; exit 1
+fi
 if [[ "$TARGET" == "blueteam" && -z "$OPPONENT_LORA" && -z "$OPPONENT_LORA_POOL" ]]; then
     echo "ERROR: blueteam requires --opponent-lora or --opponent-lora-pool"; exit 1
 fi
 
 ROOT_DIR="$(pwd)"
+
+# --- Per-run namespace (collision-free runtime dir) -------------------------
+# A parent orchestrator (run_selfplay.sh / run_replicate.sh) exports
+# AAS_RUN_ID / AAS_RUN_DIR; when run standalone we mint our own. Every vLLM
+# artifact lives under AAS_RUN_DIR so concurrent runs never share state.
+if [[ -z "$AAS_RUN_ID" ]]; then
+    AAS_RUN_ID="train-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+if [[ -z "$AAS_RUN_DIR" ]]; then
+    AAS_RUN_DIR="${ROOT_DIR}/.runtime/${AAS_RUN_ID}"
+fi
+export AAS_RUN_ID AAS_RUN_DIR
+mkdir -p "${AAS_RUN_DIR}/vllm_logs" "${AAS_RUN_DIR}/vllm_cache"
+export VLLM_REGISTRY="${AAS_RUN_DIR}/vllm_actor_registry.json"
+export VLLM_LOG_DIR="${AAS_RUN_DIR}/vllm_logs"
+export VLLM_CACHE_DIR="${AAS_RUN_DIR}/vllm_cache"
+
+# --- Cleanup: vLLM process group + (if we own it) the ephemeral DB ----------
+source "${ROOT_DIR}/script/pg_ephemeral.sh"
+OWNS_DB=0
+VLLM_ACTOR_PID=""
+VLLM_PGID=""
+_cleanup_training() {
+    # Capture the real exit status FIRST: bash exits a script with the status
+    # of the last command run in its EXIT trap, so a trailing `[[...]] &&` that
+    # evaluates false would silently turn a successful run into exit 1.
+    local _rc=$?
+    if [[ -n "$VLLM_PGID" ]] && kill -0 "-${VLLM_PGID}" 2>/dev/null; then
+        echo "[run_training] Stopping actor vLLM process group ${VLLM_PGID}..."
+        kill -TERM -- "-${VLLM_PGID}" 2>/dev/null || true
+        for _ in $(seq 1 30); do
+            kill -0 "-${VLLM_PGID}" 2>/dev/null || break
+            sleep 2
+        done
+        kill -KILL -- "-${VLLM_PGID}" 2>/dev/null || true
+    fi
+    [[ "$OWNS_DB" == "1" ]] && pg_ephemeral_stop
+    return $_rc
+}
+trap _cleanup_training EXIT
+trap '_cleanup_training; exit 130' INT
+trap '_cleanup_training; exit 143' TERM
 
 if [[ -z "$RESULTS_ID" ]]; then
     RESULTS_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5 || true)"
@@ -128,8 +183,16 @@ echo "Results dir:    ${RESULTS_TEAM_DIR}"
 # 1. Start Core Infrastructure (DB, MCP)
 # ============================================
 echo ""
-echo "[1/3] Starting Core Fixed Infrastructure..."
-./script/init.sh
+echo "[1/3] Starting Core Fixed Infrastructure (ephemeral Postgres)..."
+if [[ -n "$AAS_PG_CONTAINER" ]]; then
+    pg_ephemeral_require
+    echo "[run_training] Reusing ephemeral Postgres from parent: ${AAS_PG_CONTAINER}"
+else
+    # Mark ownership BEFORE bring-up so a signal mid-startup still triggers
+    # teardown (pg_ephemeral_start exports AAS_PG_CONTAINER as its first step).
+    OWNS_DB=1
+    pg_ephemeral_start
+fi
 
 # ============================================
 # 2. Generate and Start Dynamic Actor vLLM
@@ -137,15 +200,23 @@ echo "[1/3] Starting Core Fixed Infrastructure..."
 echo ""
 echo "[2/3] Configuring Actor Models for $TARGET..."
 
-ACTOR_CONFIG_PATH="/tmp/actor_vllm_config.json"
-ACTOR_REGISTRY_PATH="/tmp/vllm_actor_registry.json"
+ACTOR_CONFIG_PATH="${AAS_RUN_DIR}/actor_vllm_config.json"
+ACTOR_REGISTRY_PATH="$VLLM_REGISTRY"
 rm -f "$ACTOR_REGISTRY_PATH"
+
+# Dynamically allocate a free TCP port for the actor vLLM server so concurrent
+# runs never collide on a fixed 8001/8002.
+ACTOR_PORT=$(alloc_free_port)
+assert_port_free "$ACTOR_PORT"
+echo "Actor vLLM port: $ACTOR_PORT"
 
 GEN_CMD=(python3 util/generate_vllm_config.py \
     --target "$TARGET" \
     --out-config "$ACTOR_CONFIG_PATH" \
     --model "$BASE_MODEL" \
-    --actor-gpu "$ACTOR_GPU")
+    --actor-gpu "$ACTOR_GPU" \
+    --registry-path "$ACTOR_REGISTRY_PATH" \
+    --actor-port "$ACTOR_PORT")
 
 [[ -n "$OPPONENT_LORA" ]] && GEN_CMD+=(--opponent-lora "$OPPONENT_LORA")
 [[ -n "$OPPONENT_LORA_POOL" ]] && GEN_CMD+=(--opponent-lora-pool "$OPPONENT_LORA_POOL")
@@ -154,9 +225,12 @@ GEN_CMD=(python3 util/generate_vllm_config.py \
 "${GEN_CMD[@]}"
 
 echo "Starting Actor vLLM Fleet..."
-python3 start_vllm.py --config "$ACTOR_CONFIG_PATH" --timeout 600 --wait-only &
+# setsid puts the fleet in its own process group so the EXIT trap can reap the
+# whole vLLM tree without signalling this script.
+setsid python3 start_vllm.py --config "$ACTOR_CONFIG_PATH" --timeout 600 --wait-only &
 VLLM_ACTOR_PID=$!
-trap 'kill $VLLM_ACTOR_PID 2>/dev/null || true' EXIT
+VLLM_PGID=$(ps -o pgid= -p "$VLLM_ACTOR_PID" 2>/dev/null | tr -d ' ' || true)
+[[ -z "$VLLM_PGID" ]] && VLLM_PGID=$VLLM_ACTOR_PID
 
 echo "Waiting for actor models to load..."
 TIMEOUT=660
@@ -173,8 +247,7 @@ while true; do
     ELAPSED=$(($(date +%s) - START_TIME))
     if [ $ELAPSED -ge $TIMEOUT ]; then
         echo "ERROR: Actor vLLM servers timed out"
-        kill $VLLM_ACTOR_PID 2>/dev/null
-        exit 1
+        exit 1   # EXIT trap reaps the vLLM process group
     fi
     sleep 5
 done
@@ -215,10 +288,33 @@ fi
 # ============================================
 echo ""
 echo "[3/3] Starting Training..."
+
+if [[ "$AAS_DRY_RUN" == "1" ]]; then
+    echo "[run_training] AAS_DRY_RUN=1 — skipping train_sql.py; writing success marker."
+    touch "${RESULTS_TEAM_DIR}/.success"
+    exit 0   # EXIT trap reaps vLLM + (if owned) the ephemeral DB
+fi
+
 cd MARFT
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:False
-export TRAINING_GPU="$TRAINING_GPU"
-export TRAINING_DEVICE="cuda:$TRAINING_GPU"
+
+# --- Hard GPU isolation for the training process ----------------------------
+# The MARFT trainer addresses GPUs by absolute index (cuda:N) in several
+# places, some with stale defaults (cuda:1 / cuda:2). Relying on every code
+# path to pick the right index is fragile — a single missed reference would
+# allocate on another user's GPU. Instead we pin the training process to ONLY
+# its training GPU via CUDA_VISIBLE_DEVICES. With exactly one device visible,
+# every in-process index collapses to 0, so the worst a stray cuda:N can do is
+# crash THIS run — it can never touch another GPU.
+#
+# Safe to export globally here: the actor vLLM fleet was already launched
+# above (it captured its own CUDA_VISIBLE_DEVICES via start_vllm.py), and
+# train_sql.py is the only GPU process spawned past this point.
+PHYSICAL_TRAINING_GPU="$TRAINING_GPU"
+export CUDA_VISIBLE_DEVICES="$PHYSICAL_TRAINING_GPU"
+export TRAINING_GPU=0
+export TRAINING_DEVICE="cuda:0"
+echo "Training process pinned to physical GPU ${PHYSICAL_TRAINING_GPU} (CUDA_VISIBLE_DEVICES); in-process device = cuda:0"
 
 EXTRA_TRAIN_ARGS=""
 if [ "$LOAD_IN_4BIT" = true ]; then

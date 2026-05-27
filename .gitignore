@@ -2,6 +2,7 @@
 __pycache__/
 results/
 results-*/
+.runtime/
 ablations/
 *.log
 *.png
@@ -13,6 +14,13 @@ ablations/
 !requirements.txt
 !uv.lock
 !experiments/*
+!vendor/**/*.json
 
 # Ephemeral directory for figures
 figures*/
+
+# Python build artifacts (e.g. from building vendor/ packages)
+build/
+*.egg-info/
+
+vendor/

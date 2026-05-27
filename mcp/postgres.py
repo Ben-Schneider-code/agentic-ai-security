@@ -5,19 +5,35 @@ import json
 
 mcp = FastMCP("postgres")
 
-# ENV PGHOST=localhost
-# ENV PGUSER=julia
-# ENV PGPASSWORD=123
-# ENV PGDATABASE=msft_customers
+# Connection details come from the AAS_DB_* contract exported by
+# script/pg_ephemeral.sh (or, inside the legacy container, set explicitly by
+# dockerfile.base / init-docker-compose.sh). There is intentionally NO default:
+# a missing variable means the ephemeral Postgres was never provisioned, and we
+# crash early here rather than silently connecting to a wrong/absent server.
+#
+# The agents connect as the restricted `agent_user` (AAS_DB_AGENT_USER), never
+# the privileged bootstrap superuser.
+def _build_db_config() -> dict:
+    required = {
+        "user": "AAS_DB_AGENT_USER",
+        "password": "AAS_DB_AGENT_PASSWORD",
+        "database": "AAS_DB_NAME",
+        "host": "AAS_DB_HOST",
+        "port": "AAS_DB_PORT",
+    }
+    missing = [env for env in required.values() if not os.environ.get(env)]
+    if missing:
+        raise RuntimeError(
+            "mcp/postgres.py: missing DB connection env vars: "
+            f"{', '.join(missing)}. The ephemeral Postgres was not provisioned "
+            "— start it via script/pg_ephemeral.sh."
+        )
+    cfg = {key: os.environ[env] for key, env in required.items()}
+    cfg["port"] = int(cfg["port"])
+    return cfg
 
-# Use restricted agent_user instead of privileged julia user
-DB_CONFIG = {
-    "user": "agent_user",
-    "password": "db_agent_password",
-    "database": "msft_customers",
-    "host": "localhost",
-    "port": 5432,
-}
+
+DB_CONFIG = _build_db_config()
 
 @mcp.tool()
 async def sql(sql: str) -> str:

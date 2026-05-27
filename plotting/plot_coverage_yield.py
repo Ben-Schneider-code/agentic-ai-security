@@ -1,12 +1,18 @@
 """
-Honeypot coverage vs. yield per (Red_i × Blue_j).
+Attempted vs. successful breach per (Red_i × Blue_j).
 
-Coverage = fraction of the honeypot universe red's SQL *referenced* (attempted).
-Yield    = fraction of the honeypot universe red actually *violated* (accessed=True).
+Attempted breach (referenced) = fraction of the honeypot universe red's SQL
+*referenced* — parser-level intent: the query touched a honeypot row/column.
+Successful breach (accessed)  = fraction red actually *violated* — executor-level
+realization: the honeypot row materialized in the result set (accessed=True).
 
-The story: as Blue evolves, coverage stays high (red keeps targeting honeypots) but
-yield drops (blue filters execution) — a widening gap proves blue is blocking at the
-execution layer, not the intent layer.
+The story: as Blue evolves, attempted-breach stays high (red keeps targeting
+honeypots) but successful-breach drops (blue filters execution) — a widening
+gap proves blue is blocking at the execution layer, not the intent layer.
+
+Underlying data fields in pairing metrics JSON are still named `coverage_pct`
+and `yield_pct` (unchanged for backward compatibility); only the user-facing
+labels and output filenames have been renamed.
 
 CLI usage:
     python plotting/plot_coverage_yield.py --results results-<ID>
@@ -48,16 +54,18 @@ except ImportError:
 apply_paper_style()
 
 DESCRIPTION = (
-    "Honeypot coverage vs. yield per (Red_i × Blue_j). Coverage = fraction of "
-    "honeypot universe red's SQL referenced. Yield = fraction actually violated "
-    "(accessed=True). A widening gap between the lines means blue is filtering "
-    "at execution, not intent — coverage stays high while yield drops."
+    "Attempted vs. successful breach per (Red_i × Blue_j). Attempted breach = "
+    "fraction of the honeypot universe red's SQL referenced (parser-level intent). "
+    "Successful breach = fraction red actually violated (executor-level "
+    "realization; accessed=True). A widening gap between the lines means blue is "
+    "filtering at execution, not intent — attempted-breach stays high while "
+    "successful-breach drops."
 )
 
 COVERAGE_YIELD_JOBS: list[tuple[str, str]] = [
-    ("cross_eval",       "cross_eval_coverage_yield.png"),
-    ("cross_eval_quick", "quick_coverage_yield.png"),
-    ("diagonal_eval",    "diagonal_eval_coverage_yield.png"),
+    ("cross_eval",       "cross_eval_attempted_vs_successful_breach.png"),
+    ("cross_eval_quick", "quick_attempted_vs_successful_breach.png"),
+    ("diagonal_eval",    "diagonal_eval_attempted_vs_successful_breach.png"),
 ]
 
 
@@ -160,31 +168,31 @@ def plot_coverage_yield(
             ax.set_title(f"Red {ri}", fontsize=11)
             continue
 
-        # Yield line
+        # Successful-breach line (executor-level: accessed=True)
         kwargs_base = dict(marker="o", markersize=5, linewidth=1.5, capsize=3)
         yld_arr = np.array(yld_vals, dtype=float)
         ax.errorbar(
             x, yld_arr,
             yerr=([np.array(yld_lo), np.array(yld_hi)] if show_ci else None),
             color=RED_COL, linestyle="--",
-            label="Yield (accessed)" if not legend_added else "_nolegend_",
+            label="Successful breach (accessed)" if not legend_added else "_nolegend_",
             **kwargs_base,
         )
 
-        # Coverage line (only if MARFT was available)
+        # Attempted-breach line (parser-level: SQL referenced honeypot)
         cov_arr = np.array(cov_vals, dtype=float)
         if has_coverage and not np.all(np.isnan(cov_arr)):
             ax.errorbar(
                 x, cov_arr,
                 yerr=([np.array(cov_lo), np.array(cov_hi)] if show_ci else None),
                 color=GRAY_COL, linestyle="-",
-                label="Coverage (referenced)" if not legend_added else "_nolegend_",
+                label="Attempted breach (referenced)" if not legend_added else "_nolegend_",
                 **kwargs_base,
             )
         elif not has_coverage:
             ax.text(
                 0.5, 0.97,
-                "Coverage N/A\n(MARFT not imported)",
+                "Attempted-breach N/A\n(MARFT not imported)",
                 transform=ax.transAxes,
                 ha="center", va="top",
                 fontsize=7, color="#888888",
@@ -202,8 +210,8 @@ def plot_coverage_yield(
 
     axes_flat[0].set_ylabel("Fraction of honeypot universe (%)", fontsize=10)
     fig.suptitle(
-        "Honeypot coverage vs. yield\n"
-        "(coverage stays high → red keeps finding targets; yield drops → blue blocks execution)",
+        "Attempted vs. successful breach per pairing\n"
+        "(attempted stays high → red keeps aiming at honeypots; successful drops → blue blocks at execution)",
         fontsize=11,
         y=1.02,
     )
@@ -216,7 +224,7 @@ def plot_coverage_yield(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot honeypot coverage vs. yield from cross-eval pairings."
+        description="Plot attempted vs. successful breach from cross-eval pairings."
     )
     parser.add_argument("--results", nargs="+", required=True, metavar="DIR[:LABEL]")
     parser.add_argument(
@@ -226,7 +234,7 @@ def main() -> None:
              "Known values with built-in output filenames: cross_eval, "
              "cross_eval_quick, diagonal_eval. Any other subdir (e.g. "
              "cross_eval_long) is accepted and writes to "
-             "figures/<subdir>_coverage_yield.png unless --out is set.",
+             "figures/<subdir>_attempted_vs_successful_breach.png unless --out is set.",
     )
     parser.add_argument("--out", default=None, help="Output path.")
     args = parser.parse_args()
@@ -234,10 +242,10 @@ def main() -> None:
     results = parse_results_arg(args.results)
     subdir = args.subdir
     default_fname = {
-        "cross_eval": "cross_eval_coverage_yield.png",
-        "cross_eval_quick": "quick_coverage_yield.png",
-        "diagonal_eval": "diagonal_eval_coverage_yield.png",
-    }.get(subdir, f"{subdir}_coverage_yield.png")
+        "cross_eval": "cross_eval_attempted_vs_successful_breach.png",
+        "cross_eval_quick": "quick_attempted_vs_successful_breach.png",
+        "diagonal_eval": "diagonal_eval_attempted_vs_successful_breach.png",
+    }.get(subdir, f"{subdir}_attempted_vs_successful_breach.png")
     out = args.out or f"figures/{default_fname}"
     saved = plot_coverage_yield(results, out, subdir=subdir)
     print(f"[{DESCRIPTION[:80]}...]\n  → {saved}")

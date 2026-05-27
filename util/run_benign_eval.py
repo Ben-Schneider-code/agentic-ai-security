@@ -33,6 +33,7 @@ for _p in [_project_root, os.path.join(_project_root, "MARFT")]:
         sys.path.append(_p)
 
 from util.cross_evaluate import (
+    _assert_honeypot_arm_matches_summary,
     discover_checkpoints,
     evaluate_benign_only,
     load_progress,
@@ -134,7 +135,9 @@ async def run_benign_sweep(args):
         print(f"Resuming: {len(completed)} iterations already completed")
 
     mcp = MCPClient(max_concurrent=args.concurrency)
-    await mcp.connect_to_server("/app/mcp/postgres.py")
+    await mcp.connect_to_server(
+        os.path.join(_project_root, "mcp", "postgres.py")
+    )
     print("MCP client connected.")
 
     # Verify vLLM server is up
@@ -243,8 +246,10 @@ def main():
     parser.add_argument("--episodes", type=int, default=200,
                         help="Benign episodes per blue iteration (default: 200)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--blue-vllm-url", default="http://localhost:8002/v1",
-                        help="Blue-team vLLM base URL")
+    # No localhost default: when an actual sweep runs, OfflineLLM rejects a
+    # missing URL. (--aggregate-only legitimately omits this.)
+    parser.add_argument("--blue-vllm-url", default=None,
+                        help="Blue-team vLLM base URL (set by run_benign_eval.sh)")
     parser.add_argument("--concurrency", type=int, default=8,
                         help="Max concurrent episodes (default: 8)")
     parser.add_argument("--include-base", action="store_true", default=True,
@@ -266,6 +271,8 @@ def main():
 
     args = parser.parse_args()
     args.style_filter = [s.strip() for s in args.style_filter.split(",") if s.strip()]
+
+    _assert_honeypot_arm_matches_summary(args.selfplay_dir)
 
     if args.aggregate_only:
         aggregate(args.output_dir, args.selfplay_dir, args.base_model)

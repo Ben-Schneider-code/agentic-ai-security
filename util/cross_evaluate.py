@@ -38,6 +38,7 @@ from marft.envs.redteam_sql.redteam_sql_env import (
     OfflineLLM,
     detect_honeypot_access,
     extract_sql_query,
+    get_honeypot_type,
     is_victim_refusal,
     looks_like_sql,
     sql_system_prompt,
@@ -49,6 +50,34 @@ from marft.envs.blueteam_sql.blueteam_sql_env import (
 )
 from util.mcp_client import MCPClient
 from util.metrics import wilson_ci, compute_pairing_metrics
+
+
+def _assert_honeypot_arm_matches_summary(selfplay_dir: str) -> None:
+    """Verify the imported redteam_sql_env arm matches the run's summary.json.
+
+    redteam_sql_env captures HONEYPOT_TYPE at module import time and crashes
+    if it's unset. This check catches the *wrong-arm-exported* case:
+    HONEYPOT_TYPE was set, but to a value that disagrees with what self-play
+    actually trained against. Without this, a typo in the shell wrapper could
+    silently re-introduce the original bug (different universe in training vs.
+    cross-eval) and only show up later when reviewing the JSON.
+    """
+    summary_path = os.path.join(selfplay_dir, "summary.json")
+    if not os.path.isfile(summary_path):
+        raise RuntimeError(
+            f"summary.json missing at {summary_path} — cannot verify honeypot arm."
+        )
+    with open(summary_path) as f:
+        summary = json.load(f)
+    summary_arm = summary.get("honeypot_type")
+    active_arm = get_honeypot_type()
+    if summary_arm != active_arm:
+        raise RuntimeError(
+            f"Honeypot arm mismatch: redteam_sql_env imported with "
+            f"HONEYPOT_TYPE={active_arm!r} but summary.json says "
+            f"honeypot_type={summary_arm!r}. The shell wrapper should export "
+            f"HONEYPOT_TYPE from {summary_path} before launching python."
+        )
 
 
 # ──────────────────────────── Robustness Budgets ────────────────────────────
@@ -959,7 +988,9 @@ async def run_evaluation(args):
 
     # Initialize MCP client with concurrency limit to gate Postgres load
     mcp_client = MCPClient(max_concurrent=args.concurrency)
-    await mcp_client.connect_to_server("/app/mcp/postgres.py")
+    await mcp_client.connect_to_server(
+        os.path.join(project_root, "mcp", "postgres.py")
+    )
     print("MCP client connected.")
 
     # Verify vLLM servers are up once, then skip health checks for per-pairing instances
@@ -1140,8 +1171,10 @@ def main():
     parser.add_argument("--episodes", type=int, default=100, help="Episodes per pairing")
     parser.add_argument("--horizon", type=int, default=5, help="Max turns per attack episode")
     parser.add_argument("--output-dir", default=None, help="Output directory")
-    parser.add_argument("--red-vllm-url", default="http://localhost:8001/v1", help="Red team vLLM URL")
-    parser.add_argument("--blue-vllm-url", default="http://localhost:8002/v1", help="Blue team vLLM URL")
+    # No localhost default: when an actual evaluation runs, OfflineLLM rejects a
+    # missing URL. (--aggregate-only / --plot-only legitimately omit these.)
+    parser.add_argument("--red-vllm-url", default=None, help="Red team vLLM URL (set by run_cross_eval.sh)")
+    parser.add_argument("--blue-vllm-url", default=None, help="Blue team vLLM URL (set by run_cross_eval.sh)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--include-base", action="store_true", default=True,
                         help="Include iter_0 (base model, no LoRA) as baseline")
@@ -1167,6 +1200,8 @@ def main():
 
     if args.output_dir is None:
         args.output_dir = os.path.join(args.selfplay_dir, "cross_eval")
+
+    _assert_honeypot_arm_matches_summary(args.selfplay_dir)
 
     if args.aggregate_only:
         aggregate_results(args.output_dir, args)

@@ -43,7 +43,7 @@ GPU_MEM=0.50
 MAX_MODEL_LEN=4096
 CONCURRENCY=8
 SEED=42
-PORT=8002
+PORT=""                 # vLLM port; auto-allocated (free port) if unset
 INCLUDE_BASE=true
 RESUME=false
 AGGREGATE_ONLY=false
@@ -79,6 +79,22 @@ if [[ ! -d "$RESULTS_DIR" ]]; then
     _err "Directory not found: $RESULTS_DIR"
     exit 1
 fi
+
+# --- Inherit honeypot arm from the self-play run (fail-fast) ----------------
+# redteam_sql_env (transitively imported by run_benign_eval.py via the
+# blueteam env) reads HONEYPOT_TYPE at module import time and crashes if it's
+# unset. summary.json is the source of truth — keep the arm consistent with
+# what self-play actually trained against.
+SUMMARY_JSON="${RESULTS_DIR}/summary.json"
+if [[ ! -f "$SUMMARY_JSON" ]]; then
+    _err "summary.json not found at $SUMMARY_JSON — cannot determine honeypot arm."
+    exit 1
+fi
+HONEYPOT_TYPE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('honeypot_type'); assert v in ('rowcol','row','col'), f'bad honeypot_type={v!r}'; print(v)" "$SUMMARY_JSON") || {
+    _err "could not parse honeypot_type from $SUMMARY_JSON"; exit 1;
+}
+export HONEYPOT_TYPE
+_step "Honeypot arm (from $SUMMARY_JSON): $HONEYPOT_TYPE"
 
 # Clamp gpu-mem at 0.90 (same guard as run_cross_eval.sh single-GPU mode)
 if awk -v g="$GPU_MEM" 'BEGIN{exit !(g > 0.90)}'; then
@@ -163,30 +179,63 @@ echo "Results directory: $OUTPUT_DIR"
 _step "Episodes per iteration: $EPISODES  seed=$SEED  concurrency=$CONCURRENCY"
 _step "GPU: $GPU  gpu-mem: $GPU_MEM  max-model-len: $MAX_MODEL_LEN  port: $PORT"
 
+# ── Per-run namespace + ephemeral infra ────────────────────────────────────────
+ROOT_DIR="$(pwd)"
+source "${ROOT_DIR}/script/pg_ephemeral.sh"
+if [[ -z "$AAS_RUN_ID" ]]; then
+    AAS_RUN_ID="benigneval-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+if [[ -z "$AAS_RUN_DIR" ]]; then
+    AAS_RUN_DIR="${ROOT_DIR}/.runtime/${AAS_RUN_ID}"
+fi
+export AAS_RUN_ID AAS_RUN_DIR
+export VLLM_LOG_DIR="${AAS_RUN_DIR}/vllm_logs"
+mkdir -p "$VLLM_LOG_DIR"
+OWNS_DB=0
+[[ -z "$PORT" ]] && PORT=$(alloc_free_port)
+
 # ── Cleanup trap ───────────────────────────────────────────────────────────────
 VLLM_PID=""
 cleanup_vllm() {
     echo ""
     echo "[cleanup] Stopping vLLM server..."
+    # vLLM is launched under setsid: PID == PGID, so `kill -- -PID` reaps the
+    # api_server plus every vLLM worker child.
     if [[ -n "$VLLM_PID" ]] && kill -0 "$VLLM_PID" 2>/dev/null; then
-        echo "[cleanup] Sending SIGTERM to vLLM (PID=$VLLM_PID)..."
-        kill "$VLLM_PID" 2>/dev/null || true
+        echo "[cleanup] Sending SIGTERM to vLLM (PGID=$VLLM_PID)..."
+        kill -TERM -- "-$VLLM_PID" 2>/dev/null || kill -TERM "$VLLM_PID" 2>/dev/null || true
     fi
     sleep 10
     if [[ -n "$VLLM_PID" ]] && kill -0 "$VLLM_PID" 2>/dev/null; then
         echo "[cleanup] WARNING: vLLM still alive. Sending SIGKILL — may brick GPU."
-        kill -9 "$VLLM_PID" 2>/dev/null || true
+        kill -KILL -- "-$VLLM_PID" 2>/dev/null || kill -KILL "$VLLM_PID" 2>/dev/null || true
     fi
 }
-trap cleanup_vllm EXIT
+_benign_cleanup() {
+    # Preserve the real exit status — bash exits with the EXIT trap's last
+    # command status, so a trailing false `[[...]] &&` would mask success as 1.
+    local _rc=$?
+    cleanup_vllm
+    [[ "$OWNS_DB" == "1" ]] && pg_ephemeral_stop
+    return $_rc
+}
+trap _benign_cleanup EXIT
+trap '_benign_cleanup; exit 130' INT
+trap '_benign_cleanup; exit 143' TERM
 
 # ============================================================
 # 1. Start Postgres + MCP
 # ============================================================
 echo ""
-_step "[1/3] Starting Postgres and MCP..."
-./script/init.sh
-_ok "Postgres and MCP ready."
+if [[ -n "$AAS_PG_CONTAINER" ]]; then
+    pg_ephemeral_require
+    _step "[1/3] Reusing ephemeral Postgres from parent: ${AAS_PG_CONTAINER}"
+else
+    _step "[1/3] Starting ephemeral Postgres..."
+    OWNS_DB=1   # mark before bring-up so a mid-startup signal still tears down
+    pg_ephemeral_start
+    _ok "Ephemeral Postgres ready."
+fi
 
 # ============================================================
 # 2. Start vLLM server (blue-team LoRAs only)
@@ -194,7 +243,7 @@ _ok "Postgres and MCP ready."
 echo ""
 _step "[2/3] Starting vLLM server..."
 
-LOG_DIR="/tmp/vllm_logs"
+LOG_DIR="$VLLM_LOG_DIR"
 mkdir -p "$LOG_DIR"
 
 BLUE_LORA_MODULES=""
@@ -207,7 +256,7 @@ MAX_BLUE_LORAS=$(( N_BLUE > 2 ? N_BLUE : 2 ))
 echo "  vLLM: GPU $GPU, port $PORT, ${N_BLUE} blue LoRAs"
 echo "  LoRA modules:$BLUE_LORA_MODULES"
 
-CUDA_VISIBLE_DEVICES=$GPU python3 -m vllm.entrypoints.openai.api_server \
+setsid env CUDA_VISIBLE_DEVICES=$GPU python3 -m vllm.entrypoints.openai.api_server \
     --model "$BASE_MODEL" \
     --port $PORT \
     --host 0.0.0.0 \
@@ -221,7 +270,7 @@ CUDA_VISIBLE_DEVICES=$GPU python3 -m vllm.entrypoints.openai.api_server \
     --max-lora-rank 64 \
     --max-loras $MAX_BLUE_LORAS \
     --lora-modules $BLUE_LORA_MODULES \
-    > "$LOG_DIR/benign_eval.log" 2>&1 &
+    > "$LOG_DIR/benign_eval_${PORT}.log" 2>&1 &
 VLLM_PID=$!
 echo "  vLLM PID: $VLLM_PID"
 
@@ -234,12 +283,12 @@ while [[ "$SERVER_READY" == "false" ]]; do
     ELAPSED=$(($(date +%s) - START_TIME))
     if [[ $ELAPSED -ge $TIMEOUT ]]; then
         _err "vLLM server did not become ready within ${TIMEOUT}s."
-        echo "Check log: $LOG_DIR/benign_eval.log"
+        echo "Check log: $LOG_DIR/benign_eval_${PORT}.log"
         exit 1
     fi
 
     if ! kill -0 $VLLM_PID 2>/dev/null; then
-        _err "vLLM server died. Check $LOG_DIR/benign_eval.log"
+        _err "vLLM server died. Check $LOG_DIR/benign_eval_${PORT}.log"
         exit 1
     fi
 

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from typing import Optional
 from contextlib import AsyncExitStack
@@ -52,8 +53,12 @@ class MCPClient:
     async def connect_to_server(self, server_script_path: str):
 
         command = "python3"
+        # Pass the full parent environment explicitly. With env=None the MCP
+        # SDK falls back to get_default_environment(), a filtered allowlist
+        # that drops the AAS_DB_* connection contract — the spawned
+        # mcp/postgres.py would then have no way to reach the ephemeral DB.
         server_params = StdioServerParameters(
-            command=command, args=[server_script_path], env=None
+            command=command, args=[server_script_path], env=dict(os.environ)
         )
 
         stdio_transport = await self.exit_stack.enter_async_context(

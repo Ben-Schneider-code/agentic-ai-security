@@ -47,6 +47,12 @@ except ImportError:
         FIG_SIZE_1x2,
     )
 
+from util.compute_cost_analysis import (
+    discover_iterations,
+    load_phase_data,
+    compute_metrics,
+)
+
 apply_paper_style()
 
 DESCRIPTION = (
@@ -59,6 +65,27 @@ DESCRIPTION = (
 )
 
 _SUBDIR_PRIORITY = ("cross_eval", "diagonal_eval", "cross_eval_old2")
+
+
+def _load_or_compute_cost(selfplay_dir: str) -> dict | None:
+    """Return compute_cost metrics dict, loading the cached JSON if present,
+    else computing inline from raw iter_N artifacts (<1s, no GPU)."""
+    p = Path(selfplay_dir) / "compute_cost_analysis.json"
+    if p.is_file():
+        with open(p) as f:
+            return json.load(f)
+    raw_iters = discover_iterations(selfplay_dir)
+    if not raw_iters:
+        return None
+    loaded = []
+    for it in raw_iters:
+        entry = {"iter": it["iter"]}
+        if it["red_dir"]:
+            entry["red"] = load_phase_data(it["red_dir"], "redteam")
+        if it["blue_dir"]:
+            entry["blue"] = load_phase_data(it["blue_dir"], "blueteam")
+        loaded.append(entry)
+    return compute_metrics(loaded)
 
 
 def _load_diagonal(selfplay_dir: str) -> tuple[dict[int, dict], str] | None:
@@ -86,15 +113,13 @@ def plot_honeypot_saturation(
     label, selfplay_dir = results[0]
 
     # Training-side data
-    compute_path = Path(selfplay_dir) / "compute_cost_analysis.json"
     train_iters: list[int] = []
     red_eis: list[int] = []
     red_yield: list[float] = []
     red_accessed: list[int] = []
     red_exits: list[str] = []
-    if compute_path.is_file():
-        with open(compute_path) as f:
-            cc = json.load(f)
+    cc = _load_or_compute_cost(selfplay_dir)
+    if cc:
         for row in cc.get("per_iteration", []):
             train_iters.append(row["iter"])
             red_eis.append(row["red_eis"])

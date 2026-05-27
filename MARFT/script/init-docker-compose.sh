@@ -19,6 +19,7 @@ chmod +x /app/script/import_csvs.sh
 export PGPASSWORD=123
 export PGUSER=julia
 export PGDATABASE=msft_customers
+export AAS_DATA_DIR=/app/data
 /app/script/import_csvs.sh
 
 # 3. Agent User & Row Security

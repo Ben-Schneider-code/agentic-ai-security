@@ -787,7 +787,10 @@ def plot_training_results(run_dir: str, output_dir: str | None = None) -> None:
                 )
 
                 TOTAL_HONEYPOTS = get_total_honeypots()
-            except ImportError:
+            except (ImportError, RuntimeError):
+                # ImportError: MARFT missing. RuntimeError: redteam_sql_env's
+                # fail-fast on unset HONEYPOT_TYPE (this plotting script doesn't
+                # set it because no run-specific summary.json is in scope here).
                 # Fallback: use unique honeypots discovered as the known total
                 # This gives a "coverage of discovered" rather than "coverage of all"
                 unique_honeypots = set()

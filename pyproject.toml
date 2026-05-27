@@ -55,3 +55,9 @@ explicit = true
 torch = [{ index = "pytorch-cu121" }]
 torchvision = [{ index = "pytorch-cu121" }]
 torchaudio = [{ index = "pytorch-cu121" }]
+# The PyPI name "pyairports" now resolves only to a placeholder release (0.0.1,
+# author "John Doe") that ships a "sample"/"tests" skeleton instead of the
+# pyairports module. That breaks `import outlines` — a transitive vLLM
+# guided-decoding dependency — making every vLLM chat completion return HTTP
+# 500. Pin to the genuine package vendored under vendor/pyairports/.
+pyairports = [{ path = "vendor/pyairports", editable = false }]

@@ -35,7 +35,7 @@ class MAS(ABC):
         self.algo = algo
         self.normalization_mode = normalization_mode
         self.num_agents = num_agents
-        self.device = os.environ.get("TRAINING_DEVICE", "cuda:2")
+        self.device = os.environ.get("TRAINING_DEVICE", "cuda:0")
 
         self.context_window = context_window
         self.max_new_tokens = max_new_tokens

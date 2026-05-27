@@ -68,5 +68,14 @@ ENV PGUSER=julia
 ENV PGPASSWORD=123
 ENV PGDATABASE=msft_customers
 
+# AAS_DB_* connection contract consumed by mcp/postgres.py. Inside this legacy
+# single-container image Postgres runs locally on 5432 and the agents connect
+# as the restricted agent_user. Set explicitly — the code has no fallback.
+ENV AAS_DB_HOST=localhost
+ENV AAS_DB_PORT=5432
+ENV AAS_DB_NAME=msft_customers
+ENV AAS_DB_AGENT_USER=agent_user
+ENV AAS_DB_AGENT_PASSWORD=db_agent_password
+
 # Volume for results (from original dockerfile, useful for all)
 VOLUME /app/MARFT/marft/scripts/results

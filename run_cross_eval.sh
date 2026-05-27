@@ -60,9 +60,9 @@ QUICK_EPISODES=40
 QUICK_HORIZON=3
 SINGLE_GPU=false
 GPU_ID=0                 # GPU index for single-GPU mode
-RED_PORT=8001            # vLLM port for red server (dual-GPU mode); override for parallel runs
-BLUE_PORT=8003           # vLLM port for blue server (dual-GPU mode); override for parallel runs
-SKIP_INIT=false          # skip ./script/init.sh (postgres + MCP) — set when another run already started them
+RED_PORT=""              # vLLM port for red server; auto-allocated (free port) if unset
+BLUE_PORT=""             # vLLM port for blue server; auto-allocated (free port) if unset
+SKIP_INIT=false          # back-compat flag; DB reuse is inferred from $AAS_PG_CONTAINER
 GPU_MEM=""               # gpu-memory-utilization (default varies by mode)
 MAX_MODEL_LEN=""         # max-model-len (default varies by mode)
 CONCURRENCY=""           # passed to cross_evaluate.py (default varies by mode)
@@ -153,6 +153,21 @@ if [[ ! -d "$SELFPLAY_DIR" ]]; then
     exit 1
 fi
 
+# --- Inherit honeypot arm from the self-play run (fail-fast) ----------------
+# redteam_sql_env reads HONEYPOT_TYPE at import time and crashes if it's unset,
+# so we must export it BEFORE launching any python3 process below. summary.json
+# is the source of truth — re-deriving the arm any other way would risk drift.
+SUMMARY_JSON="${SELFPLAY_DIR}/summary.json"
+if [[ ! -f "$SUMMARY_JSON" ]]; then
+    _err "summary.json not found at $SUMMARY_JSON — cannot determine honeypot arm."
+    exit 1
+fi
+HONEYPOT_TYPE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('honeypot_type'); assert v in ('rowcol','row','col'), f'bad honeypot_type={v!r}'; print(v)" "$SUMMARY_JSON") || {
+    _err "could not parse honeypot_type from $SUMMARY_JSON"; exit 1;
+}
+export HONEYPOT_TYPE
+_step "Honeypot arm (from $SUMMARY_JSON): $HONEYPOT_TYPE"
+
 if [[ "$DIAGONAL_ONLY" == "true" ]]; then
     OUTPUT_DIR="${SELFPLAY_DIR}/diagonal_eval"
 elif [[ "$QUICK" == "true" ]]; then
@@ -163,6 +178,26 @@ fi
 # --output-dir override (e.g. for P2 baseline experiment → cross_eval_baseline/)
 [[ -n "$OUTPUT_DIR_OVERRIDE" ]] && OUTPUT_DIR="$OUTPUT_DIR_OVERRIDE"
 mkdir -p "$OUTPUT_DIR"
+
+# --- Per-run namespace + ephemeral infra helpers ---
+ROOT_DIR="$(pwd)"
+source "${ROOT_DIR}/script/pg_ephemeral.sh"
+if [[ -z "$AAS_RUN_ID" ]]; then
+    AAS_RUN_ID="crosseval-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+if [[ -z "$AAS_RUN_DIR" ]]; then
+    AAS_RUN_DIR="${ROOT_DIR}/.runtime/${AAS_RUN_ID}"
+fi
+export AAS_RUN_ID AAS_RUN_DIR
+export VLLM_LOG_DIR="${AAS_RUN_DIR}/vllm_logs"
+mkdir -p "$VLLM_LOG_DIR"
+OWNS_DB=0
+
+# Allocate vLLM ports dynamically unless explicitly overridden, so concurrent
+# cross-eval runs never collide on a fixed 8001/8003.
+[[ -z "$RED_PORT"  ]] && RED_PORT=$(alloc_free_port)
+[[ -z "$BLUE_PORT" ]] && BLUE_PORT=$(alloc_free_port)
+while [[ "$BLUE_PORT" == "$RED_PORT" ]]; do BLUE_PORT=$(alloc_free_port); done
 
 # --- Discover iterations ---
 ITERATIONS=()
@@ -293,11 +328,13 @@ SINGLE_VLLM_PID=""
 cleanup_vllm() {
     echo ""
     echo "[cleanup] Stopping vLLM servers..."
+    # Each server is launched under setsid, so its PID is also its PGID and
+    # `kill -- -PID` reaps the api_server plus every vLLM worker child.
     for pid_var in RED_VLLM_PID BLUE_VLLM_PID SINGLE_VLLM_PID; do
         pid=${!pid_var}
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            echo "[cleanup] Sending SIGTERM to $pid_var (PID=$pid)..."
-            kill "$pid" 2>/dev/null || true
+            echo "[cleanup] Sending SIGTERM to $pid_var (PGID=$pid)..."
+            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
         fi
     done
     # Give vLLM time for graceful CUDA context teardown
@@ -306,22 +343,37 @@ cleanup_vllm() {
         pid=${!pid_var}
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             echo "[cleanup] WARNING: $pid_var still alive. Sending SIGKILL — may brick GPU."
-            kill -9 "$pid" 2>/dev/null || true
+            kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
         fi
     done
 }
-trap cleanup_vllm EXIT
+_cross_cleanup() {
+    # Preserve the real exit status — bash exits with the EXIT trap's last
+    # command status, so a trailing false `[[...]] &&` would mask success as 1.
+    local _rc=$?
+    cleanup_vllm
+    [[ "$OWNS_DB" == "1" ]] && pg_ephemeral_stop
+    return $_rc
+}
+trap _cross_cleanup EXIT
+trap '_cross_cleanup; exit 130' INT
+trap '_cross_cleanup; exit 143' TERM
 
 # ============================================
 # 1. Start Postgres + MCP
 # ============================================
 echo ""
-if [[ "$SKIP_INIT" == "true" ]]; then
-    _step "[1/3] Skipping Postgres and MCP init (--skip-init)."
+if [[ -n "$AAS_PG_CONTAINER" ]]; then
+    pg_ephemeral_require
+    _step "[1/3] Reusing ephemeral Postgres from parent: ${AAS_PG_CONTAINER}"
+elif [[ "$SKIP_INIT" == "true" ]]; then
+    _err "--skip-init given but no AAS_PG_CONTAINER in environment — no database to use."
+    exit 1
 else
-    _step "[1/3] Starting Postgres and MCP..."
-    ./script/init.sh
-    _ok "Postgres and MCP ready."
+    _step "[1/3] Starting ephemeral Postgres..."
+    OWNS_DB=1   # mark before bring-up so a mid-startup signal still tears down
+    pg_ephemeral_start
+    _ok "Ephemeral Postgres ready."
 fi
 
 # ============================================
@@ -353,12 +405,12 @@ for p in $RED_PORT $BLUE_PORT; do
     fi
 done
 
-LOG_DIR="/tmp/vllm_logs"
+LOG_DIR="$VLLM_LOG_DIR"
 mkdir -p "$LOG_DIR"
 
 if [[ "$SINGLE_GPU" == "true" ]]; then
     # --- SINGLE-GPU MODE: one vLLM server with all red + blue LoRAs ---
-    echo "  Single server: GPU $GPU_ID, port 8001"
+    echo "  Single server: GPU $GPU_ID, port $RED_PORT"
     echo "  All LoRA modules (${N_RED} red + ${N_BLUE} blue) on one server"
 
     ALL_LORA_MODULES=""
@@ -377,9 +429,9 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
     echo "  LoRA modules:$ALL_LORA_MODULES"
 
     echo "Starting single vLLM server..."
-    CUDA_VISIBLE_DEVICES=$GPU_ID python3 -m vllm.entrypoints.openai.api_server \
+    setsid env CUDA_VISIBLE_DEVICES=$GPU_ID python3 -m vllm.entrypoints.openai.api_server \
         --model "$BASE_MODEL" \
-        --port 8001 \
+        --port $RED_PORT \
         --host 0.0.0.0 \
         --gpu-memory-utilization $GPU_MEM \
         --max-model-len $MAX_MODEL_LEN \
@@ -391,7 +443,7 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
         --max-lora-rank 64 \
         --max-loras $MAX_ALL_LORAS \
         --lora-modules $ALL_LORA_MODULES \
-        > "$LOG_DIR/crosseval_single.log" 2>&1 &
+        > "$LOG_DIR/crosseval_single_${RED_PORT}.log" 2>&1 &
     SINGLE_VLLM_PID=$!
     echo "  vLLM PID: $SINGLE_VLLM_PID"
 
@@ -404,16 +456,16 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
         ELAPSED=$(($(date +%s) - START_TIME))
         if [[ $ELAPSED -ge $TIMEOUT ]]; then
             echo "ERROR: vLLM server did not become ready within ${TIMEOUT}s"
-            echo "Check log: $LOG_DIR/crosseval_single.log"
+            echo "Check log: $LOG_DIR/crosseval_single_${RED_PORT}.log"
             exit 1
         fi
 
         if ! kill -0 $SINGLE_VLLM_PID 2>/dev/null; then
-            echo "ERROR: vLLM server died. Check $LOG_DIR/crosseval_single.log"
+            echo "ERROR: vLLM server died. Check $LOG_DIR/crosseval_single_${RED_PORT}.log"
             exit 1
         fi
 
-        if curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
+        if curl -s http://localhost:$RED_PORT/v1/models | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('data') else 1)" 2>/dev/null; then
             SERVER_READY=true
             _ok "vLLM ready (${ELAPSED}s)"
         fi
@@ -425,8 +477,8 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
     done
     _ok "vLLM server ready."
 
-    RED_VLLM_URL="http://localhost:8001/v1"
-    BLUE_VLLM_URL="http://localhost:8001/v1"
+    RED_VLLM_URL="http://localhost:$RED_PORT/v1"
+    BLUE_VLLM_URL="http://localhost:$RED_PORT/v1"
 
 else
     # --- DUAL-GPU MODE: separate red and blue vLLM servers ---
@@ -456,7 +508,7 @@ else
     echo "  Blue LoRA modules:$BLUE_LORA_MODULES"
 
     echo "Starting red team vLLM server..."
-    CUDA_VISIBLE_DEVICES=$RED_GPU python3 -m vllm.entrypoints.openai.api_server \
+    setsid env CUDA_VISIBLE_DEVICES=$RED_GPU python3 -m vllm.entrypoints.openai.api_server \
         --model "$BASE_MODEL" \
         --port $RED_PORT \
         --host 0.0.0.0 \
@@ -475,7 +527,7 @@ else
     echo "  Red vLLM PID: $RED_VLLM_PID"
 
     echo "Starting blue team vLLM server..."
-    CUDA_VISIBLE_DEVICES=$BLUE_GPU python3 -m vllm.entrypoints.openai.api_server \
+    setsid env CUDA_VISIBLE_DEVICES=$BLUE_GPU python3 -m vllm.entrypoints.openai.api_server \
         --model "$BASE_MODEL" \
         --port $BLUE_PORT \
         --host 0.0.0.0 \

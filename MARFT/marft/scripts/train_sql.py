@@ -93,8 +93,15 @@ def make_train_env(all_args, shared_honeypots=None):
 
     SQLEnv, _, _ = get_env_components(all_args.env_name)
 
-    # Get vLLM URL from environment or use default
-    vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
+    # vLLM URL must be provided explicitly by the orchestrator (run_training.sh
+    # reads it from the per-run actor registry). No localhost fallback: a
+    # missing value means we would silently train against the wrong server.
+    vllm_url = os.environ.get("STUDENT_VLLM_URL")
+    if not vllm_url:
+        raise RuntimeError(
+            "train_sql.py: STUDENT_VLLM_URL is not set. Launch training via "
+            "run_training.sh so the actor vLLM endpoint is wired up."
+        )
 
     def get_env_fn(rank):
         def init_env():
@@ -126,8 +133,15 @@ def make_train_env(all_args, shared_honeypots=None):
 
 
 def make_eval_env(all_args):
-    # Get vLLM URL from environment or use default
-    vllm_url = os.environ.get("STUDENT_VLLM_URL", "http://localhost:8001/v1")
+    # vLLM URL must be provided explicitly by the orchestrator (run_training.sh
+    # reads it from the per-run actor registry). No localhost fallback: a
+    # missing value means we would silently train against the wrong server.
+    vllm_url = os.environ.get("STUDENT_VLLM_URL")
+    if not vllm_url:
+        raise RuntimeError(
+            "train_sql.py: STUDENT_VLLM_URL is not set. Launch training via "
+            "run_training.sh so the actor vLLM endpoint is wired up."
+        )
 
     SQLEnv, _, _ = get_env_components(all_args.env_name)
 
@@ -341,8 +355,8 @@ def build_run_dir(all_args):
     if not run_dir.exists():
         os.makedirs(str(run_dir))
 
-    # Check for experiment label injected during docker build
-    label_path = Path("/app/experiment_label.txt")
+    # Check for an optional experiment label file at the repo root.
+    label_path = Path(__file__).resolve().parents[3] / "experiment_label.txt"
     if label_path.exists():
         try:
             import shutil
@@ -405,7 +419,13 @@ def main(args):
     # seed
     # Only seed the training device — manual_seed_all initializes CUDA contexts on ALL
     # visible GPUs, leaking ~0.5-1GB onto other GPUs for the entire training duration.
-    _training_gpu = int(os.environ.get("TRAINING_GPU", "2"))
+    _training_gpu_env = os.environ.get("TRAINING_GPU")
+    if not _training_gpu_env:
+        raise RuntimeError(
+            "train_sql.py: TRAINING_GPU is not set. Launch training via "
+            "run_training.sh so the training GPU index is wired up."
+        )
+    _training_gpu = int(_training_gpu_env)
     print(f">>> Setting seed to {all_args.seed}")
     torch.manual_seed(all_args.seed)
     with torch.cuda.device(_training_gpu):

@@ -78,8 +78,9 @@ def main():
     parser.add_argument(
         "--actor-gpu",
         type=int,
-        default=1,
-        help="GPU index for actor vLLM servers (default: 1)",
+        required=True,
+        help="Physical GPU index for actor vLLM servers (required — no default; "
+        "a wrong index would launch vLLM on another user's GPU on a shared host).",
     )
     parser.add_argument(
         "--max-loras",
@@ -93,6 +94,18 @@ def main():
         default=DEFAULT_MAX_CPU_LORAS,
         help="vLLM --max-cpu-loras (CPU-resident adapter pool)",
     )
+    parser.add_argument(
+        "--registry-path",
+        required=True,
+        help="Path the launched fleet writes its actor registry JSON to "
+        "(per-run, under the run's runtime dir — never a shared /tmp path).",
+    )
+    parser.add_argument(
+        "--actor-port",
+        type=int,
+        required=True,
+        help="TCP port for the actor vLLM server (dynamically allocated per run).",
+    )
     args = parser.parse_args()
 
     if args.target == "blueteam" and not (args.opponent_lora or args.opponent_lora_pool):
@@ -102,9 +115,9 @@ def main():
 
     config = {
         "_comment": f"Dynamic vLLM config generated for '{args.target}' training",
-        "base_port": 8001,
+        "base_port": args.actor_port,
         "host": "0.0.0.0",
-        "registry_path": "/tmp/vllm_actor_registry.json",
+        "registry_path": args.registry_path,
         "servers": [],
     }
 
@@ -130,7 +143,7 @@ def main():
                 "id": "student",
                 "model": args.model,
                 "gpus": [args.actor_gpu],
-                "port": 8001,
+                "port": args.actor_port,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "extra_args": student_extra_args,
@@ -187,7 +200,7 @@ def main():
                 "id": "redteam",
                 "model": args.model,
                 "gpus": [args.actor_gpu],
-                "port": 8002,
+                "port": args.actor_port,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "extra_args": [
@@ -206,7 +219,7 @@ def main():
                 "id": "student",
                 "model": args.model,
                 "gpus": [args.actor_gpu],
-                "port": 8002,
+                "port": args.actor_port,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,
                 "gpu_memory_utilization": DEFAULT_GPU_MEMORY_UTIL,
                 "_note": "placeholder — blueteam env uses REDTEAM_VLLM_URL, not STUDENT_VLLM_URL",

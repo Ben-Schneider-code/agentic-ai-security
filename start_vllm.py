@@ -33,7 +33,7 @@ Config format (JSON):
     "host": "0.0.0.0"
 }
 
-Outputs a registry file at $VLLM_REGISTRY (default: /tmp/vllm_registry.json):
+Outputs a registry file at the config's "registry_path" (or $VLLM_REGISTRY):
 {
     "policy":    {"url": "http://0.0.0.0:8100", "model": "meta-llama/Llama-3.1-70B-Instruct", "gpus": [0,1,2,3]},
     "reward":    {"url": "http://0.0.0.0:8101", "model": "Skywork/...", "gpus": [4]},
@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -57,7 +58,27 @@ from typing import Dict, List, Optional
 # ──────────────────────────────────────────────
 # Chat template detection (carried over from your team's script)
 # ──────────────────────────────────────────────
-TEMPLATE_DIR = os.environ.get("CHAT_TEMPLATE_DIR", "/app/util")
+TEMPLATE_DIR = os.environ.get(
+    "CHAT_TEMPLATE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "util"),
+)
+
+
+def _required_env(name: str) -> str:
+    """Read a required env var or crash early with a clear message.
+
+    Per-run resource locations (registry / log / cache dirs) are passed in
+    explicitly by the orchestrator. A missing one means the run was launched
+    outside its namespace — fail loud instead of writing to a shared default.
+    """
+    val = os.environ.get(name)
+    if not val:
+        raise RuntimeError(
+            f"start_vllm.py: required env var {name} is not set. "
+            "Launch this via run_training.sh / a script that exports the "
+            "per-run vLLM namespace (VLLM_REGISTRY / VLLM_LOG_DIR / VLLM_CACHE_DIR)."
+        )
+    return val
 
 
 def detect_chat_template(model: str) -> Optional[str]:
@@ -169,11 +190,27 @@ class VLLMInstance:
         if self.tp_size > 1:
             env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
             env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-        # Isolate cache per instance
-        cache_dir = os.path.expanduser(f"~/.cache/vllm/{self.server_id}")
+        # Isolate cache per instance AND per run. The per-run VLLM_CACHE_DIR
+        # prevents two concurrent runs (both with a server id "student") from
+        # sharing ~/.cache/vllm/student and corrupting each other.
+        cache_dir = os.path.join(_required_env("VLLM_CACHE_DIR"), self.server_id)
         os.makedirs(cache_dir, exist_ok=True)
         env["VLLM_CACHE_ROOT"] = cache_dir
         return env
+
+    def assert_port_free(self):
+        """Crash early if this instance's port is already bound."""
+        s = socket.socket()
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", self.port))
+        except OSError as e:
+            raise RuntimeError(
+                f"Port {self.port} for server '{self.server_id}' is already "
+                f"in use — refusing to launch."
+            ) from e
+        finally:
+            s.close()
 
     def start(self):
         cmd = self.build_cmd()
@@ -186,8 +223,8 @@ class VLLMInstance:
         )
         print(f"[{self.server_id}] {' '.join(cmd)}")
 
-        # Ensure log dir exists
-        log_dir = Path("/tmp/vllm_logs")
+        # Ensure log dir exists (per-run, never a shared /tmp path).
+        log_dir = Path(_required_env("VLLM_LOG_DIR"))
         log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file_path = log_dir / f"{self.server_id}.log"
         print(f"[{self.server_id}] Logging output to {self.log_file_path}")
@@ -246,9 +283,13 @@ class ServerFleet:
     def __init__(self, registry_path: Optional[str] = None):
         self.instances: Dict[str, VLLMInstance] = {}
         self._placeholder_entries: Dict[str, dict] = {}
-        self.registry_path = registry_path or os.environ.get(
-            "VLLM_REGISTRY", "/tmp/vllm_registry.json"
-        )
+        self.registry_path = registry_path or os.environ.get("VLLM_REGISTRY")
+        if not self.registry_path:
+            raise RuntimeError(
+                "ServerFleet: no registry path — config must carry "
+                "'registry_path' or VLLM_REGISTRY must be set. Refusing to "
+                "fall back to a shared /tmp path."
+            )
 
     def add(self, instance: VLLMInstance):
         self.instances[instance.server_id] = instance
@@ -284,6 +325,10 @@ class ServerFleet:
     def start_all(self):
         self.validate_gpu_assignments()
         self.validate_ports()
+        # Fail fast if any port is already taken, before spending minutes
+        # loading a model only to have the server die on bind.
+        for inst in self.instances.values():
+            inst.assert_port_free()
         print(f"\nStarting {len(self.instances)} vLLM server(s)...\n")
         for inst in self.instances.values():
             inst.start()
@@ -391,7 +436,16 @@ class ServerFleet:
 # ──────────────────────────────────────────────
 # Registry helpers (importable by other scripts)
 # ──────────────────────────────────────────────
-DEFAULT_REGISTRY_PATH = os.environ.get("VLLM_REGISTRY", "/tmp/vllm_registry.json")
+DEFAULT_REGISTRY_PATH = os.environ.get("VLLM_REGISTRY")  # no shared /tmp fallback
+
+
+def _resolve_registry_path(registry_path: Optional[str]) -> str:
+    path = registry_path or DEFAULT_REGISTRY_PATH
+    if not path:
+        raise RuntimeError(
+            "vLLM registry path unknown — pass it explicitly or set VLLM_REGISTRY."
+        )
+    return path
 
 
 def read_registry(registry_path: Optional[str] = None) -> dict:
@@ -400,7 +454,7 @@ def read_registry(registry_path: Optional[str] = None) -> dict:
     Returns a dict like:
         {"server_id": {"url": "http://...", "model": "...", "gpus": [...], "port": N}, ...}
     """
-    path = registry_path or DEFAULT_REGISTRY_PATH
+    path = _resolve_registry_path(registry_path)
     with open(path) as f:
         return json.load(f)
 
@@ -409,7 +463,7 @@ def wait_for_registry(
     registry_path: Optional[str] = None, timeout: int = 660, poll_interval: int = 5
 ) -> dict:
     """Block until the registry file exists and is non-empty, then read it."""
-    path = registry_path or DEFAULT_REGISTRY_PATH
+    path = _resolve_registry_path(registry_path)
     start = time.time()
     while time.time() - start < timeout:
         if os.path.exists(path):
@@ -499,6 +553,15 @@ def main():
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+
+    # Dry-run: skip the real GPU launch but still exercise the full
+    # namespace/port/registry plumbing. Used by the no-GPU verification path.
+    if os.environ.get("AAS_DRY_RUN") == "1":
+        print("[start_vllm] AAS_DRY_RUN=1 — skipping vLLM launch, writing stub registry.")
+        fleet.write_registry()
+        print("[start_vllm] Stub registry written; sleeping (dry-run).")
+        signal.pause()
+        return
 
     fleet.start_all()
     fleet.wait_until_ready(timeout=args.timeout)

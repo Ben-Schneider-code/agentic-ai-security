@@ -41,8 +41,8 @@ BASE_MODEL="Snowflake/Arctic-Text2SQL-R1-7B"
 NUM_ITERATIONS=2
 NUM_ENV_STEPS=1600
 HORIZON=5
-REDTEAM_GPU=0
-BLUETEAM_GPU=1
+REDTEAM_GPU=""
+BLUETEAM_GPU=""
 VANILLA_SIZE=""
 BORDERCASE_SIZE=""
 HONEYPOT_TYPE=""
@@ -84,6 +84,24 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# --- Validate GPU locators (required; no silent fallback to 0/1) ------------
+# Every GPU process below is pinned via CUDA_VISIBLE_DEVICES to exactly these
+# two indices: each run_training.sh phase puts the trainer on one and the
+# actor vLLM fleet on the other. An unset/duplicate index would silently land
+# on another user's card, so fail fast here.
+if [[ -z "$REDTEAM_GPU" || -z "$BLUETEAM_GPU" ]]; then
+    echo "ERROR: --redteam-gpu and --blueteam-gpu are both required." >&2
+    exit 1
+fi
+if ! [[ "$REDTEAM_GPU" =~ ^[0-9]+$ && "$BLUETEAM_GPU" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --redteam-gpu / --blueteam-gpu must be non-negative integers (got $REDTEAM_GPU / $BLUETEAM_GPU)." >&2
+    exit 1
+fi
+if [[ "$REDTEAM_GPU" == "$BLUETEAM_GPU" ]]; then
+    echo "ERROR: --redteam-gpu and --blueteam-gpu must differ (got $REDTEAM_GPU / $BLUETEAM_GPU)." >&2
+    exit 1
+fi
+
 # --- Validate continue flags ---
 if [[ -n "$CONTINUE_DIR" ]]; then
     [[ ! -d "$CONTINUE_DIR" ]] && { echo "ERROR: Continue dir '$CONTINUE_DIR' does not exist."; exit 1; }
@@ -112,35 +130,44 @@ find_latest_checkpoint() {
     find "$dir" -name "sql_agent" -type d 2>/dev/null | sort -V | tail -n 1
 }
 
+# --- Resolve + export honeypot arm (fail-fast at python import depends on this) ---
+# train_sql.py also sets os.environ["HONEYPOT_TYPE"] from --honeypot-type, but
+# exporting here in the shell is belt-and-braces: it guarantees every python
+# process this script launches (including any future top-level imports of
+# redteam_sql_env) sees the correct arm even before argparse runs.
+HONEYPOT_TYPE="${HONEYPOT_TYPE:-rowcol}"
+case "$HONEYPOT_TYPE" in
+    rowcol|row|col) ;;
+    *) echo "ERROR: --honeypot-type must be rowcol|row|col (got '$HONEYPOT_TYPE')." >&2; exit 1 ;;
+esac
+export HONEYPOT_TYPE
+
 echo "Base model:      $BASE_MODEL"
 echo "Num iterations:  $NUM_ITERATIONS"
 echo "Num env steps:   $NUM_ENV_STEPS (per phase, applied symmetrically to red and blue)"
 echo "Horizon:         $HORIZON"
 echo "GPU layout:      redteam=GPU${REDTEAM_GPU}  blueteam=GPU${BLUETEAM_GPU}"
-echo "Honeypot type:   ${HONEYPOT_TYPE:-rowcol (default)}"
+echo "Honeypot type:   ${HONEYPOT_TYPE}"
 [[ -n "$VANILLA_SIZE" ]]    && echo "Vanilla size:    $VANILLA_SIZE"
 [[ -n "$BORDERCASE_SIZE" ]] && echo "Bordercase size: $BORDERCASE_SIZE"
 
-# Cleanup function used on both success and failure exits.
-cleanup_all_vllm() {
-    echo ""
-    echo "[cleanup] Stopping all vLLM processes..."
-    pkill -f start_vllm.py || true
-    pkill -f vllm.entrypoints || true
-    sleep 10
-    if pgrep -f vllm.entrypoints > /dev/null 2>&1; then
-        echo "[cleanup] WARNING: vLLM still alive after SIGTERM. Sending SIGKILL."
-        echo "[cleanup] If a GPU is bricked: 'nvidia-smi --gpu-reset -i <id>'."
-        pkill -9 -f vllm.entrypoints || true
-        sleep 3
-    fi
-    rm -f /tmp/vllm_actor_registry.json
+# Each run_training.sh phase reaps its OWN vLLM process group via its own trap,
+# so there is nothing global to sweep here. A broad `pkill -f vllm.entrypoints`
+# would kill concurrent sibling runs on the same host — deliberately removed.
+# Our only cleanup responsibility is the ephemeral Postgres, when we own it.
+source "$(pwd)/script/pg_ephemeral.sh"
+OWNS_DB=0
+_selfplay_cleanup() {
+    # Preserve the real exit status — bash exits with the EXIT trap's last
+    # command status, and a trailing `[[...]] &&` that is false would otherwise
+    # mask a successful run as exit 1.
+    local _rc=$?
+    [[ "$OWNS_DB" == "1" ]] && pg_ephemeral_stop
+    return $_rc
 }
-trap cleanup_all_vllm EXIT
-
-pkill -f start_vllm.py || true
-pkill -f vllm.entrypoints || true
-sleep 5
+trap _selfplay_cleanup EXIT
+trap '_selfplay_cleanup; exit 130' INT
+trap '_selfplay_cleanup; exit 143' TERM
 
 BLUE_LATEST_CKPT=""
 RED_LATEST_CKPT=""
@@ -177,6 +204,22 @@ else
 fi
 
 echo "Selfplay Run ID: ${SELFPLAY_ID}"
+
+# --- Per-run namespace + ephemeral Postgres --------------------------------
+# The whole self-play run (all iterations + both teams) shares one ephemeral
+# Postgres container and one runtime dir, torn down when this script exits.
+export AAS_RUN_ID="$SELFPLAY_ID"
+export AAS_RUN_DIR="$(pwd)/.runtime/${AAS_RUN_ID}"
+mkdir -p "$AAS_RUN_DIR"
+if [[ -n "$AAS_PG_CONTAINER" ]]; then
+    pg_ephemeral_require
+    echo "[run_selfplay] Reusing ephemeral Postgres from parent: ${AAS_PG_CONTAINER}"
+else
+    # Mark ownership BEFORE bring-up so a signal mid-startup still triggers
+    # teardown (pg_ephemeral_start exports AAS_PG_CONTAINER as its first step).
+    OWNS_DB=1
+    pg_ephemeral_start
+fi
 
 CELL_ROOT="results-${SELFPLAY_ID}"
 mkdir -p "$CELL_ROOT"
@@ -232,7 +275,11 @@ PY
 init_red_registry
 
 if [[ -z "$OPPONENT_SAMPLER_SEED" ]]; then
-    OPPONENT_SAMPLER_SEED=$(python3 -c "import zlib; print((1000003 * ${REPLICATE_SEED} + zlib.crc32(b'${SELFPLAY_ID}')) & 0xFFFFFFFF)")
+    # Pure function of REPLICATE_SEED so two invocations with the same
+    # --replicate-seed pick the same opponent/benign draws. Do NOT mix in
+    # SELFPLAY_ID — it carries a /dev/urandom suffix and would re-randomize
+    # the sampler on every re-run.
+    OPPONENT_SAMPLER_SEED=$(( (1000003 * REPLICATE_SEED + 1234) & 0xFFFFFFFF ))
 fi
 [[ -z "$RED_SEED" ]]  && RED_SEED=$(( 10 + REPLICATE_SEED * 1000 ))
 [[ -z "$BLUE_SEED" ]] && BLUE_SEED=$(( 12 + REPLICATE_SEED * 1000 ))
@@ -254,7 +301,7 @@ out = {
     "blueteam_gpu": ${BLUETEAM_GPU},
     "vanilla_size": ${VANILLA_SIZE:-null},
     "bordercase_size": ${BORDERCASE_SIZE:-null},
-    "honeypot_type": "${HONEYPOT_TYPE:-rowcol}",
+    "honeypot_type": "${HONEYPOT_TYPE}",
     "replicate_seed": ${REPLICATE_SEED},
     "red_seed": ${RED_SEED},
     "blue_seed": ${BLUE_SEED},
@@ -268,7 +315,7 @@ PY
 ABLATION_ARGS=()
 [[ -n "$VANILLA_SIZE" ]]    && ABLATION_ARGS+=(--vanilla-size "$VANILLA_SIZE")
 [[ -n "$BORDERCASE_SIZE" ]] && ABLATION_ARGS+=(--bordercase-size "$BORDERCASE_SIZE")
-[[ -n "$HONEYPOT_TYPE" ]]   && ABLATION_ARGS+=(--honeypot-type "$HONEYPOT_TYPE")
+ABLATION_ARGS+=(--honeypot-type "$HONEYPOT_TYPE")
 ABLATION_ARGS+=(--opponent-sampler-seed "$OPPONENT_SAMPLER_SEED")
 ABLATION_ARGS+=(--num-env-steps "$NUM_ENV_STEPS")
 
@@ -345,10 +392,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
         echo "Using Red LoRA: ${RED_LATEST_CKPT}"
 
         append_red_to_registry "$ITER" "$RED_LATEST_CKPT"
-
-        pkill -f "vllm.entrypoints.*--port 800[1-9]" || true
-        rm -f /tmp/vllm_actor_registry.json
-        sleep 3
+        # Red-phase run_training.sh already reaped its own vLLM on exit.
     fi
 
     # --- Blue Phase ---
@@ -398,10 +442,7 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     [[ -z "$BLUE_LATEST_CKPT" ]] && { echo "ERROR: no sql_agent checkpoint in ${BLUE_DIR}"; exit 1; }
     BLUE_LATEST_CKPT=$(realpath "${BLUE_LATEST_CKPT}")
     echo "Saved Blue LoRA for next iteration: ${BLUE_LATEST_CKPT}"
-
-    pkill -f "vllm.entrypoints.*--port 800[1-9]" || true
-    rm -f /tmp/vllm_actor_registry.json
-    sleep 3
+    # Blue-phase run_training.sh already reaped its own vLLM on exit.
 
     if [[ -n "$CONTINUE_DIR" && "$ITER" -eq "$CONTINUE_ITER" ]]; then
         CONTINUE_DIR=""

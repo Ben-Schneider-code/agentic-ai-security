@@ -708,9 +708,13 @@ class BlueTeamSQLEnv(SQLEnv):
         import os
 
         if redteam_vllm_url is None:
-            redteam_vllm_url = os.environ.get(
-                "REDTEAM_VLLM_URL", "http://localhost:8002/v1"
-            )
+            redteam_vllm_url = os.environ.get("REDTEAM_VLLM_URL")
+            if not redteam_vllm_url:
+                raise RuntimeError(
+                    "blueteam_sql_env: REDTEAM_VLLM_URL is not set and no "
+                    "redteam_vllm_url was passed. Launch via run_training.sh so "
+                    "the red opponent vLLM endpoint is wired up."
+                )
 
         # Initialize parent class (which sets up MCP, logging, etc.)
         kwargs["vllm_base_url"] = redteam_vllm_url
