@@ -1,7 +1,12 @@
 """
 Diagonal convergence — PVR_conv, PVR_turn, and BRR along the training trajectory.
 
-Plots each adjacent checkpoint pairing on the x-axis in training order:
+Emits a family of three single-panel PNGs into the output directory:
+  pvr_conv_trajectory.png
+  pvr_turn_trajectory.png
+  brr_trajectory.png
+
+Each plots adjacent checkpoint pairings on the x-axis in training order:
   red_0 vs blue_0  →  red_1 vs blue_0  →  red_1 vs blue_1  →  red_2 vs blue_1  →  …
 
 Points are colored red when red was trained last (red_N vs blue_{N-1}) and blue
@@ -14,9 +19,14 @@ BRR: per blue checkpoint — at trajectory point (r, b) we show BRR(blue_b).
 Preferred attack source: diagonal_eval/ (400 ep/cell); falls back to cross_eval/.
 
 Can be run standalone:
-    python plotting/plot_diagonal_convergence.py --results results-<ID>
+    python plotting/plot_diagonal_convergence.py --results results-<ID> --out-dir figures/
 Or imported:
-    from plotting.plot_diagonal_convergence import plot_diagonal_convergence, DESCRIPTION
+    from plotting.plot_diagonal_convergence import (
+        plot_diagonal_convergence,
+        DESCRIPTION_PVR_CONV_TRAJ,
+        DESCRIPTION_PVR_TURN_TRAJ,
+        DESCRIPTION_BRR_TRAJ,
+    )
 """
 
 from __future__ import annotations
@@ -46,7 +56,6 @@ try:
         RED_COL,
         BLUE_COL,
         GRAY_COL,
-        FIG_SIZE_1x3,
         FIG_SIZE_SINGLE,
     )
 except ImportError:
@@ -63,21 +72,28 @@ except ImportError:
         RED_COL,
         BLUE_COL,
         GRAY_COL,
-        FIG_SIZE_1x3,
         FIG_SIZE_SINGLE,
     )
 
 apply_paper_style()
 
-DESCRIPTION = (
-    "Diagonal convergence: PVR_conv, PVR_turn, and BRR for each adjacent "
-    "checkpoint pairing along the self-play training trajectory "
-    "(red_0 vs blue_0 → red_1 vs blue_0 → red_1 vs blue_1 → …). "
-    "Red points = red trained last (red_N vs blue_{N-1}); "
-    "blue points = blue trained last (red_N vs blue_N). "
-    "Attack metrics source: diagonal_eval/ preferred, else cross_eval/. "
-    "BRR source: cross_eval/benign_only/ by default; one BRR per blue "
-    "checkpoint is repeated for each trajectory point sharing that blue."
+DESCRIPTION_PVR_CONV_TRAJ = (
+    "PVR_conv along the self-play training trajectory: each adjacent "
+    "checkpoint pairing (red_0 vs blue_0 → red_1 vs blue_0 → red_1 vs blue_1 → …). "
+    "Red markers = red trained last; blue markers = blue trained last. "
+    "Attack source: diagonal_eval/ preferred, else cross_eval/."
+)
+
+DESCRIPTION_PVR_TURN_TRAJ = (
+    "PVR_turn along the self-play training trajectory (adjacent pairings). "
+    "Marker fill encodes who trained last. "
+    "Attack source: diagonal_eval/ preferred, else cross_eval/."
+)
+
+DESCRIPTION_BRR_TRAJ = (
+    "BRR along the self-play training trajectory (adjacent pairings). "
+    "For each (r, b) point, BRR is taken from blue checkpoint b. "
+    "Default source: cross_eval/benign_only/."
 )
 
 _SUBDIR_PRIORITY = ("diagonal_eval", "cross_eval")
@@ -86,6 +102,24 @@ _BRR_SOURCES = ("cross_eval", "benign_eval", "train_rollouts")
 # Distinct per-replicate line colors. Deliberately avoids RED_COL / BLUE_COL,
 # which are reserved for the "who trained last" marker fill.
 _REP_COLORS = ("#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#8c564b")
+
+_FILENAMES = {
+    "pvr_conv": "pvr_conv_trajectory.png",
+    "pvr_turn": "pvr_turn_trajectory.png",
+    "brr":      "brr_trajectory.png",
+}
+
+_PANEL_TITLES = {
+    "pvr_conv": r"$\mathrm{PVR_{conv}}$ vs. Training Trajectory",
+    "pvr_turn": r"$\mathrm{PVR_{turn}}$ vs. Training Trajectory",
+    "brr":      r"BRR vs. Training Trajectory",
+}
+
+_PANEL_YLABELS = {
+    "pvr_conv": r"$\mathrm{PVR_{conv}}$ (%)",
+    "pvr_turn": r"$\mathrm{PVR_{turn}}$ (%)",
+    "brr":      r"BRR (%)",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +372,24 @@ def _load_replicate(
     }
 
 
+def _empty_placeholder(out_dir: Path, msg: str) -> dict[str, Path]:
+    """Write three single-panel placeholder PNGs and return their paths."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+    for key, fname in _FILENAMES.items():
+        p = out_dir / fname
+        fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+        ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes,
+                color=GRAY_COL)
+        ax.set_title(_PANEL_TITLES[key])
+        ax.set_ylabel(_PANEL_YLABELS[key])
+        fig.tight_layout(pad=0.4)
+        fig.savefig(p)
+        plt.close(fig)
+        paths[key] = p
+    return paths
+
+
 # ---------------------------------------------------------------------------
 # Public plotting function
 # ---------------------------------------------------------------------------
@@ -345,16 +397,15 @@ def _load_replicate(
 
 def plot_diagonal_convergence(
     results: list[tuple[str, str]],
-    out_path: str | Path,
+    out_dir: str | Path,
     *,
     eval_subdir: str | None = None,
     show_ci: bool = True,
     brr_source: str = "cross_eval",
-    individual_out_dir: str | Path | None = None,
-) -> tuple[Path, dict]:
+) -> tuple[dict[str, Path], dict]:
     """
     Plot PVR_conv, PVR_turn, and BRR for adjacent pairings along the training
-    diagonal.
+    diagonal — one single-panel PNG per metric.
 
     Every entry in `results` is rendered as its own trajectory line; the
     x-axis is the union of all replicates' adjacent pairings in trajectory
@@ -362,31 +413,22 @@ def plot_diagonal_convergence(
     "who trained last" fill.
 
     Args:
-        results:            [(label, selfplay_dir), …] — all entries are plotted.
-        out_path:           Destination PNG for the combined 3-panel figure.
-        eval_subdir:        Subdir for attack pairings (auto: diagonal_eval, cross_eval).
-        show_ci:            Toggle 99% Wilson CI error bars.
-        brr_source:         "cross_eval" (default), "benign_eval", or "train_rollouts".
-        individual_out_dir: If set, also write pvr_conv_trajectory.png,
-                            pvr_turn_trajectory.png, brr_trajectory.png there.
+        results:     [(label, selfplay_dir), …] — all entries are plotted.
+        out_dir:     Destination directory. Writes pvr_conv_trajectory.png,
+                     pvr_turn_trajectory.png, and brr_trajectory.png.
+        eval_subdir: Subdir for attack pairings (auto: diagonal_eval, cross_eval).
+        show_ci:     Toggle 99% Wilson CI error bars.
+        brr_source:  "cross_eval" (default), "benign_eval", or "train_rollouts".
 
-    Returns (combined_png_path, metrics_dict).
+    Returns:
+        (paths, metrics) where paths is {"pvr_conv": Path, "pvr_turn": Path,
+        "brr": Path} and metrics is the shared metrics dict for all three.
     """
-    out_path = Path(out_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if brr_source not in _BRR_SOURCES:
         raise ValueError(f"brr_source must be one of {_BRR_SOURCES}, got {brr_source!r}")
-
-    def _empty_figure(msg: str) -> tuple[Path, dict]:
-        fig, axes = plt.subplots(1, 3, figsize=FIG_SIZE_1x3)
-        for ax in axes:
-            ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes,
-                    color=GRAY_COL)
-        fig.tight_layout(pad=0.4)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path)
-        plt.close(fig)
-        return out_path, {}
 
     reps = [
         rep for rep in (
@@ -401,13 +443,11 @@ def plot_diagonal_convergence(
             "[plot_diagonal_convergence] No usable cross-eval data in any replicate.",
             file=sys.stderr,
         )
-        return _empty_figure("No data")
+        return _empty_placeholder(out_dir, "No data"), {}
 
-    # Shared x-axis = union of every replicate's adjacent pairings, in
-    # canonical trajectory order ((0,0), (1,0), (1,1), (2,1), (2,2), …).
     master_seq = sorted({pair for rep in reps for pair in rep["seq"]})
     if not master_seq:
-        return _empty_figure("No adjacent pairings")
+        return _empty_placeholder(out_dir, "No adjacent pairings"), {}
 
     x        = np.arange(len(master_seq))
     x_labels = [f"R{r}·B{b}" for r, b in master_seq]
@@ -423,7 +463,6 @@ def plot_diagonal_convergence(
 
     for i, rep in enumerate(reps):
         col = _REP_COLORS[i % len(_REP_COLORS)]
-        # Extracting against master_seq NaN-fills pairings absent in this rep.
         (
             cv, cv_lo, cv_hi,
             tv, tv_lo, tv_hi,
@@ -445,67 +484,22 @@ def plot_diagonal_convergence(
             "brr_ci_99": [[_r(l), _r(h)] for l, h in zip(bv_lo, bv_hi)],
         }
 
-    fig, axes = plt.subplots(1, 3, figsize=FIG_SIZE_1x3)
-
-    _render_panel(
-        axes[0], x, x_labels, conv_series, point_colors,
-        r"$\mathrm{PVR_{conv}}$ (%)",
-        r"$\mathrm{PVR_{conv}}$ vs. Training Trajectory",
-        show_ci=show_ci,
-    )
-    _render_panel(
-        axes[1], x, x_labels, turn_series, point_colors,
-        r"$\mathrm{PVR_{turn}}$ (%)",
-        r"$\mathrm{PVR_{turn}}$ vs. Training Trajectory",
-        show_ci=show_ci,
-    )
-    _render_panel(
-        axes[2], x, x_labels, brr_series, point_colors,
-        r"BRR (%)",
-        r"BRR vs. Training Trajectory",
-        show_ci=show_ci,
-    )
+    panels = {
+        "pvr_conv": conv_series,
+        "pvr_turn": turn_series,
+        "brr":      brr_series,
+    }
+    paths: dict[str, Path] = {}
+    for key, series in panels.items():
+        p = out_dir / _FILENAMES[key]
+        _save_individual(
+            p, x, x_labels, series, point_colors,
+            _PANEL_YLABELS[key], _PANEL_TITLES[key],
+            show_ci=show_ci,
+        )
+        paths[key] = p
 
     chosen_subdir = reps[0]["chosen_subdir"]
-    fig.suptitle(
-        f"Convergence Along Training Trajectory  "
-        f"(attack: {chosen_subdir}, BRR: {brr_source}, "
-        f"{len(reps)} replicate{'s' if len(reps) != 1 else ''})",
-        fontsize=12,
-    )
-    fig.tight_layout(pad=0.4)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path)
-    plt.close(fig)
-
-    individual_paths: dict[str, str] = {}
-    if individual_out_dir is not None:
-        ind_dir = Path(individual_out_dir)
-        ind_dir.mkdir(parents=True, exist_ok=True)
-        panels = [
-            (
-                "pvr_conv_trajectory.png", conv_series,
-                r"$\mathrm{PVR_{conv}}$ (%)",
-                r"$\mathrm{PVR_{conv}}$ vs. Training Trajectory",
-            ),
-            (
-                "pvr_turn_trajectory.png", turn_series,
-                r"$\mathrm{PVR_{turn}}$ (%)",
-                r"$\mathrm{PVR_{turn}}$ vs. Training Trajectory",
-            ),
-            (
-                "brr_trajectory.png", brr_series,
-                r"BRR (%)",
-                r"BRR vs. Training Trajectory",
-            ),
-        ]
-        for fname, series, ylab, title in panels:
-            p = ind_dir / fname
-            _save_individual(
-                p, x, x_labels, series, point_colors, ylab, title, show_ci=show_ci,
-            )
-            individual_paths[fname.replace(".png", "")] = str(p)
-
     metrics = {
         "source_subdir": chosen_subdir,
         "brr_source": brr_source,
@@ -513,9 +507,7 @@ def plot_diagonal_convergence(
         "trajectory_seq": [{"red_iter": r, "blue_iter": b} for r, b in master_seq],
         "replicates": rep_metrics,
     }
-    if individual_paths:
-        metrics["individual_paths"] = individual_paths
-    return out_path, metrics
+    return paths, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -523,18 +515,26 @@ def plot_diagonal_convergence(
 # ---------------------------------------------------------------------------
 
 
+_DESC_BY_KEY = {
+    "pvr_conv": DESCRIPTION_PVR_CONV_TRAJ,
+    "pvr_turn": DESCRIPTION_PVR_TURN_TRAJ,
+    "brr":      DESCRIPTION_BRR_TRAJ,
+}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Plot PVR_conv, PVR_turn, and BRR for adjacent checkpoint pairings "
-            "along the self-play training trajectory."
+            "along the self-play training trajectory. Emits three single-panel "
+            "PNGs into --out-dir."
         )
     )
     parser.add_argument(
         "--results", nargs="+", required=True, metavar="DIR[:LABEL]",
         help="Selfplay result directory, optionally with :Label suffix.",
     )
-    parser.add_argument("--out", default="figures/diagonal_convergence.png", metavar="PATH")
+    parser.add_argument("--out-dir", default="figures/", metavar="DIR")
     parser.add_argument(
         "--eval-subdir", default=None, metavar="SUBDIR",
         help="Subdir for pairing data (default: tries diagonal_eval then cross_eval).",
@@ -543,26 +543,17 @@ def main() -> None:
         "--brr-source", default="cross_eval", choices=list(_BRR_SOURCES),
         help="BRR data source (default: cross_eval).",
     )
-    parser.add_argument(
-        "--individual-out-dir", default=None, metavar="DIR",
-        help=(
-            "If set, also write pvr_conv_trajectory.png, pvr_turn_trajectory.png, "
-            "and brr_trajectory.png into this directory."
-        ),
-    )
     args = parser.parse_args()
 
     results = parse_results_arg(args.results)
-    out, metrics = plot_diagonal_convergence(
-        results, args.out,
+    paths, metrics = plot_diagonal_convergence(
+        results, args.out_dir,
         eval_subdir=args.eval_subdir,
         brr_source=args.brr_source,
-        individual_out_dir=args.individual_out_dir,
     )
-    write_sidecar(out, DESCRIPTION, results, metrics)
-    print(f"[{DESCRIPTION}]\n  → {out}")
-    for name, path in (metrics.get("individual_paths") or {}).items():
-        print(f"  + {name}: {path}")
+    for key, p in paths.items():
+        write_sidecar(p, _DESC_BY_KEY[key], results, metrics)
+        print(f"[{_DESC_BY_KEY[key]}]\n  → {p}")
 
 
 if __name__ == "__main__":

@@ -804,13 +804,36 @@ def load_benign_queries(
 # Misc helpers
 # ---------------------------------------------------------------------------
 
+def _enrich_result_entry(label: str, selfplay_dir: str) -> dict:
+    """Build a result-entry dict with abs_path + parsed summary.json (best-effort)."""
+    import json
+
+    entry: dict = {"label": label, "selfplay_dir": selfplay_dir}
+    try:
+        entry["abs_path"] = os.path.abspath(selfplay_dir)
+    except Exception:
+        entry["abs_path"] = None
+
+    summary_path = os.path.join(selfplay_dir, "summary.json")
+    try:
+        with open(summary_path) as f:
+            entry["summary"] = json.load(f)
+    except Exception:
+        entry["summary"] = None
+    return entry
+
+
 def write_sidecar(
     png_path: Path,
     description: str,
     results: list[tuple[str, str]],
     metrics: dict | None = None,
+    *,
+    plot_kwargs: dict | None = None,
+    run_meta: dict | None = None,
 ) -> Path:
-    """Write a JSON sidecar alongside a PNG with description, timestamp, and metrics."""
+    """Write a JSON sidecar alongside a PNG with description, timestamp, metrics,
+    per-plot kwargs, and a run-level metadata snapshot."""
     import json
     import datetime
 
@@ -818,11 +841,13 @@ def write_sidecar(
     payload = {
         "description": description,
         "generated_at": ts,
-        "results": [{"label": lbl, "selfplay_dir": d} for lbl, d in results],
+        "results": [_enrich_result_entry(lbl, d) for lbl, d in results],
         "metrics": metrics or {},
+        "plot_kwargs": plot_kwargs or {},
+        "run_meta": run_meta or {},
     }
     sidecar = png_path.with_suffix(".json")
-    sidecar.write_text(json.dumps(payload, indent=2))
+    sidecar.write_text(json.dumps(payload, indent=2, default=str))
     return sidecar
 
 

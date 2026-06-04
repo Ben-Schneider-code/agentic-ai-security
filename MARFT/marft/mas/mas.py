@@ -7,6 +7,7 @@ import time
 from abc import ABC
 from torch.distributions.categorical import Categorical
 from .agent import Agent
+from .prompt_format import build_agent_prompt, TURN_END
 
 
 def load_profiles(path):
@@ -190,12 +191,10 @@ class MAS(ABC):
 
         prompts = obs[:, 0].tolist()
         for agent_idx in range(num_agents):
-            prompts = [
-                prompt + "<|im_start|>" + self.profiles[agent_idx]["role"] + ": "
-                for prompt in prompts
-            ]
+            role = self.profiles[agent_idx]["role"]
+            profile_prompt = self.profiles[agent_idx]["prompt"]
             prompts_with_profile = [
-                self.profiles[agent_idx]["prompt"] + prompt for prompt in prompts
+                build_agent_prompt(profile_prompt, prompt, role) for prompt in prompts
             ]
             device = self.agents[agent_idx].device
 
@@ -237,7 +236,10 @@ class MAS(ABC):
                     action_token.cpu().clone()
                 )
                 action = self.tokenizer.decode(action_token, skip_special_tokens=True)
-                prompts[i] = prompts[i] + action + "<|im_end|>\n"
+                # Completed turn carried into the next agent's obs (no profile
+                # prefix — that is prepended per-agent above). build_agent_prompt
+                # with an empty profile yields the running obs + the open cue.
+                prompts[i] = build_agent_prompt("", prompts[i], role) + action + TURN_END + "\n"
                 actions.append(action)
             actions = np.array(actions, dtype=np.object_)
             all_obs[:, agent_idx] = np.array(prompts_with_profile, dtype=np.object_)
@@ -752,13 +754,14 @@ class MAS(ABC):
                     else ""
                 )
                 prompt = (
-                    self.profiles[agent_idx]["prompt"]
-                    + str(base_obs)
-                    + "<|im_start|>"
-                    + self.profiles[agent_idx]["role"]
-                    + ": "
+                    build_agent_prompt(
+                        self.profiles[agent_idx]["prompt"],
+                        str(base_obs),
+                        self.profiles[agent_idx]["role"],
+                    )
                     + action_text
-                    + "<|im_end|>\n"
+                    + TURN_END
+                    + "\n"
                 )
                 rollout_obs[thread_idx, agent_idx] = prompt
 

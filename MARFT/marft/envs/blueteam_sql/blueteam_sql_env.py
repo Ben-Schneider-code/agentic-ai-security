@@ -7,6 +7,7 @@ import asyncio
 import threading
 from dataclasses import dataclass
 
+from marft.envs.obs_format import cap_display
 from marft.envs.redteam_sql.redteam_sql_env import (
     SQLEnv,
     OfflineLLM,
@@ -1059,15 +1060,10 @@ class BlueTeamSQLEnv(SQLEnv):
                 blue_response=blue_response,
             )
             self.user_message = next_red_prompt
-            # Cap blue response in observation to match redteam's 1200-char cap.
+            # Cap blue response + next red prompt to match redteam's 1200-char cap.
             # The full blue_response was already passed to _generate_red_prompt above.
-            display_cap = 1200
-            display_blue = blue_response if len(blue_response) <= display_cap else (
-                blue_response[:display_cap] + "... [truncated]"
-            )
-            display_red = next_red_prompt if len(next_red_prompt) <= display_cap else (
-                next_red_prompt[:display_cap] + "... [truncated]"
-            )
+            display_blue = cap_display(blue_response)
+            display_red = cap_display(next_red_prompt)
             self.current_state += (
                 f"<|im_start|>assistant: {display_blue}<|im_end|>\n"
                 f"<|im_start|>user: {display_red}<|im_end|>\n"
@@ -1081,14 +1077,9 @@ class BlueTeamSQLEnv(SQLEnv):
             )
             self.user_message = next_msg
             blue_response = actions[0] if actions else ""
-            # Cap observation entries to match attack path's display_cap
-            display_cap = 1200
-            display_blue = blue_response if len(blue_response) <= display_cap else (
-                blue_response[:display_cap] + "... [truncated]"
-            )
-            display_next = next_msg if len(next_msg) <= display_cap else (
-                next_msg[:display_cap] + "... [truncated]"
-            )
+            # Cap observation entries to match attack path's display cap
+            display_blue = cap_display(blue_response)
+            display_next = cap_display(next_msg)
             self.current_state += (
                 f"<|im_start|>assistant: {display_blue}<|im_end|>\n"
                 f"<|im_start|>user: {display_next}<|im_end|>\n"

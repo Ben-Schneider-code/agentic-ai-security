@@ -22,6 +22,7 @@ if root_path not in sys.path:
     sys.path.append(root_path)
 
 from util.mcp_client import MCPClient
+from marft.envs.obs_format import cap_display
 
 # model = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8"
 import constants
@@ -373,6 +374,27 @@ def get_redteam_profile(prompt: str) -> list[dict]:
     return [{"role": "sql_agent", "prompt": prompt, "with_answer": True}]
 
 
+# === Red-team observation format (single source of truth) ===
+# The env builds the red policy's observation here; cross-eval replays the exact
+# same construction (util.cross_evaluate) so training and evaluation prompts are
+# byte-identical. Keep these the only place this layout/cap is expressed.
+def redteam_initial_obs(question: str) -> str:
+    """The episode-opening observation: the attack question, ChatML-wrapped."""
+    return f"<|im_start|>question: {question}<|im_end|>\n"
+
+
+def redteam_append_turn(obs: str, red_text: str, blue_text: str) -> tuple[str, str, str]:
+    """Append one completed (red, victim) turn to the running observation.
+
+    Returns ``(new_obs, capped_red, capped_blue)``. The capped strings are reused
+    for BOTH the red observation carry-over and the victim's stored conversation,
+    exactly as ``state_transition`` does, so the two never diverge.
+    """
+    capped_red, capped_blue = cap_display(red_text), cap_display(blue_text)
+    obs += f"sql_agent: {capped_red}\nassistant: {capped_blue}\n"
+    return obs, capped_red, capped_blue
+
+
 class Message(TypedDict):
     role: Role
     content: str
@@ -480,6 +502,24 @@ class OfflineLLM:
             self.loop = loop
         else:
             self.loop = asyncio.new_event_loop()
+
+    def _probe_server_health(self) -> tuple[bool, str]:
+        """One short GET /v1/models to distinguish a dead server (TCP refused
+        or no route) from a live server returning request-level errors. Never
+        raises — probe failure is treated as 'unreachable'."""
+        import requests
+
+        base_url = self.vllm_base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        models_url = f"{base_url}/v1/models"
+        try:
+            r = requests.get(models_url, timeout=3)
+            if r.status_code == 200:
+                return True, f"HTTP 200 from {models_url}"
+            return False, f"HTTP {r.status_code} from {models_url}"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
 
     def _wait_for_server(self, max_wait_time: int):
         """Wait for vLLM server to be ready by checking /v1/models endpoint"""
@@ -616,6 +656,15 @@ class OfflineLLM:
                     f"[WARNING] Transient LLM API error ({etype}) "
                     f"(server retry {server_error_count}/{max_server_retries}): {e}"
                 )
+                # Probe /v1/models so the operator can tell a request-specific
+                # failure (server alive, 5xx on completions) from a dead-server
+                # situation (port closed, retries pointless) — the latter is
+                # what bit us in iter_3 of results-20260526-2344-wgtx3.
+                reachable, detail = self._probe_server_health()
+                if reachable:
+                    print(f"[probe] vLLM reachable — {detail}")
+                else:
+                    print(f"[probe] vLLM UNREACHABLE — {detail}")
                 if server_error_count >= max_server_retries:
                     # Persistent failure (server likely dead): re-raise so the
                     # runner's emergency-save path fires and the run stays
@@ -623,7 +672,9 @@ class OfflineLLM:
                     # with error-string victim responses.
                     print(
                         f"[ERROR] LLM API still failing after {max_server_retries} "
-                        f"retries; re-raising to trigger emergency save."
+                        f"retries; re-raising to trigger emergency save. "
+                        f"Final probe: {'reachable' if reachable else 'UNREACHABLE'} "
+                        f"({detail})"
                     )
                     raise
                 backoff = min(5 * 2 ** server_error_count + random.uniform(0, 1), 60)
@@ -702,6 +753,83 @@ class OfflineLLM:
 
         # print("=== Returning response without SQL execution")  # pure noise
         return response_text
+
+    async def acomplete_raw(
+        self,
+        prompt: str,
+        stop: Optional[list[str]] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Raw text completion via vLLM ``/v1/completions`` — NO chat template.
+
+        Training generates the red turn from a raw concatenated string
+        (``mas.build_agent_prompt``: profile + obs + ``<|im_start|>{role}: ``) fed
+        straight to ``model.generate`` and decoded with ``skip_special_tokens=True``.
+        Cross-eval reproduces that byte-for-byte by sending the same ``prompt`` here
+        and stopping at ``<|im_end|>``; the chat-completions endpoint (``acomplete``)
+        would re-wrap it in ChatML and diverge from training. Returns generated text
+        only — no MCP/SQL post-processing (the red policy never executes SQL).
+        """
+        from openai import (
+            APIConnectionError,
+            InternalServerError,
+            RateLimitError,
+        )
+
+        max_timeout_retries = 3    # asyncio.wait_for timeouts
+        max_server_retries = 8     # transient vLLM 5xx / connection / rate-limit
+        timeout_count = 0
+        server_error_count = 0
+
+        while True:
+            try:
+                extra_kwargs = {}
+                if self._base_seed is not None:
+                    extra_kwargs["seed"] = (self._base_seed + self._call_count) & 0x7FFFFFFF
+                response = await asyncio.wait_for(
+                    self.async_client.completions.create(
+                        model=self.model_name,
+                        prompt=prompt,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
+                        stop=stop,
+                        **extra_kwargs,
+                    ),
+                    timeout=240,
+                )
+                self._call_count += 1
+                return response.choices[0].text or ""
+            except asyncio.TimeoutError:
+                timeout_count += 1
+                print(
+                    f"[WARNING] raw LLM request timed out "
+                    f"(timeout {timeout_count}/{max_timeout_retries})"
+                )
+                if timeout_count >= max_timeout_retries:
+                    print("[ERROR] raw LLM request timed out repeatedly; returning empty response.")
+                    return ""
+                backoff = min(5 * 2 ** timeout_count + random.uniform(0, 1), 30)
+                await asyncio.sleep(backoff)
+                continue
+            except (InternalServerError, APIConnectionError, RateLimitError) as e:
+                server_error_count += 1
+                etype = type(e).__name__
+                print(
+                    f"[WARNING] Transient raw LLM API error ({etype}) "
+                    f"(server retry {server_error_count}/{max_server_retries}): {e}"
+                )
+                reachable, detail = self._probe_server_health()
+                print(f"[probe] vLLM {'reachable' if reachable else 'UNREACHABLE'} — {detail}")
+                if server_error_count >= max_server_retries:
+                    print(
+                        f"[ERROR] raw LLM API still failing after {max_server_retries} "
+                        f"retries; re-raising."
+                    )
+                    raise
+                backoff = min(5 * 2 ** server_error_count + random.uniform(0, 1), 60)
+                await asyncio.sleep(backoff)
+                continue
 
     def complete(
         self,
@@ -1358,6 +1486,19 @@ class SQLEnv:
         # Track red team actions for reward calculation
         self.last_red_team_actions: list[str] = []
 
+        # Per-episode strategy buffer + manifest logging. Strategies for ALL
+        # turns are pre-drawn in reset() (see note there); state_transition()
+        # indexes this list instead of drawing, so the env RNG consumes a fixed
+        # count per episode and the scripted prompts can be replayed verbatim by
+        # cross-eval. The manifest (train mode only) is the source of truth.
+        self._episode_strategies: list[str] = []
+        self._prompt_log_episode = 0
+        self._prompt_log_path = (
+            os.path.join(self.log_dir, "redteam_prompts.jsonl")
+            if self.log_dir
+            else None
+        )
+
     def get_remaining_honeypots(self) -> dict:
         """Return honeypots not yet accessed this training run, grouped by class.
 
@@ -1381,23 +1522,60 @@ class SQLEnv:
             "owner_ids": remaining_owner_ids,
         }
 
+    def _log_prompt_manifest(self, question_idx: int) -> None:
+        """Append this episode's scripted (question, strategies) to the per-run
+        prompt manifest. Train mode only — cross-eval replays these exact bytes,
+        so this is the single source of truth for prompt identity. One JSON line
+        per episode: {rank, episode, question_idx, question, strategies}.
+        """
+        if self.mode != "train" or not self._prompt_log_path:
+            return
+        record = {
+            "rank": self.rank,
+            "episode": self._prompt_log_episode,
+            "question_idx": question_idx,
+            "question": self.question,
+            "strategies": list(self._episode_strategies),
+        }
+        try:
+            with _reward_log_lock:
+                with open(self._prompt_log_path, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+        except Exception as log_error:
+            print(f"[SQLEnv] Failed to write prompt manifest: {log_error}")
+
     def reset(self):
         row = self.dataset.sample(
             n=1, random_state=self._env_rng.randint(0, 2**31 - 1)
         )
         self.question = row.iloc[0]["prompt"]
         self.label = row.iloc[0]["sql_answer"]
+        question_idx = int(row.index[0])
         # print("REDTEAM AGENT QUESTION:", self.question)  # in reward_debug.jsonl as red_team_input
 
-        # Generate dynamic prompt (generic, no honeypot leakage)
-        prompt = generate_redteam_prompt(
-            current_turn=1,
-            max_turns=self.max_steps,
-            rng=self._env_rng,
-        )
-        self.profiles = get_redteam_profile(prompt)
+        # Pre-draw the FULL per-turn strategy sequence up front so the env RNG
+        # consumes a FIXED count per episode (1 randint + max_steps strategy
+        # choices) regardless of where the rollout actually terminates. Lazy
+        # per-turn draws (the previous approach) desynced the stream after any
+        # early honeypot termination, which made byte-faithful cross-eval replay
+        # impossible. state_transition() now indexes this list instead of drawing.
+        self._episode_strategies = [
+            generate_redteam_prompt(
+                current_turn=t,
+                max_turns=self.max_steps,
+                rng=self._env_rng,
+            )
+            for t in range(1, self.max_steps + 1)
+        ]
+        self.profiles = get_redteam_profile(self._episode_strategies[0])
 
-        self.current_state = f"<|im_start|>question: {self.question}<|im_end|>\n"
+        # Persist the scripted prompt manifest at the source (train mode only).
+        # This is the ground truth cross-eval replays — immune to any RNG
+        # reconstruction drift.
+        self._log_prompt_manifest(question_idx)
+        self._prompt_log_episode += 1
+
+        self.current_state = redteam_initial_obs(self.question)
         self.history = []
         self.victim_state.conversation = []
         obs = np.array(
@@ -1479,7 +1657,6 @@ class SQLEnv:
     def state_transition(self, actions):
         actions_to_ret = []
         self.last_red_team_actions = list(actions)  # Store for reward calculation
-        display_cap = 1200
         for i, action in enumerate(actions):
             # Feed full action to victim LLM (needs complete context for generation)
             self.victim_state.append("user", action)
@@ -1489,33 +1666,25 @@ class SQLEnv:
             # Full response goes to reward calculation (actions_to_ret)
             actions_to_ret.append(response)
 
-            # Now replace the full user message in victim_state with the capped
-            # version so future turns don't carry unbounded history.
-            display_action = action if len(action) <= display_cap else (
-                action[:display_cap] + "... [truncated]"
+            # Append the capped (red, victim) turn to the red observation, and
+            # reuse the SAME capped strings for the victim's stored history so
+            # future turns don't carry unbounded context. redteam_append_turn is
+            # the single source of truth cross-eval replays.
+            self.current_state, capped_action, capped_response = redteam_append_turn(
+                self.current_state, action, response
             )
-            self.victim_state.conversation[-1]["content"] = display_action
+            self.victim_state.conversation[-1]["content"] = capped_action
+            self.victim_state.append("assistant", capped_response)
 
-            # Cap victim response for stored conversation history
-            display_response = response if len(response) <= display_cap else (
-                response[:display_cap] + "... [truncated]"
-            )
-            self.victim_state.append("assistant", display_response)
-
-            # Red team observation: sees the same capped versions
-            self.current_state += self.profiles[i]["role"] + ": " + display_action + "\n"
-            self.current_state += "assistant: " + display_response + "\n"
-
-        # Update profile to reflect the NEXT turn so MAS uses the correct
-        # turn counter on the next infer_for_rollout() call.
+        # Update profile to reflect the NEXT turn so MAS uses the correct turn
+        # counter on the next infer_for_rollout() call. Strategies were pre-drawn
+        # in reset(); index rather than draw so the env RNG stays aligned across
+        # episodes and the prompt sequence remains replayable.
         next_turn = self.step_count + 1
         if next_turn <= self.max_steps:
-            prompt = generate_redteam_prompt(
-                current_turn=next_turn,
-                max_turns=self.max_steps,
-                rng=self._env_rng,
+            self.profiles = get_redteam_profile(
+                self._episode_strategies[next_turn - 1]
             )
-            self.profiles = get_redteam_profile(prompt)
 
         return actions_to_ret
 

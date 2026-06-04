@@ -227,6 +227,23 @@ class VLLMInstance:
         log_dir = Path(_required_env("VLLM_LOG_DIR"))
         log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file_path = log_dir / f"{self.server_id}.log"
+
+        # Rotate any existing log so a relaunch (e.g. after a mid-training
+        # vLLM crash) does not blow away the dying server's diagnostics.
+        # Keep at most MAX_KEEP previous launches.
+        if self.log_file_path.exists():
+            MAX_KEEP = 5
+            oldest = log_dir / f"{self.server_id}.log.{MAX_KEEP}"
+            if oldest.exists():
+                oldest.unlink()
+            for n in range(MAX_KEEP - 1, 0, -1):
+                src = log_dir / f"{self.server_id}.log.{n}"
+                if src.exists():
+                    src.rename(log_dir / f"{self.server_id}.log.{n + 1}")
+            rotated = log_dir / f"{self.server_id}.log.1"
+            self.log_file_path.rename(rotated)
+            print(f"[{self.server_id}] Rotated previous log to {rotated}")
+
         print(f"[{self.server_id}] Logging output to {self.log_file_path}")
         self.log_file = open(self.log_file_path, "w")
 

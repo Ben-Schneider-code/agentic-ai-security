@@ -30,6 +30,7 @@ REPLICATE_SEED=0
 RESULTS_ID_OVERRIDE=""
 RESUME=false
 HONEYPOT_TYPE_SNIFFED=""
+MATCH_TRAIN_SEEDS=false
 
 source .venv/bin/activate
 
@@ -41,16 +42,19 @@ source .venv/bin/activate
 # exists). --resume IS consumed here (filtered out of SELFPLAY_ARGS below)
 # because run_selfplay.sh doesn't accept it — at the replicate level it means
 # "skip Phase 1 if the cell is already selfplay-complete."
+# --match-train-seeds is sniffed + consumed: it only applies to Phase 2
+# (cross-eval) and would be rejected by run_selfplay.sh.
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
     case "${args[$i]}" in
-        --base-model)     BASE_MODEL="${args[$((i+1))]}" ;;
-        --redteam-gpu)    RED_GPU="${args[$((i+1))]}" ;;
-        --blueteam-gpu)   BLUE_GPU="${args[$((i+1))]}" ;;
-        --replicate-seed) REPLICATE_SEED="${args[$((i+1))]}" ;;
-        --results-id)     RESULTS_ID_OVERRIDE="${args[$((i+1))]}" ;;
-        --honeypot-type)  HONEYPOT_TYPE_SNIFFED="${args[$((i+1))]}" ;;
-        --resume)         RESUME=true ;;
+        --base-model)        BASE_MODEL="${args[$((i+1))]}" ;;
+        --redteam-gpu)       RED_GPU="${args[$((i+1))]}" ;;
+        --blueteam-gpu)      BLUE_GPU="${args[$((i+1))]}" ;;
+        --replicate-seed)    REPLICATE_SEED="${args[$((i+1))]}" ;;
+        --results-id)        RESULTS_ID_OVERRIDE="${args[$((i+1))]}" ;;
+        --honeypot-type)     HONEYPOT_TYPE_SNIFFED="${args[$((i+1))]}" ;;
+        --resume)            RESUME=true ;;
+        --match-train-seeds) MATCH_TRAIN_SEEDS=true ;;
     esac
 done
 
@@ -154,6 +158,7 @@ if [[ -z "$RESULTS_DIR" ]]; then
     SELFPLAY_ARGS=()
     for ((i=0; i<${#args[@]}; i++)); do
         [[ "${args[$i]}" == "--resume" ]] && continue
+        [[ "${args[$i]}" == "--match-train-seeds" ]] && continue
         SELFPLAY_ARGS+=("${args[$i]}")
     done
     [[ -z "$RESULTS_ID_OVERRIDE" ]] && SELFPLAY_ARGS+=(--results-id "$AAS_RUN_ID")
@@ -185,7 +190,12 @@ export HONEYPOT_TYPE="$SUMMARY_HP"
 echo "[replicate] Honeypot arm (pinned from summary.json): $HONEYPOT_TYPE"
 
 # Phase 2 — cross-eval (dual-GPU; same pair, same base model)
-echo "[replicate] Phase 2/3: cross-eval"
+# --match-train-seeds (when set) makes cross-eval read red_seed from
+# summary.json so its red-team prompt RNG lineage matches training. Default
+# off → cross-eval uses --seed as an independent draw from the same dataset.
+CROSS_EXTRA=()
+[[ "$MATCH_TRAIN_SEEDS" == "true" ]] && CROSS_EXTRA+=(--match-train-seeds)
+echo "[replicate] Phase 2/3: cross-eval (match-train-seeds=$MATCH_TRAIN_SEEDS)"
 ./run_cross_eval.sh \
     --selfplay-dir "$RESULTS_DIR" \
     --base-model   "$BASE_MODEL" \
@@ -195,7 +205,8 @@ echo "[replicate] Phase 2/3: cross-eval"
     --concurrency 32 \
     --seed       "$REPLICATE_SEED" \
     --skip-init \
-    --resume
+    --resume \
+    "${CROSS_EXTRA[@]}"
 
 # Phase 3 — benign-eval (single GPU; reuse the blue GPU)
 echo "[replicate] Phase 3/3: benign-eval"

@@ -15,7 +15,6 @@ Usage:
 
 Output order:
     figures/pvr.png
-    figures/pvr_conv.png
     figures/work_factor.png
     figures/brr.png
     figures/semantic_diversity_*.png
@@ -38,17 +37,32 @@ Output order:
     figures/quick_attempted_vs_successful_breach.png        (if cross_eval_quick/ exists)
     figures/diagonal_eval_attempted_vs_successful_breach.png (if diagonal_eval/ exists)
     figures/security_utility_pareto.png
-    figures/diagonal_convergence.png
+    figures/pvr_conv_trajectory.png
+    figures/pvr_turn_trajectory.png
+    figures/brr_trajectory.png
     figures/lora_drift.png
     figures/lora_delta.png
     figures/lora_cosine.png
     figures/sql_error_heatmap.png
+    figures/training_plots/red_reward_curve.png
+    figures/training_plots/red_outcome_composition.png
+    figures/training_plots/red_fluency.png
+    figures/training_plots/red_honeypot_discovery.png
+    figures/training_plots/blue_prf1.png
+    figures/training_plots/blue_outcome_rates.png
+    figures/training_plots/selfplay_arms_race.png
+    figures/training_plots/selfplay_dominance.png
+    figures/training_plots/optimization_curves.png
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import platform
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -72,6 +86,81 @@ def _per_dir(base: Path, label: str, multi: bool) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+
+def _git_info(cwd: Path) -> tuple[str, bool | None]:
+    """Best-effort git SHA + dirty flag. Returns ('unknown', None) on any failure."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        sha = "unknown"
+    try:
+        dirty_out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        ).stdout
+        dirty: bool | None = bool(dirty_out.strip())
+    except Exception:
+        dirty = None
+    return sha, dirty
+
+
+def _export_honeypot_type(results: list[tuple[str, str]]) -> str | None:
+    """Read honeypot_type from each result's summary.json and export it.
+
+    Downstream metric refresh (compute_pairing_metrics → redteam_sql_env import)
+    raises RuntimeError when HONEYPOT_TYPE is unset, which the orchestrator's
+    per-plot try/except would silently swallow — dropping the trajectory and
+    heatmap families. Setting it here keeps those plots renderable from a plain
+    `python plot_paper_figures.py` invocation. Fail-fast on disagreement so a
+    mixed-arm comparison can't silently fix to whichever arm appeared first.
+    """
+    arms: dict[str, str] = {}
+    for label, selfplay_dir in results:
+        summary = Path(selfplay_dir) / "summary.json"
+        if not summary.is_file():
+            continue
+        try:
+            arm = json.loads(summary.read_text()).get("honeypot_type")
+        except (json.JSONDecodeError, OSError):
+            continue
+        if arm:
+            arms[label] = arm
+    if not arms:
+        return None
+    distinct = set(arms.values())
+    if len(distinct) > 1:
+        raise RuntimeError(
+            "Mixed honeypot_type across --results: "
+            + ", ".join(f"{lbl}={arm}" for lbl, arm in arms.items())
+            + ". Refusing to set HONEYPOT_TYPE to a single arm."
+        )
+    arm = next(iter(distinct))
+    existing = os.environ.get("HONEYPOT_TYPE")
+    if existing and existing != arm:
+        raise RuntimeError(
+            f"HONEYPOT_TYPE={existing!r} is preset but results summaries say {arm!r}."
+        )
+    os.environ["HONEYPOT_TYPE"] = arm
+    return arm
+
+
+def _build_run_meta(run_all_kwargs: dict, cli_args: dict | None) -> dict:
+    """Snapshot run-level metadata reused across every sidecar in this invocation."""
+    sha, dirty = _git_info(_REPO_ROOT)
+    return {
+        "argv": list(sys.argv),
+        "cli_args": cli_args or {},
+        "run_all_kwargs": run_all_kwargs,
+        "git_sha": sha,
+        "git_dirty": dirty,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+    }
+
+
 # Support both package import and direct execution
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -82,8 +171,6 @@ try:
     from plotting.plot_pvr import (
         plot_pvr,
         DESCRIPTION as DESC_PVR,
-        plot_pvr_conv,
-        DESCRIPTION_CONV as DESC_PVR_CONV,
         plot_work_factor,
         DESCRIPTION_WF as DESC_WF,
     )
@@ -136,15 +223,15 @@ try:
     )
     from plotting.plot_diagonal_convergence import (
         plot_diagonal_convergence,
-        DESCRIPTION as DESC_DIAG_CONV,
+        DESCRIPTION_PVR_CONV_TRAJ as DESC_PVR_CONV_TRAJ,
+        DESCRIPTION_PVR_TURN_TRAJ as DESC_PVR_TURN_TRAJ,
+        DESCRIPTION_BRR_TRAJ      as DESC_BRR_TRAJ,
     )
 except ImportError:
     from plotting._data import parse_results_arg, write_sidecar
     from plotting.plot_pvr import (
         plot_pvr,
         DESCRIPTION as DESC_PVR,
-        plot_pvr_conv,
-        DESCRIPTION_CONV as DESC_PVR_CONV,
         plot_work_factor,
         DESCRIPTION_WF as DESC_WF,
     )
@@ -197,7 +284,9 @@ except ImportError:
     )
     from plotting.plot_diagonal_convergence import (
         plot_diagonal_convergence,
-        DESCRIPTION as DESC_DIAG_CONV,
+        DESCRIPTION_PVR_CONV_TRAJ as DESC_PVR_CONV_TRAJ,
+        DESCRIPTION_PVR_TURN_TRAJ as DESC_PVR_TURN_TRAJ,
+        DESCRIPTION_BRR_TRAJ      as DESC_BRR_TRAJ,
     )
 
 
@@ -223,6 +312,7 @@ def run_all(
     baseline_cross_eval_subdir: str = "cross_eval_baseline",
     human_eval_json: str | None = "data/human_eval/comparison.json",
     show_ci: bool = True,
+    cli_args: dict | None = None,
 ) -> list[tuple[str, Path]]:
     """
     Run all paper figure plots in a fixed order.
@@ -240,20 +330,50 @@ def run_all(
         tail_pct:           Tail fraction for final_episode query mode.
         lora_base_model:    Override base model for LoRA diversity plot.
         skip:               Set of plot names to skip.
-                            Valid names: pvr, pvr_conv, work_factor, brr, diversity,
+                            Valid names: pvr, work_factor, brr, diversity,
                             running_time, training_dynamics, compute_efficiency,
                             security_utility_pareto, heatmaps, training_diagonal,
                             pvr_vs_normalized_eis, blue_convergence, attempts_cdf,
                             coverage_yield, diagonal_convergence, lora,
-                            sql_error_heatmap.
+                            sql_error_heatmap, training_curves.
 
     Returns:
         [(description, output_path), ...] for each plot produced.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    skip = skip or set()
+    skip = skip or set(["diversity"]) # TODO: SKipping diversity for now
     produced: list[tuple[str, Path]] = []
+
+    # Export HONEYPOT_TYPE from summary.json before any plot loader triggers
+    # compute_pairing_metrics (which imports redteam_sql_env). Without this,
+    # the trajectory / heatmap / coverage_yield families are silently dropped
+    # by the per-plot try/except below.
+    honeypot_arm = _export_honeypot_type(results)
+
+    # Run-level metadata reused by every sidecar write.
+    run_meta = _build_run_meta(
+        run_all_kwargs={
+            "results": [{"label": lbl, "selfplay_dir": d} for lbl, d in results],
+            "out_dir": str(out_dir),
+            "pvr_sources": list(pvr_sources),
+            "brr_sources": list(brr_sources),
+            "human_eval_parent": human_eval_parent,
+            "cross_eval_subdir": cross_eval_subdir,
+            "human_queries": human_queries,
+            "benign_queries": benign_queries,
+            "query_mode": query_mode,
+            "tail_pct": tail_pct,
+            "lora_base_model": lora_base_model,
+            "skip": sorted(skip),
+            "training_dynamics_smooth": training_dynamics_smooth,
+            "baseline_cross_eval_subdir": baseline_cross_eval_subdir,
+            "human_eval_json": human_eval_json,
+            "show_ci": show_ci,
+            "honeypot_type": honeypot_arm,
+        },
+        cli_args=cli_args,
+    )
 
     # 1. PVR_turn
     # if "pvr" not in skip:
@@ -270,22 +390,6 @@ def run_all(
     #         write_sidecar(path, DESC_PVR, results)
     #     except Exception as e:  # pragma: no cover
     #         print(f"[plot_paper_figures] pvr skipped: {e}", file=sys.stderr)
-
-    # 2. PVR_conv
-    if "pvr_conv" not in skip:
-        try:
-            path = plot_pvr_conv(
-                results,
-                out_dir / "pvr_conv.png",
-                sources=pvr_sources,
-                human_eval_parent=human_eval_parent,
-                cross_eval_subdir=cross_eval_subdir,
-                show_ci=show_ci,
-            )
-            produced.append((DESC_PVR_CONV, path))
-            write_sidecar(path, DESC_PVR_CONV, results)
-        except Exception as e:  # pragma: no cover
-            print(f"[plot_paper_figures] pvr_conv skipped: {e}", file=sys.stderr)
 
     # 3. Work Factor (WF = 1/PVR_turn)
     # if "work_factor" not in skip:
@@ -359,7 +463,19 @@ def run_all(
                     benign_queries_path=benign_queries,
                 )
                 produced.append((DESC_DIV, path))
-                write_sidecar(path, DESC_DIV, results, sem_metrics)
+                write_sidecar(
+                    path, DESC_DIV, results, sem_metrics,
+                    plot_kwargs={
+                        "human_queries_path": human_queries,
+                        "query_mode": query_mode,
+                        "tail_pct": tail_pct,
+                        "embedder": embedder,
+                        "embedder_id": id,
+                        "cross_eval_subdir": cross_eval_subdir,
+                        "benign_queries_path": benign_queries,
+                    },
+                    run_meta=run_meta,
+                )
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] diversity skipped: {e}", file=sys.stderr)
 
@@ -368,7 +484,7 @@ def run_all(
         try:
             path = plot_running_time(results, out_dir / "running_time.png")
             produced.append((DESC_RT, path))
-            write_sidecar(path, DESC_RT, results)
+            write_sidecar(path, DESC_RT, results, plot_kwargs={}, run_meta=run_meta)
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] running_time skipped: {e}", file=sys.stderr)
 
@@ -422,7 +538,11 @@ def run_all(
                     continue
                 desc = _heatmap_desc(subdir, metric)
                 produced.append((desc, path))
-                write_sidecar(path, desc, results)
+                write_sidecar(
+                    path, desc, results,
+                    plot_kwargs={"subdir": subdir, "metric": metric, "fname": fname},
+                    run_meta=run_meta,
+                )
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] heatmaps skipped: {e}", file=sys.stderr)
 
@@ -471,7 +591,11 @@ def run_all(
                     if not Path(path).exists():
                         continue
                     produced.append((DESC_ATTEMPTS, path))
-                    write_sidecar(path, DESC_ATTEMPTS, [(label, sd)])
+                    write_sidecar(
+                        path, DESC_ATTEMPTS, [(label, sd)],
+                        plot_kwargs={"subdir": subdir_name, "fname": fname},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] attempts_cdf [{label}/{subdir_name}] skipped: {e}", file=sys.stderr)
 
@@ -490,22 +614,43 @@ def run_all(
                     if not Path(path).exists():
                         continue
                     produced.append((DESC_COV, path))
-                    write_sidecar(path, DESC_COV, [(label, sd)])
+                    write_sidecar(
+                        path, DESC_COV, [(label, sd)],
+                        plot_kwargs={
+                            "subdir": subdir_name,
+                            "fname": fname,
+                            "show_ci": show_ci,
+                        },
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] coverage_yield [{label}/{subdir_name}] skipped: {e}", file=sys.stderr)
 
-    # 14. Diagonal convergence — PVR_conv, PVR_turn, BRR for adjacent pairings
+    # 14. Diagonal trajectory: PVR_conv, PVR_turn, BRR for adjacent pairings
     if "diagonal_convergence" not in skip:
         try:
-            path, dc_metrics = plot_diagonal_convergence(
+            paths, dc_metrics = plot_diagonal_convergence(
                 results,
-                out_dir / "diagonal_convergence.png",
+                out_dir,
                 eval_subdir=cross_eval_subdir,
                 show_ci=show_ci,
-                individual_out_dir=out_dir,
             )
-            produced.append((DESC_DIAG_CONV, path))
-            write_sidecar(path, DESC_DIAG_CONV, results, dc_metrics)
+            desc_by_key = {
+                "pvr_conv": DESC_PVR_CONV_TRAJ,
+                "pvr_turn": DESC_PVR_TURN_TRAJ,
+                "brr":      DESC_BRR_TRAJ,
+            }
+            dc_plot_kwargs = {
+                "eval_subdir": cross_eval_subdir,
+                "show_ci": show_ci,
+            }
+            for key, p in paths.items():
+                produced.append((desc_by_key[key], p))
+                write_sidecar(
+                    p, desc_by_key[key], results, dc_metrics,
+                    plot_kwargs={**dc_plot_kwargs, "trajectory_key": key},
+                    run_meta=run_meta,
+                )
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] diagonal_convergence skipped: {e}", file=sys.stderr)
 
@@ -519,7 +664,11 @@ def run_all(
             )
             for p in (drift, delta, cosine):
                 produced.append((DESC_LORA, p))
-                write_sidecar(p, DESC_LORA, results)
+                write_sidecar(
+                    p, DESC_LORA, results,
+                    plot_kwargs={"base_model": lora_base_model},
+                    run_meta=run_meta,
+                )
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] lora skipped: {e}", file=sys.stderr)
 
@@ -584,7 +733,11 @@ def run_all(
                         show_ci=show_ci,
                     )
                     produced.append((DESC_GEN, path))
-                    write_sidecar(path, DESC_GEN, [(label, sd)])
+                    write_sidecar(
+                        path, DESC_GEN, [(label, sd)],
+                        plot_kwargs={"subdir": cross_eval_subdir, "show_ci": show_ci},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] generalization [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -605,7 +758,10 @@ def run_all(
                         _per_path(out_dir / "honeypot_difficulty.png", label, multi),
                     )
                     produced.append((DESC_HP_DIFF, path))
-                    write_sidecar(path, DESC_HP_DIFF, [(label, sd)])
+                    write_sidecar(
+                        path, DESC_HP_DIFF, [(label, sd)],
+                        plot_kwargs={}, run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] honeypot_difficulty [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -627,7 +783,10 @@ def run_all(
                         show_ci=show_ci,
                     )
                     produced.append((DESC_HP_SAT, path))
-                    write_sidecar(path, DESC_HP_SAT, [(label, sd)])
+                    write_sidecar(
+                        path, DESC_HP_SAT, [(label, sd)],
+                        plot_kwargs={"show_ci": show_ci}, run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] honeypot_saturation [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -702,6 +861,14 @@ def run_all(
                         show_ci=show_ci,
                     )
                     produced.append((DESC_HELD_OUT, path))
+                    write_sidecar(
+                        Path(path), DESC_HELD_OUT, [(label, sd)],
+                        plot_kwargs={
+                            "cross_eval_subdir": cross_eval_subdir,
+                            "show_ci": show_ci,
+                        },
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] held_out_per_style_refusal [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -723,6 +890,11 @@ def run_all(
                         out_dir=str(_per_dir(out_dir, label, multi)),
                     )
                     produced.append((DESC_RANK, path))
+                    write_sidecar(
+                        Path(path), DESC_RANK, [(label, sd)],
+                        plot_kwargs={"cross_eval_subdir": cross_eval_subdir},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] cross_eval_rank_invariance [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -743,6 +915,10 @@ def run_all(
                         out_dir=str(_per_dir(out_dir, label, multi)),
                     )
                     produced.append((DESC_DEF, path))
+                    write_sidecar(
+                        Path(path), DESC_DEF, [(label, sd)],
+                        plot_kwargs={}, run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] defender_concentration [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -764,7 +940,11 @@ def run_all(
                         show_ci=show_ci,
                     )
                     produced.append((DESC_ASYM, path))
-                    write_sidecar(path, DESC_ASYM, [(label, sd)], asym_metrics)
+                    write_sidecar(
+                        path, DESC_ASYM, [(label, sd)], asym_metrics,
+                        plot_kwargs={"show_ci": show_ci},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] pvr_asymptote [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -847,6 +1027,15 @@ def run_all(
                 show_ci=show_ci,
             )
             produced.append((DESC_BASELINE, path))
+            write_sidecar(
+                Path(path), DESC_BASELINE, results,
+                plot_kwargs={
+                    "cross_eval_subdir": cross_eval_subdir,
+                    "baseline_subdir": baseline_cross_eval_subdir,
+                    "show_ci": show_ci,
+                },
+                run_meta=run_meta,
+            )
         except Exception as e:  # pragma: no cover
             print(f"[plot_paper_figures] baseline_compare skipped: {e}", file=sys.stderr)
 
@@ -865,6 +1054,10 @@ def run_all(
                         out_dir=str(_per_dir(out_dir, label, multi)),
                     )
                     produced.append((DESC_HP_HM, path))
+                    write_sidecar(
+                        Path(path), DESC_HP_HM, [(label, sd)],
+                        plot_kwargs={}, run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] honeypot_per_iter [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -886,6 +1079,11 @@ def run_all(
                         cross_eval_subdir=cross_eval_subdir,
                     )
                     produced.append((DESC_PER_TARGET, path))
+                    write_sidecar(
+                        Path(path), DESC_PER_TARGET, [(label, sd)],
+                        plot_kwargs={"cross_eval_subdir": cross_eval_subdir},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] per_target_defense [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -907,6 +1105,18 @@ def run_all(
                     )
                     produced.append((DESC_ATK_EVO + " (template similarity)", tpl))
                     produced.append((DESC_ATK_EVO + " (SQL pattern)", pat))
+                    write_sidecar(
+                        Path(tpl), DESC_ATK_EVO + " (template similarity)",
+                        [(label, sd)],
+                        plot_kwargs={"variant": "template_similarity"},
+                        run_meta=run_meta,
+                    )
+                    write_sidecar(
+                        Path(pat), DESC_ATK_EVO + " (SQL pattern)",
+                        [(label, sd)],
+                        plot_kwargs={"variant": "sql_pattern"},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] attack_evolution [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -928,6 +1138,11 @@ def run_all(
                         cross_eval_subdir=cross_eval_subdir,
                     )
                     produced.append((DESC_TT_MECH, path))
+                    write_sidecar(
+                        Path(path), DESC_TT_MECH, [(label, sd)],
+                        plot_kwargs={"cross_eval_subdir": cross_eval_subdir},
+                        run_meta=run_meta,
+                    )
                 except Exception as e:  # pragma: no cover
                     print(f"[plot_paper_figures] top_target_mechanism [{label}] skipped: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover
@@ -967,6 +1182,51 @@ def run_all(
     #         write_sidecar(path, DESC_SQL_ERR, results)
     #     except Exception as e:  # pragma: no cover
     #         print(f"[plot_paper_figures] sql_error_heatmap skipped: {e}", file=sys.stderr)
+
+    # 24. Training-time learning curves — paper-style replications of the
+    #     util/plot_results.py dashboards, written to a training_plots/ subdir
+    #     per run. Reads only json/jsonl (no tensorboard / env / HONEYPOT_TYPE).
+    if "training_curves" not in skip:
+        try:
+            from plotting.plot_training_curves import (
+                plot_red_reward_curve, plot_red_outcome_composition,
+                plot_red_fluency, plot_red_honeypot_discovery,
+                plot_blue_prf1, plot_blue_outcome_rates,
+                plot_selfplay_arms_race, plot_selfplay_dominance,
+                plot_optimization_curves,
+                DESC_RED_REWARD, DESC_RED_COMPOSITION, DESC_RED_FLUENCY,
+                DESC_RED_HONEYPOT, DESC_BLUE_PRF1, DESC_BLUE_RATES,
+                DESC_ARMS_RACE, DESC_DOMINANCE, DESC_OPT_CURVES,
+            )
+            multi = len(results) > 1
+            tc_jobs = [
+                (plot_red_reward_curve,        "red_reward_curve.png",        DESC_RED_REWARD,      {}),
+                (plot_red_outcome_composition, "red_outcome_composition.png", DESC_RED_COMPOSITION, {}),
+                (plot_red_fluency,             "red_fluency.png",             DESC_RED_FLUENCY,      {}),
+                (plot_red_honeypot_discovery,  "red_honeypot_discovery.png",  DESC_RED_HONEYPOT,     {}),
+                (plot_blue_prf1,               "blue_prf1.png",               DESC_BLUE_PRF1,        {}),
+                (plot_blue_outcome_rates,      "blue_outcome_rates.png",      DESC_BLUE_RATES,       {"show_ci": show_ci}),
+                (plot_selfplay_arms_race,      "selfplay_arms_race.png",      DESC_ARMS_RACE,        {"show_ci": show_ci}),
+                (plot_selfplay_dominance,      "selfplay_dominance.png",      DESC_DOMINANCE,        {}),
+                (plot_optimization_curves,     "optimization_curves.png",     DESC_OPT_CURVES,       {}),
+            ]
+            for label, sd in results:
+                tp_dir = _per_dir(out_dir, label, multi) / "training_plots"
+                tp_dir.mkdir(parents=True, exist_ok=True)
+                for fn, fname, desc, kwargs in tc_jobs:
+                    try:
+                        path = fn([(label, sd)], tp_dir / fname, **kwargs)
+                        if not Path(path).exists():
+                            continue
+                        produced.append((desc, path))
+                        write_sidecar(
+                            Path(path), desc, [(label, sd)],
+                            plot_kwargs=kwargs, run_meta=run_meta,
+                        )
+                    except Exception as e:  # pragma: no cover
+                        print(f"[plot_paper_figures] training_curves [{label}/{fname}] skipped: {e}", file=sys.stderr)
+        except Exception as e:  # pragma: no cover
+            print(f"[plot_paper_figures] training_curves skipped: {e}", file=sys.stderr)
 
     return produced
 
@@ -1110,12 +1370,12 @@ def main() -> None:
         metavar="NAME[,NAME]",
         help=(
             "Comma-separated list of plots to skip. "
-            "Valid: pvr, pvr_conv, work_factor, brr, diversity, running_time, "
+            "Valid: pvr, work_factor, brr, diversity, running_time, "
             "training_dynamics, compute_efficiency, security_utility_pareto, heatmaps, "
             "training_diagonal, pvr_vs_normalized_eis, blue_convergence, attempts_cdf, "
             "coverage_yield, diagonal_convergence, lora, sql_error_heatmap, "
             "baseline_compare, honeypot_per_iter, per_target_defense, attack_evolution, "
-            "top_target_mechanism, human_eval_compare."
+            "top_target_mechanism, human_eval_compare, training_curves."
         ),
     )
 
@@ -1148,6 +1408,7 @@ def main() -> None:
         baseline_cross_eval_subdir=args.baseline_cross_eval_subdir,
         human_eval_json=(args.human_eval_json or None),
         show_ci=(args.ci == "true"),
+        cli_args=vars(args),
     )
 
     print(f"\n{'=' * 60}")

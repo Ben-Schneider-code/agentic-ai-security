@@ -72,6 +72,7 @@ BLUETEAM_SYSTEM_PROMPT_FILE=""  # override blue system prompt (P2 frozen-baselin
 OUTPUT_DIR_OVERRIDE=""          # override default output dir (cross_eval, diagonal_eval, etc.)
 EPISODES_EXPLICIT=false
 PAIRING_SUBSET_EXPLICIT=false
+MATCH_TRAIN_SEEDS=false  # when true, cross-eval reads red_seed from summary.json instead of --seed
 
 # --- Parse arguments ---
 while [[ "$#" -gt 0 ]]; do
@@ -102,6 +103,7 @@ while [[ "$#" -gt 0 ]]; do
         --red-port) RED_PORT="$2"; shift ;;
         --blue-port) BLUE_PORT="$2"; shift ;;
         --skip-init) SKIP_INIT=true ;;
+        --match-train-seeds) MATCH_TRAIN_SEEDS=true ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -604,6 +606,7 @@ fi
 EXTRA_CROSS_ARGS=()
 [[ "$INCLUDE_BASE" == "false" ]] && EXTRA_CROSS_ARGS+=(--no-include-base)
 [[ "$RESUME"       == "true"  ]] && EXTRA_CROSS_ARGS+=(--resume)
+[[ "$MATCH_TRAIN_SEEDS" == "true" ]] && EXTRA_CROSS_ARGS+=(--match-train-seeds)
 [[ -n "$BLUETEAM_SYSTEM_PROMPT_FILE" ]] && EXTRA_CROSS_ARGS+=(--blueteam-system-prompt-file "$BLUETEAM_SYSTEM_PROMPT_FILE")
 python3 util/cross_evaluate.py \
     --selfplay-dir "$SELFPLAY_DIR" \

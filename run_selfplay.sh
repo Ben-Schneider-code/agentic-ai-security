@@ -449,6 +449,19 @@ for ITER in $(seq 1 $NUM_ITERATIONS); do
     fi
 done
 
+# --- Assemble the redteam eval-prompt manifest -----------------------------
+# Persist the EXACT (question, per-turn strategies) sequence training drew so
+# cross-eval (--match-train-seeds) replays byte-identical prompts across every
+# pairing. Built from the env-logged redteam_prompts.jsonl and cross-checked
+# against an independent RNG reconstruction (fails loudly on any drift).
+echo ""
+echo "[run_selfplay] Assembling redteam eval-prompt manifest..."
+if ! python3 util/build_redteam_manifest.py --selfplay-dir "${CELL_ROOT}"; then
+    echo "ERROR: failed to build redteam eval-prompt manifest for ${CELL_ROOT}"
+    exit 1
+fi
+MANIFEST_PATH="${CELL_ROOT}/redteam_eval_manifest.json"
+
 echo ""
 echo "========================================"
 echo "Self-Play Complete (${NUM_ITERATIONS} iterations)."
@@ -456,3 +469,4 @@ echo "========================================"
 echo "Cell directory: ${CELL_ROOT}"
 echo "Red registry:   ${RED_LORA_REGISTRY}"
 echo "Summary:        ${SUMMARY_PATH}"
+echo "Prompt manifest:${MANIFEST_PATH}"
