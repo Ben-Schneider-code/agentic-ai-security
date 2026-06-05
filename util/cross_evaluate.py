@@ -1094,6 +1094,34 @@ def aggregate_results(output_dir: str, args) -> dict:
                 with open(summary_path, "r") as f:
                     results["benign_only"][blue_name] = json.load(f)
 
+    # --- Seed/mode metadata: derive from the per-pairing summaries, NOT args.
+    # The per-pairing summary.json files are written during evaluation and are
+    # the single source of truth for which prompt-seed regime actually ran
+    # (summary["seed"] + summary["redteam_prompt_mode"]). The standalone
+    # `--aggregate-only` invocation in run_cross_eval.sh does not receive
+    # --match-train-seeds/--seed, so re-deriving these from argparse defaults
+    # would silently relabel a training-faithful run (seed=red_seed) as
+    # independent/42 — exactly the metadata-clobber that masked match-train runs.
+    # Reading the summaries keeps one source of truth and cannot be clobbered.
+    # Older summaries that predate these fields fall back to the args-derived
+    # values set above; present-but-inconsistent fields fail fast.
+    if results["pairings"]:
+        modes = {p.get("redteam_prompt_mode") for p in results["pairings"].values()}
+        seeds = {p.get("seed") for p in results["pairings"].values()}
+        if None not in modes and None not in seeds:
+            if len(modes) != 1 or len(seeds) != 1:
+                raise ValueError(
+                    f"Inconsistent seed bookkeeping across pairings "
+                    f"(modes={modes}, seeds={seeds}). All pairings must share "
+                    f"one prompt-seed regime; refusing to write ambiguous metadata."
+                )
+            prompt_mode = modes.pop()
+            results["metadata"]["eval_seed"] = seeds.pop()
+            results["metadata"]["seed_mode"] = {
+                "training_faithful": "match-train",
+                "independent": "independent",
+            }.get(prompt_mode, prompt_mode)
+
     # Compute high-level stats
     if results["pairings"]:
         all_asr = [p["metrics"]["asr"] for p in results["pairings"].values()]

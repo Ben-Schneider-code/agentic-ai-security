@@ -623,11 +623,19 @@ python3 util/cross_evaluate.py \
 
 echo ""
 _step "Aggregating results..."
+# Forward --seed / --match-train-seeds so the aggregate pass resolves the same
+# seed regime as the eval pass. The authoritative eval_seed/seed_mode are now
+# derived from the per-pairing summaries inside aggregate_results(); these args
+# only keep the "Eval seed:" banner and the no-pairings fallback consistent.
+AGG_EXTRA_ARGS=()
+[[ "$MATCH_TRAIN_SEEDS" == "true" ]] && AGG_EXTRA_ARGS+=(--match-train-seeds)
 python3 util/cross_evaluate.py \
     --selfplay-dir "$SELFPLAY_DIR" \
     --base-model "$BASE_MODEL" \
     --output-dir "$OUTPUT_DIR" \
-    --aggregate-only
+    --seed "$SEED" \
+    --aggregate-only \
+    "${AGG_EXTRA_ARGS[@]}"
 
 echo ""
 _step "Computing pairwise significance (two-proportion / Fisher + McNemar)..."
