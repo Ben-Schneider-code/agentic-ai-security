@@ -41,6 +41,7 @@ dependencies = [
     "scipy",
     "seaborn",
     "scikit-learn>=1.7.2",
+    "sqlglot>=30.9.0",
 ]
 
 [tool.uv]
