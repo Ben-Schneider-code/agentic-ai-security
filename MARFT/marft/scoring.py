@@ -231,6 +231,29 @@ def is_victim_refusal(answer: str, patterns: tuple[str, ...] = VICTIM_REFUSAL_PA
     return False
 
 
+def stringify_tool_result(result) -> str:
+    """Canonical string form of an MCP tool result (a ``CallToolResult`` or any
+    object). Joins the ``.text`` of each content item so a SELECT result becomes
+    the plain ``str([{...}, ...])`` the postgres MCP tool emits — the form that
+    ``ast.literal_eval`` (and therefore execution-mode honeypot scoring) can
+    parse.
+
+    This is the ONE definition: the redteam victim path, the blueteam defender
+    path, and cross_evaluate all call it, so the execution_result format can
+    never diverge between the red and blue halves again. ``str(result.content)``
+    (a ``[TextContent(...)]`` repr) is NOT parseable and must not be used.
+    """
+    if hasattr(result, "content"):
+        content = result.content
+        if isinstance(content, list):
+            return "\n".join(
+                item.text if hasattr(item, "text") else str(item)
+                for item in content
+            )
+        return str(content)
+    return str(result)
+
+
 # === sqlglot-backed parsing helpers (lazy import; training never needs these) ===
 def _parse_sql(sql_query: str):
     """Parse SQL with sqlglot (postgres dialect). Raises on failure."""
@@ -354,6 +377,14 @@ def _is_db_error(execution_result: str) -> bool:
         or "syntax error" in exec_lower
         or "exception" in exec_lower
     )
+
+
+def execution_failed(execution_result: str) -> bool:
+    """Public predicate: did the SQL execution error out (DB error / non-select
+    skipped / exception)? Thin wrapper over the internal honeypot-detection
+    error check so callers (e.g. the blue env's benign exec-check) share one
+    definition of "this query did not execute cleanly"."""
+    return _is_db_error(execution_result)
 
 
 def detect_honeypot_access(

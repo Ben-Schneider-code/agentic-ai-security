@@ -160,16 +160,23 @@ if [[ $N_BLUE -eq 0 ]]; then
     exit 1
 fi
 
-# ── Auto-detect base model ─────────────────────────────────────────────────────
+# ── Resolve the BLUE base model ────────────────────────────────────────────────
+# Benign-eval exercises only the blue defender, so it needs the blue base. Prefer
+# summary.json (blueteam_base_model), then a blueteam adapter_config.json.
 if [[ -z "$BASE_MODEL" ]]; then
-    SAMPLE_ADAPTER=$(find "$RESULTS_DIR" -name "adapter_config.json" -type f -print -quit)
+    BASE_MODEL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('blueteam_base_model') or '')" "$SUMMARY_JSON")
+    [[ -n "$BASE_MODEL" ]] && echo "Blue base model (from $SUMMARY_JSON): $BASE_MODEL"
+fi
+if [[ -z "$BASE_MODEL" ]]; then
+    SAMPLE_ADAPTER=$(find "$RESULTS_DIR" -path "*/blueteam/*" -name "adapter_config.json" -type f -print -quit)
+    [[ -z "$SAMPLE_ADAPTER" ]] && SAMPLE_ADAPTER=$(find "$RESULTS_DIR" -name "adapter_config.json" -type f -print -quit)
     if [[ -z "$SAMPLE_ADAPTER" ]]; then
         _err "Could not auto-detect base model — no adapter_config.json found."
         echo "Specify --base-model explicitly."
         exit 1
     fi
     BASE_MODEL=$(python3 -c "import json; print(json.load(open('$SAMPLE_ADAPTER'))['base_model_name_or_path'])")
-    echo "Auto-detected base model: $BASE_MODEL"
+    echo "Auto-detected blue base model: $BASE_MODEL"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────

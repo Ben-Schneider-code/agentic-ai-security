@@ -32,6 +32,8 @@ STUDENT_LORA=""
 HOST_ONLY=false
 RESULTS_ID=""
 BASE_MODEL="Snowflake/Arctic-Text2SQL-R1-7B"
+STUDENT_BASE_MODEL=""    # base of the policy being trained (defaults to BASE_MODEL)
+OPPONENT_BASE_MODEL=""   # base of the victim/attacker actor (defaults to BASE_MODEL)
 LOAD_IN_4BIT=false
 ACTOR_GPU=""
 TRAINING_GPU=""
@@ -43,6 +45,7 @@ HONEYPOT_TYPE=""
 OPPONENT_SAMPLER_SEED=""
 RESUME_RUN_DIR=""
 SEED=""
+SCORING_MODE=""
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -53,6 +56,8 @@ while [[ "$#" -gt 0 ]]; do
         --host-only) HOST_ONLY=true ;;
         --results-id) RESULTS_ID="$2"; shift ;;
         --base-model) BASE_MODEL="$2"; shift ;;
+        --student-base-model) STUDENT_BASE_MODEL="$2"; shift ;;
+        --opponent-base-model) OPPONENT_BASE_MODEL="$2"; shift ;;
         --load-in-4bit) LOAD_IN_4BIT=true ;;
         --actor-gpu) ACTOR_GPU="$2"; shift ;;
         --training-gpu) TRAINING_GPU="$2"; shift ;;
@@ -64,6 +69,7 @@ while [[ "$#" -gt 0 ]]; do
         --opponent-sampler-seed) OPPONENT_SAMPLER_SEED="$2"; shift ;;
         --resume-run-dir) RESUME_RUN_DIR="$2"; shift ;;
         --seed) SEED="$2"; shift ;;
+        --scoring-mode) SCORING_MODE="$2"; shift ;;
         # Deprecated coach flags — silently consume so old callers don't break.
         --coach-model) shift ;;
         --coach-gpu) shift ;;
@@ -74,7 +80,15 @@ done
 
 EPISODE_LENGTH=$(( 2 * HORIZON ))
 
+# Heterogeneous red/blue support: the student (trained policy) and the opponent
+# (victim/attacker served by the actor vLLM) may use different base models. Both
+# default to --base-model, so single-model callers are unchanged.
+STUDENT_BASE_MODEL="${STUDENT_BASE_MODEL:-$BASE_MODEL}"
+OPPONENT_BASE_MODEL="${OPPONENT_BASE_MODEL:-$BASE_MODEL}"
+
 echo "Base model:      $BASE_MODEL"
+echo "Student base:    $STUDENT_BASE_MODEL (trained policy)"
+echo "Opponent base:   $OPPONENT_BASE_MODEL (actor vLLM: victim/attacker)"
 echo "Target:          $TARGET"
 echo "Actor GPU:       $ACTOR_GPU"
 echo "Training GPU:    $TRAINING_GPU"
@@ -149,6 +163,10 @@ _cleanup_training() {
 trap _cleanup_training EXIT
 trap '_cleanup_training; exit 130' INT
 trap '_cleanup_training; exit 143' TERM
+# SIGHUP (SSH disconnect / terminal hangup): without this trap bash dies WITHOUT
+# running its EXIT trap, while the setsid'd fleet — in its own session — never
+# sees the terminal hangup and orphans. Trapping HUP reaps it explicitly.
+trap '_cleanup_training; exit 129' HUP
 
 if [[ -z "$RESULTS_ID" ]]; then
     RESULTS_ID="$(date +%Y%m%d-%H%M)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 5 || true)"
@@ -210,10 +228,14 @@ ACTOR_PORT=$(alloc_free_port)
 assert_port_free "$ACTOR_PORT"
 echo "Actor vLLM port: $ACTOR_PORT"
 
+# The actor vLLM serves the OPPONENT (victim in red training / red pool in blue
+# training), so its --model is the opponent base. --student-base-model lets the
+# config drop the student LoRA from the actor server when bases differ.
 GEN_CMD=(python3 util/generate_vllm_config.py \
     --target "$TARGET" \
     --out-config "$ACTOR_CONFIG_PATH" \
-    --model "$BASE_MODEL" \
+    --model "$OPPONENT_BASE_MODEL" \
+    --student-base-model "$STUDENT_BASE_MODEL" \
     --actor-gpu "$ACTOR_GPU" \
     --registry-path "$ACTOR_REGISTRY_PATH" \
     --actor-port "$ACTOR_PORT")
@@ -353,6 +375,10 @@ fi
 [[ -n "$HONEYPOT_TYPE" ]] && EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --honeypot-type $HONEYPOT_TYPE"
 [[ -n "$REDTEAM_LORA_POOL" ]] && EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --red-lora-pool $REDTEAM_LORA_POOL"
 [[ -n "$OPPONENT_SAMPLER_SEED" ]] && EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --opponent-sampler-seed $OPPONENT_SAMPLER_SEED"
+[[ -n "$SCORING_MODE" ]] && EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --scoring-mode $SCORING_MODE"
+# The env's victim/attacker (OfflineLLM) base = the opponent base; the trainer's
+# --model_name_or_path stays the student base. Decoupled for heterogeneous runs.
+EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --opponent-base-model $OPPONENT_BASE_MODEL"
 
 COMMON_ARGS=(
     --algorithm_name APPO
@@ -360,7 +386,7 @@ COMMON_ARGS=(
     --flag train
     --num_mini_batch 10 --ppo_epoch 1
     --lr 5e-7 --critic_lr 5e-5
-    --model_name_or_path "$BASE_MODEL"
+    --model_name_or_path "$STUDENT_BASE_MODEL"
     --n_agents 1
     --agent_iteration_interval 800
     --n_rollout_threads 8

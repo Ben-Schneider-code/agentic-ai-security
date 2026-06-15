@@ -47,6 +47,8 @@ _banner "========================================"
 SELFPLAY_DIR=""
 EPISODES=800
 BASE_MODEL=""
+RED_BASE_MODEL=""    # red-side base (red LoRAs); defaults to summary.json / BASE_MODEL
+BLUE_BASE_MODEL=""   # blue-side base (blue LoRAs); defaults to summary.json / BASE_MODEL
 RED_GPU=0
 BLUE_GPU=1
 HORIZON=5
@@ -80,6 +82,8 @@ while [[ "$#" -gt 0 ]]; do
         --selfplay-dir) SELFPLAY_DIR="$2"; shift ;;
         --episodes) EPISODES="$2"; EPISODES_EXPLICIT=true; shift ;;
         --base-model) BASE_MODEL="$2"; shift ;;
+        --red-base-model) RED_BASE_MODEL="$2"; shift ;;
+        --blue-base-model) BLUE_BASE_MODEL="$2"; shift ;;
         --red-gpu) RED_GPU="$2"; shift ;;
         --blue-gpu) BLUE_GPU="$2"; shift ;;
         --horizon) HORIZON="$2"; shift ;;
@@ -170,6 +174,16 @@ HONEYPOT_TYPE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d
 export HONEYPOT_TYPE
 _step "Honeypot arm (from $SUMMARY_JSON): $HONEYPOT_TYPE"
 
+# --- Inherit scoring mode from the self-play run (no train/eval divergence) --
+# Cross-eval must score honeypots with the SAME detector the policies were
+# trained under. summary.json is the source of truth; older runs that predate
+# this field default to execution. The shim reads AAS_SCORING_MODE at call time.
+SCORING_MODE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('scoring_mode') or 'execution'; assert v in ('legacy','projection','execution'), f'bad scoring_mode={v!r}'; print(v)" "$SUMMARY_JSON") || {
+    _err "could not parse scoring_mode from $SUMMARY_JSON"; exit 1;
+}
+export AAS_SCORING_MODE="$SCORING_MODE"
+_step "Scoring mode (from $SUMMARY_JSON): $AAS_SCORING_MODE"
+
 if [[ "$DIAGONAL_ONLY" == "true" ]]; then
     OUTPUT_DIR="${SELFPLAY_DIR}/diagonal_eval"
 elif [[ "$QUICK" == "true" ]]; then
@@ -237,6 +251,24 @@ if [[ -z "$BASE_MODEL" ]]; then
     echo "Auto-detected base model: $BASE_MODEL"
 fi
 
+# --- Resolve per-side base models (heterogeneous red/blue) ------------------
+# Red LoRAs are served on the red base, blue LoRAs on the blue base. Prefer an
+# explicit flag, then summary.json (redteam_base_model/blueteam_base_model),
+# then the shared BASE_MODEL (homogeneous).
+if [[ -z "$RED_BASE_MODEL" ]]; then
+    RED_BASE_MODEL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('redteam_base_model') or '')" "$SUMMARY_JSON")
+    [[ -z "$RED_BASE_MODEL" ]] && RED_BASE_MODEL="$BASE_MODEL"
+fi
+if [[ -z "$BLUE_BASE_MODEL" ]]; then
+    BLUE_BASE_MODEL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('blueteam_base_model') or '')" "$SUMMARY_JSON")
+    [[ -z "$BLUE_BASE_MODEL" ]] && BLUE_BASE_MODEL="$BASE_MODEL"
+fi
+_step "Base models — red: $RED_BASE_MODEL | blue: $BLUE_BASE_MODEL"
+if [[ "$SINGLE_GPU" == "true" && "$RED_BASE_MODEL" != "$BLUE_BASE_MODEL" ]]; then
+    _err "Heterogeneous red/blue base models ($RED_BASE_MODEL vs $BLUE_BASE_MODEL) require DUAL-GPU mode — a single vLLM server cannot host two base models. Re-run without --single-gpu."
+    exit 1
+fi
+
 # --- Discover all LoRA checkpoints ---
 declare -A RED_LORAS
 declare -A BLUE_LORAS
@@ -301,6 +333,8 @@ if [[ "$PLOT_ONLY" == "true" ]]; then
     python3 util/cross_evaluate.py \
         --selfplay-dir "$SELFPLAY_DIR" \
         --base-model "$BASE_MODEL" \
+    --red-base-model "$RED_BASE_MODEL" \
+    --blue-base-model "$BLUE_BASE_MODEL" \
         --output-dir "$OUTPUT_DIR" \
         --aggregate-only
 
@@ -511,7 +545,7 @@ else
 
     echo "Starting red team vLLM server..."
     setsid env CUDA_VISIBLE_DEVICES=$RED_GPU python3 -m vllm.entrypoints.openai.api_server \
-        --model "$BASE_MODEL" \
+        --model "$RED_BASE_MODEL" \
         --port $RED_PORT \
         --host 0.0.0.0 \
         --gpu-memory-utilization $GPU_MEM \
@@ -530,7 +564,7 @@ else
 
     echo "Starting blue team vLLM server..."
     setsid env CUDA_VISIBLE_DEVICES=$BLUE_GPU python3 -m vllm.entrypoints.openai.api_server \
-        --model "$BASE_MODEL" \
+        --model "$BLUE_BASE_MODEL" \
         --port $BLUE_PORT \
         --host 0.0.0.0 \
         --gpu-memory-utilization $GPU_MEM \
@@ -611,6 +645,8 @@ EXTRA_CROSS_ARGS=()
 python3 util/cross_evaluate.py \
     --selfplay-dir "$SELFPLAY_DIR" \
     --base-model "$BASE_MODEL" \
+    --red-base-model "$RED_BASE_MODEL" \
+    --blue-base-model "$BLUE_BASE_MODEL" \
     --episodes "$EPISODES" \
     --horizon "$HORIZON" \
     --seed "$SEED" \
@@ -632,6 +668,8 @@ AGG_EXTRA_ARGS=()
 python3 util/cross_evaluate.py \
     --selfplay-dir "$SELFPLAY_DIR" \
     --base-model "$BASE_MODEL" \
+    --red-base-model "$RED_BASE_MODEL" \
+    --blue-base-model "$BLUE_BASE_MODEL" \
     --output-dir "$OUTPUT_DIR" \
     --seed "$SEED" \
     --aggregate-only \

@@ -107,7 +107,7 @@ def make_train_env(all_args, shared_honeypots=None):
         def init_env():
             env = SQLEnv(
                 rank=rank,
-                model_name=all_args.base_model,
+                model_name=all_args.opponent_base_model,
                 num_agents=all_args.n_agents,
                 horizon=all_args.horizon,
                 mode="train",
@@ -149,7 +149,7 @@ def make_eval_env(all_args):
         def init_env():
             env = SQLEnv(
                 rank=rank,
-                model_name=all_args.base_model,
+                model_name=all_args.opponent_base_model,
                 num_agents=all_args.n_agents,
                 dataset_path=all_args.dataset_path,
                 horizon=all_args.horizon,
@@ -209,13 +209,54 @@ def parse_args(args, parser):
         default=None,
         help="Seed for the per-env opponent sampler RNG (combines with rank).",
     )
+    parser.add_argument(
+        "--scoring-mode",
+        choices=["legacy", "projection", "execution"],
+        default="execution",
+        help=(
+            "Honeypot scoring mode for BOTH the red and blue halves "
+            "(AAS_SCORING_MODE). 'execution' (default) is DB-grounded: a column "
+            "honeypot counts only if its value appears in the returned rows. "
+            "'projection' credits SELECT-projected columns (DB-free). 'legacy' is "
+            "the historical reference-based detector (overcounts)."
+        ),
+    )
+    parser.add_argument(
+        "--opponent-base-model",
+        type=str,
+        default=None,
+        help=(
+            "HF id of the OPPONENT's base model (the victim in red training / the "
+            "attacker pool in blue training), served by the actor vLLM. Defaults "
+            "to --model_name_or_path (homogeneous). Set this when red and blue use "
+            "different base models — it becomes the env's victim/attacker model "
+            "name while --model_name_or_path stays the student (trained) base."
+        ),
+    )
     all_args = parser.parse_known_args(args)[0]
+    # The STUDENT (trained policy + checkpoint path) base.
     all_args.base_model = all_args.model_name_or_path
+    # The OPPONENT (victim/attacker, served by the actor vLLM) base. Decoupled
+    # from the student base so red and blue can run different base models; falls
+    # back to the student base for the homogeneous case.
+    all_args.opponent_base_model = (
+        all_args.opponent_base_model or all_args.model_name_or_path
+    )
 
     # Translate ablation flags to env vars so the BlueTeamSQLEnv (constructed
     # below in make_train_env) picks them up at __init__.
     if all_args.honeypot_type is not None:
         os.environ["HONEYPOT_TYPE"] = all_args.honeypot_type
+    # Scoring mode reaches the detection shim (redteam_sql_env.detect_honeypot_access)
+    # at CALL time via AAS_SCORING_MODE. Set it before env construction so every
+    # red/blue rollout scores with the chosen, corrected detector. 'stored' is a
+    # metrics-only concept and is rejected by argparse choices above.
+    os.environ["AAS_SCORING_MODE"] = all_args.scoring_mode
+    print(
+        f"[train_sql] honeypot scoring mode: {all_args.scoring_mode} "
+        "(AAS_SCORING_MODE)",
+        file=sys.stderr,
+    )
     if all_args.vanilla_size is not None:
         os.environ["VANILLA_BENIGN_SIZE"] = str(all_args.vanilla_size)
     if all_args.bordercase_size is not None:

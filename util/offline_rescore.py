@@ -384,6 +384,20 @@ def _check_arm(run: Path) -> str:
     return arm or env_arm or "unknown"
 
 
+def _training_scoring_mode(run: Path) -> str | None:
+    """The scoring mode the run was TRAINED under (summary.json scoring_mode).
+    None for legacy runs that predate the field — those logged stored==legacy.
+    Used only to ANNOTATE the report: when this is not 'legacy', the 'stored' and
+    'legacy(control)' columns reflect the training mode, not historical legacy."""
+    summ = run / "summary.json"
+    if summ.is_file():
+        try:
+            return json.loads(summ.read_text()).get("scoring_mode")
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", nargs="+", required=True, help="results-* run directories")
@@ -410,6 +424,7 @@ def main() -> None:
         rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
         rec.setdefault("run", run.name)
         rec["honeypot_type"] = arm
+        rec["training_scoring_mode"] = _training_scoring_mode(run)
         rec["old_on_disk"] = _load_old_metrics(run)
 
         try:
@@ -443,10 +458,20 @@ def _write_summary(out_root: Path, summaries: list[dict]) -> None:
                  "BRR pooled over benign-only eval turns. "
                  "PROJ = projection-based, EXEC = execution-grounded, "
                  "SCHEMA = schema-valid, EXEC(brr) = executes-cleanly.\n")
+    # NOTE on baseline semantics: the 'stored' and 'legacy(control)' columns
+    # reflect whatever scoring mode the run was TRAINED under. For runs trained
+    # with --scoring-mode execution/projection (train mode below), 'stored' is
+    # NOT historical legacy — it is the training mode, and 'legacy(control)'
+    # merely reproduces the logged (already-corrected) hit list. The PROJ and
+    # EXEC columns are re-derived independently and stay apples-to-apples.
+    lines.append(
+        "\n_Baseline note: 'stored'/'legacy(control)' reflect the **train mode** "
+        "column below; PROJ/EXEC are independent re-derivations._\n"
+    )
     # Run status (wrong-arm runs are excluded from PVR; BRR is arm-independent)
     lines.append("\n## Run status\n")
-    lines.append("| run | arm | PVR status | note |")
-    lines.append("|---|---|---|---|")
+    lines.append("| run | arm | train mode | PVR status | note |")
+    lines.append("|---|---|---|---|---|")
     for s in summaries:
         pvr = (s.get("stageA") or {}).get("pvr") or {}
         if s.get("error"):
@@ -455,7 +480,10 @@ def _write_summary(out_root: Path, summaries: list[dict]) -> None:
             status, note = "excluded", pvr.get("reason", "")
         else:
             status, note = "ok", ""
-        lines.append(f"| {s.get('run')} | {s.get('honeypot_type')} | {status} | {note} |")
+        tmode = s.get("training_scoring_mode") or "legacy(pre-field)"
+        lines.append(
+            f"| {s.get('run')} | {s.get('honeypot_type')} | {tmode} | {status} | {note} |"
+        )
     # PVR table
     lines.append("\n## PVR_conv (%) — diagonal\n")
     lines.append("| run | OLD/stored | legacy(ctrl) | PROJ | EXEC | ctrl ok |")

@@ -30,6 +30,7 @@ REPLICATE_SEED=0
 RESULTS_ID_OVERRIDE=""
 RESUME=false
 HONEYPOT_TYPE_SNIFFED=""
+SCORING_MODE_SNIFFED=""
 MATCH_TRAIN_SEEDS=false
 
 source .venv/bin/activate
@@ -53,6 +54,7 @@ for ((i=0; i<${#args[@]}; i++)); do
         --replicate-seed)    REPLICATE_SEED="${args[$((i+1))]}" ;;
         --results-id)        RESULTS_ID_OVERRIDE="${args[$((i+1))]}" ;;
         --honeypot-type)     HONEYPOT_TYPE_SNIFFED="${args[$((i+1))]}" ;;
+        --scoring-mode)      SCORING_MODE_SNIFFED="${args[$((i+1))]}" ;;
         --resume)            RESUME=true ;;
         --match-train-seeds) MATCH_TRAIN_SEEDS=true ;;
     esac
@@ -189,7 +191,31 @@ fi
 export HONEYPOT_TYPE="$SUMMARY_HP"
 echo "[replicate] Honeypot arm (pinned from summary.json): $HONEYPOT_TYPE"
 
-# Phase 2 — cross-eval (dual-GPU; same pair, same base model)
+# --- Pin scoring mode for downstream phases (PVR/BRR detector) --------------
+# Same pattern as the honeypot arm: self-play persists scoring_mode in
+# summary.json; read it back and export AAS_SCORING_MODE so cross-eval and
+# benign-eval score in the SAME mode the policies were trained under (no
+# train/eval divergence). Older summaries that predate this field default to
+# execution. Fail-fast if a sniffed --scoring-mode contradicts summary.json.
+SUMMARY_SM=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d.get('scoring_mode') or 'execution'; assert v in ('legacy','projection','execution'), f'bad scoring_mode={v!r}'; print(v)" "${RESULTS_DIR}/summary.json") || {
+    echo "[replicate] FAIL: could not parse scoring_mode from ${RESULTS_DIR}/summary.json"; exit 1;
+}
+if [[ -n "$SCORING_MODE_SNIFFED" && "$SCORING_MODE_SNIFFED" != "$SUMMARY_SM" ]]; then
+    echo "[replicate] FAIL: --scoring-mode=$SCORING_MODE_SNIFFED conflicts with summary.json scoring_mode=$SUMMARY_SM" >&2
+    exit 1
+fi
+export AAS_SCORING_MODE="$SUMMARY_SM"
+echo "[replicate] Scoring mode (pinned from summary.json): $AAS_SCORING_MODE"
+
+# --- Resolve the blue base model for benign-eval (heterogeneous red/blue) ----
+# Cross-eval self-resolves red+blue bases from summary.json; benign-eval only
+# exercises the blue defender, so pass it the blue base explicitly. Falls back to
+# the shared base_model / --base-model for homogeneous runs.
+BLUE_BASE_MODEL=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('blueteam_base_model') or d.get('base_model') or '')" "${RESULTS_DIR}/summary.json")
+[[ -z "$BLUE_BASE_MODEL" ]] && BLUE_BASE_MODEL="$BASE_MODEL"
+echo "[replicate] Blue base model (for benign-eval): $BLUE_BASE_MODEL"
+
+# Phase 2 — cross-eval (dual-GPU; red/blue bases resolved from summary.json)
 # --match-train-seeds (when set) makes cross-eval read red_seed from
 # summary.json so its red-team prompt RNG lineage matches training. Default
 # off → cross-eval uses --seed as an independent draw from the same dataset.
@@ -212,7 +238,7 @@ echo "[replicate] Phase 2/3: cross-eval (match-train-seeds=$MATCH_TRAIN_SEEDS)"
 echo "[replicate] Phase 3/3: benign-eval"
 ./util/run_benign_eval.sh \
     --results-dir "$RESULTS_DIR" \
-    --base-model  "$BASE_MODEL" \
+    --base-model  "$BLUE_BASE_MODEL" \
     --gpu         "$BLUE_GPU" \
     --episodes    320 \
     --seed        "$REPLICATE_SEED" \

@@ -24,6 +24,36 @@ DEFAULT_MAX_LORAS = 8
 DEFAULT_MAX_CPU_LORAS = 16
 
 
+def _adapter_base(path: str) -> str | None:
+    """Read a LoRA's adapter_config.json base_model_name_or_path (or None)."""
+    cfg_path = os.path.join(path, "adapter_config.json")
+    if not os.path.exists(cfg_path):
+        return None
+    try:
+        with open(cfg_path) as f:
+            return json.load(f).get("base_model_name_or_path")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _assert_adapter_base(name: str, path: str, server_base: str) -> None:
+    """Fail-fast if a LoRA's base model is incompatible with the server it will
+    be loaded onto. vLLM requires every adapter on a server to share that
+    server's base model — a mismatch (e.g. a red non-SQL adapter on a blue
+    text2sql server) crashes deep in vLLM with an opaque shape error, so we
+    catch it here. Compared by basename to be robust to HF-id vs local-path."""
+    adapter_base = _adapter_base(path)
+    if adapter_base is None:
+        return  # no adapter_config to check — let vLLM be the backstop
+    if os.path.basename(adapter_base.rstrip("/")) != os.path.basename(server_base.rstrip("/")):
+        raise SystemExit(
+            f"[generate_vllm_config] LoRA '{name}' was trained on base "
+            f"{adapter_base!r}, but its server hosts {server_base!r}. A vLLM "
+            f"server's LoRA pool must all share that server's base model. For a "
+            f"heterogeneous red/blue run, pass the OPPONENT's base as --model."
+        )
+
+
 def _load_red_pool(pool_path: str | None) -> list[dict]:
     """Read the red LoRA registry. Returns [{name, path}, ...]."""
     if not pool_path:
@@ -73,7 +103,17 @@ def main():
     parser.add_argument(
         "--model",
         default="meta-llama/Llama-3.1-8B-Instruct",
-        help="Base model for actors",
+        help="Base model for the ACTOR vLLM server (the OPPONENT being served: "
+        "the victim in red training, the red pool in blue training).",
+    )
+    parser.add_argument(
+        "--student-base-model",
+        default=None,
+        help="Base model of the STUDENT being trained. Defaults to --model "
+        "(homogeneous). When it differs from --model (heterogeneous red/blue), "
+        "the student LoRA is NOT co-loaded on the opponent's actor server — the "
+        "student generates in-process during training, so the adapter is unused "
+        "there and would be invalid on the opponent's base.",
     )
     parser.add_argument(
         "--actor-gpu",
@@ -121,13 +161,30 @@ def main():
         "servers": [],
     }
 
+    # Student base may differ from the actor (opponent) base in a heterogeneous
+    # red/blue run. args.model is ALWAYS the opponent/actor base.
+    student_base = args.student_base_model or args.model
+    heterogeneous = (
+        os.path.basename(student_base.rstrip("/"))
+        != os.path.basename(args.model.rstrip("/"))
+    )
+
     if args.target == "redteam":
-        # Redteam training: single student vLLM with student + opponent LoRAs.
+        # Redteam training: the actor server hosts the VICTIM (blue) base; the
+        # red student generates in-process, so its LoRA is only co-loaded here in
+        # the homogeneous case (it would be invalid on a different victim base).
         student_extra_args = ["--dtype", "auto"]
         lora_modules: list[str] = []
-        if args.student_lora:
+        if args.student_lora and not heterogeneous:
             lora_modules.append(f"student={args.student_lora}")
+        elif args.student_lora and heterogeneous:
+            print(
+                f"[generate_vllm_config] heterogeneous bases (student "
+                f"{student_base!r} != victim {args.model!r}); NOT co-loading the "
+                f"student LoRA on the victim server (student runs in-process)."
+            )
         if args.opponent_lora:
+            _assert_adapter_base("opponent_lora", args.opponent_lora, args.model)
             lora_modules.append(f"opponent_lora={args.opponent_lora}")
 
         if lora_modules:
@@ -178,6 +235,10 @@ def main():
             if not os.path.exists(path):
                 print(f"[generate_vllm_config] WARNING: adapter path missing: {path} (name={name})")
                 continue
+            # vLLM requires every adapter on this server to share its base model
+            # (args.model = the RED/opponent base in the blue phase). Fail-fast on
+            # a heterogeneous mismatch rather than crashing deep inside vLLM.
+            _assert_adapter_base(name, path, args.model)
             validated.append((name, path))
             seen_names.add(name)
 
@@ -213,11 +274,12 @@ def main():
                 ],
             }
         )
-        # Placeholder student entry so registry-readers don't fail.
+        # Placeholder student entry so registry-readers don't fail. Not launched
+        # (start_vllm skips _note entries); model reflects the student base.
         config["servers"].append(
             {
                 "id": "student",
-                "model": args.model,
+                "model": student_base,
                 "gpus": [args.actor_gpu],
                 "port": args.actor_port,
                 "max_model_len": DEFAULT_MAX_MODEL_LEN,

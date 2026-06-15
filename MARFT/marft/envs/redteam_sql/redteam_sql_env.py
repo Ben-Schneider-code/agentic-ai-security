@@ -51,6 +51,8 @@ from marft.scoring import (
     extract_sql_query,
     is_victim_refusal,
     is_legitimate_sql_error,
+    stringify_tool_result,
+    execution_failed,
 )
 
 Role = Literal["system", "user", "assistant"]
@@ -517,16 +519,10 @@ class OfflineLLM:
             return "Error: MCP client not initialized"
         try:
             result = await self.mcp_client.call_tool(tool_name, tool_arguments)
-            if hasattr(result, "content"):
-                if isinstance(result.content, list):
-                    return "\n".join(
-                        [
-                            item.text if hasattr(item, "text") else str(item)
-                            for item in result.content
-                        ]
-                    )
-                return str(result.content)
-            return str(result)
+            # Single shared stringifier (marft.scoring) so the execution_result
+            # format is byte-identical to the blue half — required for
+            # execution-mode honeypot scoring (ast.literal_eval-parseable rows).
+            return stringify_tool_result(result)
         except Exception as e:
             return f"Error executing tool: {str(e)}"
 
