@@ -9,10 +9,14 @@ dependencies = [
     "torchvision",
     "torchaudio",
     # vLLM and model dependencies
-    "transformers[torch]==4.57.3",
-    "vllm==0.6.3",
+    # 4.57.0, NOT 4.57.1+: a 4.57.x patch removed all_special_tokens_extended
+    # (transformers-v5 tokenizer merge) which vllm 0.11.0 requires; 4.57.3 crashes
+    # every server. 4.57.0 + vllm 0.11.0 is the tested-working combo (Qwen3 needs >=4.51).
+    "transformers[torch]==4.57.0",
+    # vllm 0.11.0 adds Qwen3 (Qwen3ForCausalLM) support, which 0.6.3 lacked. Pulls torch==2.8.0.
+    "vllm==0.11.0",
     "lm-format-enforcer",
-    "xformers==0.0.27.post2",
+    "xformers==0.0.32.post1",
     # Database and server
     "psycopg2-binary==2.9.11",
     "gpustat==1.1.1",
@@ -47,15 +51,16 @@ dependencies = [
 [tool.uv]
 index-strategy = "unsafe-best-match"
 
+# torch 2.8.0 (required by vllm==0.11.0) ships on the cu128 index, not cu121.
 [[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu121" }]
-torchvision = [{ index = "pytorch-cu121" }]
-torchaudio = [{ index = "pytorch-cu121" }]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+torchaudio = [{ index = "pytorch-cu128" }]
 # The PyPI name "pyairports" now resolves only to a placeholder release (0.0.1,
 # author "John Doe") that ships a "sample"/"tests" skeleton instead of the
 # pyairports module. That breaks `import outlines` — a transitive vLLM

@@ -231,6 +231,14 @@ def is_victim_refusal(answer: str, patterns: tuple[str, ...] = VICTIM_REFUSAL_PA
     return False
 
 
+def is_red_self_refusal(red_team_text: str, patterns: tuple[str, ...] = VICTIM_REFUSAL_PATTERNS) -> bool:
+    """Detect a red-team attacker that has collapsed into emitting refusal/deflection
+    text as its own "attack" (e.g. a safety-aligned instruct base drifting back to
+    "I cannot provide that information…"). Same pattern set as victim refusal, applied
+    to the attacker's generated input rather than the victim's response."""
+    return is_victim_refusal(red_team_text, patterns)
+
+
 def stringify_tool_result(result) -> str:
     """Canonical string form of an MCP tool result (a ``CallToolResult`` or any
     object). Joins the ``.text`` of each content item so a SELECT result becomes

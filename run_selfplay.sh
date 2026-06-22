@@ -38,7 +38,7 @@ echo "========================================"
 
 # --- Defaults ---
 BASE_MODEL="Snowflake/Arctic-Text2SQL-R1-7B"
-REDTEAM_BASE_MODEL=""    # red (attacker) base; defaults to BASE_MODEL (homogeneous)
+REDTEAM_BASE_MODEL="NousResearch/Hermes-4-14B"  # red (attacker) base; low-refusal Qwen3-14B/ChatML. Override with --redteam-base-model; set "" for homogeneous (= BASE_MODEL).
 BLUETEAM_BASE_MODEL=""   # blue (defender) base; defaults to BASE_MODEL (homogeneous)
 NUM_ITERATIONS=2
 NUM_ENV_STEPS=1600
@@ -161,8 +161,9 @@ case "$SCORING_MODE" in
 esac
 export AAS_SCORING_MODE="$SCORING_MODE"
 
-# Heterogeneous red/blue: each team may use a different base model. Both default
-# to --base-model, so single-model callers are unchanged.
+# Heterogeneous red/blue: each team may use a different base model. Red defaults
+# to Hermes-4-14B (low-refusal attacker); blue defaults to --base-model. Pass
+# --redteam-base-model "" (or equal to --base-model) for a homogeneous run.
 REDTEAM_BASE_MODEL="${REDTEAM_BASE_MODEL:-$BASE_MODEL}"
 BLUETEAM_BASE_MODEL="${BLUETEAM_BASE_MODEL:-$BASE_MODEL}"
 

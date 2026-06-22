@@ -9,10 +9,10 @@ sentencepiece
 setproctitle
 tensorboard
 tensorboardX
-torch # some version, i used 2.4.0+cu121. the below two as well.
-torchvision # some version
-torchaudio # some version
+torch # pinned transitively by vllm==0.11.0 -> torch==2.8.0 (was 2.4.0+cu121)
+torchvision # -> 0.23.0 (matches torch 2.8.0)
+torchaudio # -> 2.8.0 (matches torch 2.8.0)
 numpy==1.26.3
-xformers==0.0.27.post2
+xformers==0.0.32.post1
 latex2sympy2
 word2number
