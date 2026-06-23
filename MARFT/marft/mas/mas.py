@@ -7,7 +7,7 @@ import time
 from abc import ABC
 from torch.distributions.categorical import Categorical
 from .agent import Agent
-from .prompt_format import build_agent_prompt, TURN_END
+from .prompt_format import build_agent_prompt, truncate_red_turn, RED_TURN_STOPS, TURN_END
 
 
 def load_profiles(path):
@@ -221,6 +221,13 @@ class MAS(ABC):
                     max_new_tokens=self.max_new_tokens,
                     eos_token_id=self.tokenizer.eos_token_id,
                     pad_token_id=self.tokenizer.pad_token_id,
+                    # Halt at the plain-text turn delimiter so the policy emits exactly
+                    # ITS OWN turn. Without this a strong instruct model imitates the
+                    # obs format and keeps generating the victim's reply, so PPO trains
+                    # on hallucinated dialogue (~43% of red-action tokens in col runs).
+                    # No-op for the blue agent, which emits clean SQL (does not leak).
+                    stop_strings=RED_TURN_STOPS,
+                    tokenizer=self.tokenizer,
                     return_dict_in_generate=True,
                 )
                 for i in range(batch_end - batch_start):
@@ -236,6 +243,9 @@ class MAS(ABC):
                     action_token.cpu().clone()
                 )
                 action = self.tokenizer.decode(action_token, skip_special_tokens=True)
+                # Drop the trailing stop delimiter HF includes in the generated text,
+                # so the returned action and the carried-over obs are exactly one turn.
+                action = truncate_red_turn(action)
                 # Completed turn carried into the next agent's obs (no profile
                 # prefix — that is prepended per-agent above). build_agent_prompt
                 # with an empty profile yields the running obs + the open cue.

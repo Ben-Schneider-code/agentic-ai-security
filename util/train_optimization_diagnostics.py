@@ -219,6 +219,16 @@ def render_side(n: int, side: str, run_dir: Path) -> None:
     else:
         print("  reward(debug) early->late: n/a (no reward_debug rows)")
 
+    # Shaping decay actually applied (decay_factor is keyed on the PPO-update episode
+    # counter, not env steps — report it directly so a long run is not mis-blamed on
+    # "decay zeroed the signal" when it only fell, say, 1.0 -> 0.61).
+    decays = [r.get("decay_factor") for r in rows if r.get("decay_factor") is not None]
+    if decays:
+        print(
+            f"  shaping decay_factor: first {decays[0]:.3f} -> last {decays[-1]:.3f}"
+            f"  (min {min(decays):.3f})"
+        )
+
     print(f"  FLAGS: {', '.join(compute_flags(stats, logs, n_warm, n_tot))}")
 
 

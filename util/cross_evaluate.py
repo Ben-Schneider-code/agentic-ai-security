@@ -53,7 +53,7 @@ from marft.envs.redteam_sql.redteam_sql_env import (
     redteam_initial_obs,
     redteam_append_turn,
 )
-from marft.mas.prompt_format import build_agent_prompt, TURN_END
+from marft.mas.prompt_format import build_agent_prompt, truncate_red_turn, RED_TURN_STOPS, TURN_END
 
 
 # ──────────────────────── Red-team question dataset ──────────────────────────
@@ -494,7 +494,12 @@ async def run_episode(
                 # and complete it raw, stopping at <|im_end|>. acomplete
                 # (chat-completions) would re-wrap this in ChatML and diverge.
                 red_prompt = build_agent_prompt(system_prompt, red_obs, "sql_agent")
-                red_response = await red_llm.acomplete_raw(red_prompt, stop=[TURN_END])
+                # Stop at the plain-text turn delimiter too (not just <|im_end|>), so the
+                # red emits exactly its own turn — byte-aligned with training, which now
+                # halts on the same RED_TURN_STOPS. vLLM excludes stop strings from output.
+                red_response = await red_llm.acomplete_raw(
+                    red_prompt, stop=[TURN_END, *RED_TURN_STOPS]
+                )
             else:
                 red_response = await red_llm.acomplete(
                     red_messages, system_prompt=system_prompt
@@ -504,7 +509,9 @@ async def run_episode(
                     "content": red_response[:1500] if len(red_response) > 1500 else red_response,
                 })
 
-            user_message = red_response
+            # Defensive single-turn cut (covers the non-faithful acomplete path, which
+            # does not pass stop strings); mirrors the env's state_transition guard.
+            user_message = truncate_red_turn(red_response)
 
             # Blue team responds (generates from the FULL red message + prior
             # history, exactly as training's victim_llm does).
@@ -590,7 +597,7 @@ async def run_episode(
                 # user message, then append the capped victim turn). Single
                 # source of truth: redteam_append_turn.
                 red_obs, capped_red, capped_blue = redteam_append_turn(
-                    red_obs, red_response, blue_response
+                    red_obs, user_message, blue_response
                 )
                 blue_conversation[-1]["content"] = capped_red
                 blue_conversation.append({"role": "assistant", "content": capped_blue})
