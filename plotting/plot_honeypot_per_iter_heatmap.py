@@ -50,8 +50,14 @@ TIER_BG_COLORS = {
 }
 
 
-def _load_tiers(selfplay_dir: str) -> dict | None:
-    candidates = [
+def _load_tiers(selfplay_dir: str, out_dir: str | Path | None = None) -> dict | None:
+    # The figure out_dir (where plot_honeypot_difficulty writes the sidecar) is checked
+    # first; a custom --out-dir is the common case and was previously missed, so the
+    # heatmap reported "honeypot_tiers.json not found" even when it existed.
+    candidates = []
+    if out_dir is not None:
+        candidates.append(Path(out_dir) / "honeypot_tiers.json")
+    candidates += [
         Path(selfplay_dir).parent / "figures" / "honeypot_tiers.json",
         Path("figures/honeypot_tiers.json"),
     ]
@@ -71,7 +77,7 @@ def plot_honeypot_per_iter_heatmap(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     label, selfplay_dir = results[0]
-    data = _load_tiers(selfplay_dir)
+    data = _load_tiers(selfplay_dir, out_dir=out_dir)
     if data is None:
         print("[honeypot_per_iter_heatmap] honeypot_tiers.json not found", file=sys.stderr)
         return out_path

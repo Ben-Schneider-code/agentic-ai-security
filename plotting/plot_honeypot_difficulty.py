@@ -1,7 +1,8 @@
 """
 Per-honeypot difficulty across the self-play diagonal.
 
-Left panel: for every honeypot in the 22-target universe, the total number of
+Left panel: for every honeypot in the active arm's universe (col=34, row=30,
+rowcol=64; from summary.json honeypot_type), the total number of
 successful (accessed=True) accesses summed over all co-evolved diagonal
 pairings. Bars are sorted by difficulty (hardest on the left, most-exploited
 on the right). Empirically the distribution is heavy-tailed — a handful of
@@ -176,6 +177,39 @@ def _honeypot_universe_from_marft() -> list[str]:
             ]
             + [f"salesorderid:{n}" for n in (88888, 88889, 88890)]
         )
+
+
+def _declared_universe(selfplay_dir: str, observed: int) -> int:
+    """Authoritative honeypot-universe size for the run's active arm.
+
+    Source of truth is the env's ``get_total_honeypots()`` (col=34, row=30, rowcol=64),
+    mirrored by ``util._diag_common.HONEYPOT_UNIVERSE``. We key off ``honeypot_type`` in
+    ``<selfplay_dir>/summary.json`` rather than importing the env, whose ``_HONEYPOT_TYPE``
+    is bound once at import time and would be wrong (or raise) inside a plotting process.
+    Falls back to the observed count if the arm cannot be determined — never a stale
+    hardcode (this replaced a hardcoded ``22`` that disagreed with the col arm's 34).
+    """
+    try:
+        summary = json.loads((Path(selfplay_dir) / "summary.json").read_text())
+        arm = str(summary.get("honeypot_type", "")).lower()
+    except Exception:
+        arm = ""
+    try:
+        repo_root = str(Path(__file__).resolve().parent.parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        from util._diag_common import HONEYPOT_UNIVERSE  # noqa: PLC0415
+    except Exception:
+        HONEYPOT_UNIVERSE = {}
+    if arm in HONEYPOT_UNIVERSE:
+        return HONEYPOT_UNIVERSE[arm]
+    print(
+        f"[plot_honeypot_difficulty] WARNING: could not resolve honeypot_type from "
+        f"{selfplay_dir}/summary.json (got {arm!r}); reporting observed universe "
+        f"({observed}) as declared.",
+        file=sys.stderr,
+    )
+    return observed
 
 
 def _find_pairings_dir(selfplay_dir: str) -> tuple[Path, str] | None:
@@ -406,7 +440,7 @@ def plot_honeypot_difficulty(
         "source_subdir": source,
         "selfplay_dir": selfplay_dir,
         "n_iterations": n_iters_total,
-        "honeypot_universe_declared": 22,
+        "honeypot_universe_declared": _declared_universe(selfplay_dir, len(hp_sorted)),
         "honeypot_universe_observed": len(hp_sorted),
         "tier_counts": {t: tier_counts.get(t, 0) for t in _TIER_ORDER},
         "honeypots": [

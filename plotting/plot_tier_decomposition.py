@@ -48,6 +48,9 @@ DESCRIPTION = (
 )
 
 TIER_ORDER = ["pii_dominant", "harvestable", "rare"]
+# Any accessed honeypot is a real breach; if it is absent from the tier map we floor
+# it to the lowest tier rather than dropping it (silent undercount).
+_FALLBACK_TIER = "rare"
 TIER_COLORS = {
     "pii_dominant": "#C62828",
     "harvestable":  "#1565C0",
@@ -60,9 +63,20 @@ TIER_LABELS = {
 }
 
 
-def _load_tier_map(selfplay_dir: str) -> dict[str, str]:
-    """Return {honeypot_id: tier} from figures/honeypot_tiers.json next to selfplay_dir."""
-    candidates = [
+def _load_tier_map(selfplay_dir: str, out_dir: str | Path | None = None) -> dict[str, str]:
+    """Return {honeypot_id: tier} from honeypot_tiers.json.
+
+    Search order: the figure output dir (where ``plot_honeypot_difficulty`` writes the
+    sidecar during a ``plot_paper_figures`` run), then ``<selfplay_dir>/figures/``, then
+    ``./figures/``. The output dir is checked FIRST because the orchestrator writes
+    figures to a custom ``--out-dir`` (e.g. ``figures_<id>/``), not ``./figures``; before
+    this was added the map silently came back empty and every breach was miscounted as
+    ``no_breach`` (reported PVR 0 while cross_eval had real breaches).
+    """
+    candidates = []
+    if out_dir is not None:
+        candidates.append(Path(out_dir) / "honeypot_tiers.json")
+    candidates += [
         Path(selfplay_dir) / "figures" / "honeypot_tiers.json",
         Path("figures") / "honeypot_tiers.json",
     ]
@@ -70,23 +84,35 @@ def _load_tier_map(selfplay_dir: str) -> dict[str, str]:
         if p.is_file():
             data = json.loads(p.read_text())
             return {h["id"]: h["tier"] for h in data.get("honeypots", [])}
+    print(
+        "[plot_tier_decomposition] WARNING: no honeypot_tiers.json found in "
+        f"{[str(c) for c in candidates]}; tier map is empty. Accessed honeypots will "
+        "be floored to the lowest tier so breaches are not silently dropped.",
+        file=sys.stderr,
+    )
     return {}
 
 
-def _parse_hp_id(raw: str) -> str | None:
-    """Convert stringified-dict or JSON honeypot record to 'type:identifier'."""
-    try:
-        d = ast.literal_eval(raw)
-    except Exception:
+def _parse_hp_entry(raw) -> dict | None:
+    """Parse a honeypot record (dict or stringified-dict / JSON) into a dict.
+
+    Mirrors ``plot_honeypot_difficulty._parse_hp`` so both plotters agree on the
+    ``accessed_honeypots`` wire format — cross_eval writes a list of *stringified*
+    dicts (e.g. ``["{'accessed': True, 'type': '...', 'identifier': '...'}"]``), so a
+    str-vs-dict mismatch here was silently dropping every breach.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
         try:
-            d = json.loads(raw)
-        except Exception:
-            return None
-    t = d.get("type", "")
-    ident = d.get("identifier", "")
-    if not t or not ident:
-        return None
-    return f"{t}:{ident}"
+            d = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            try:
+                d = json.loads(raw)
+            except Exception:
+                return None
+        return d if isinstance(d, dict) else None
+    return None
 
 
 def _compute_tier_pvr(reward_debug_path: Path, tier_map: dict[str, str]) -> dict:
@@ -125,24 +151,46 @@ def _compute_tier_pvr(reward_debug_path: Path, tier_map: dict[str, str]) -> dict
             if ep not in episodes:
                 episodes[ep] = set()
             for raw in r.get("accessed_honeypots", []):
-                hp_id = _parse_hp_id(raw) if isinstance(raw, str) else None
-                if hp_id:
-                    episodes[ep].add(hp_id)
+                hp = _parse_hp_entry(raw)
+                if hp is None or not hp.get("accessed", True):
+                    continue
+                t, ident = hp.get("type", ""), hp.get("identifier", "")
+                if t and ident:
+                    episodes[ep].add(f"{t}:{ident}")
     # Restrict to attack episodes that have ≥1 resource-accessing turn (= C*_R).
     episodes = {ep: hps for ep, hps in episodes.items() if ep in eps_with_sql}
 
     counts = {t: 0 for t in TIER_ORDER}
     no_breach = 0
+    untiered_breaches = 0
     for hp_set in episodes.values():
-        tiers_hit = {tier_map.get(hp, "unknown") for hp in hp_set
-                     if tier_map.get(hp) in TIER_ORDER}
-        if not tiers_hit:
-            no_breach += 1
+        if not hp_set:
+            no_breach += 1  # resource-accessing SQL but no honeypot hit (genuine no-breach)
             continue
-        best = min(tiers_hit, key=lambda t: TIER_ORDER.index(t))
-        counts[best] += 1
+        tiers_hit = {tier_map[hp] for hp in hp_set if tier_map.get(hp) in TIER_ORDER}
+        if tiers_hit:
+            best = min(tiers_hit, key=lambda t: TIER_ORDER.index(t))
+            counts[best] += 1
+        else:
+            # Honeypot(s) accessed but absent from the tier map (or classified
+            # never_breached): still a real breach — floor to the lowest tier so the
+            # stack total equals PVR_conv instead of silently vanishing into no_breach.
+            counts[_FALLBACK_TIER] += 1
+            untiered_breaches += 1
 
     total = len(episodes)
+    # Invariant: every non-empty-hp_set episode lands in exactly one tier bucket.
+    assert sum(counts.values()) == total - no_breach, (
+        f"tier breach accounting mismatch in {reward_debug_path}: "
+        f"sum(counts)={sum(counts.values())} != any_breach={total - no_breach}"
+    )
+    if untiered_breaches:
+        print(
+            f"[plot_tier_decomposition] {reward_debug_path.parent.name}: "
+            f"{untiered_breaches} breach episode(s) had honeypots absent from the tier "
+            f"map; floored to '{_FALLBACK_TIER}'.",
+            file=sys.stderr,
+        )
     return {
         "total": total,  # n_eps_with_sql = C*_R denominator
         "n_attack_ep": len(attack_ep_ids),
@@ -152,9 +200,9 @@ def _compute_tier_pvr(reward_debug_path: Path, tier_map: dict[str, str]) -> dict
     }
 
 
-def compute_decomposition(selfplay_dir: str) -> dict[int, dict]:
+def compute_decomposition(selfplay_dir: str, out_dir: str | Path | None = None) -> dict[int, dict]:
     base = Path(selfplay_dir)
-    tier_map = _load_tier_map(selfplay_dir)
+    tier_map = _load_tier_map(selfplay_dir, out_dir=out_dir)
     ce_pairings = base / "cross_eval" / "pairings"
     result: dict[int, dict] = {}
     for i in range(8):
@@ -174,7 +222,9 @@ def plot_tier_decomposition(
     out_path = Path(out_path)
     label, selfplay_dir = results[0]
 
-    data = compute_decomposition(selfplay_dir)
+    # The orchestrator writes honeypot_tiers.json (via plot_honeypot_difficulty) into the
+    # same out_dir as this figure, so look there first for the tier map.
+    data = compute_decomposition(selfplay_dir, out_dir=out_path.parent)
     if not data:
         print("[plot_tier_decomposition] No diagonal cross_eval data found.", file=sys.stderr)
         return out_path

@@ -67,6 +67,33 @@ DESCRIPTION = (
 _SUBDIR_PRIORITY = ("cross_eval", "diagonal_eval", "cross_eval_old2")
 
 
+def _universe_size(selfplay_dir: str) -> tuple[int, str]:
+    """(universe_size, arm) for the run, from summary.json honeypot_type.
+
+    Uses the shared util._diag_common.HONEYPOT_UNIVERSE map (col=34/row=30/rowcol=64);
+    replaces the stale hardcoded ``22`` in this plot's labels. Falls back to 34 with a
+    warning if the arm is unreadable.
+    """
+    try:
+        arm = str(json.loads((Path(selfplay_dir) / "summary.json").read_text())
+                  .get("honeypot_type", "")).lower()
+    except Exception:
+        arm = ""
+    try:
+        repo_root = str(Path(__file__).resolve().parent.parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        from util._diag_common import HONEYPOT_UNIVERSE  # noqa: PLC0415
+    except Exception:
+        HONEYPOT_UNIVERSE = {}
+    if arm in HONEYPOT_UNIVERSE:
+        return HONEYPOT_UNIVERSE[arm], arm
+    print(f"[plot_honeypot_saturation] WARNING: unresolved honeypot_type "
+          f"({arm!r}) from {selfplay_dir}/summary.json; defaulting universe label to 34.",
+          file=sys.stderr)
+    return 34, (arm or "?")
+
+
 def _load_or_compute_cost(selfplay_dir: str) -> dict | None:
     """Return compute_cost metrics dict, loading the cached JSON if present,
     else computing inline from raw iter_N artifacts (<1s, no GPU)."""
@@ -111,6 +138,7 @@ def plot_honeypot_saturation(
         print("[plot_honeypot_saturation] Multiple runs given; using first only.",
               file=sys.stderr)
     label, selfplay_dir = results[0]
+    U, arm = _universe_size(selfplay_dir)
 
     # Training-side data
     train_iters: list[int] = []
@@ -156,13 +184,13 @@ def plot_honeypot_saturation(
                         edgecolor=RED_COL, label="Red EIS (training)")
         for x, v, acc in zip(train_iters, red_eis, red_accessed):
             ax_l.text(x, v + max(red_eis) * 0.02,
-                      f"{v}\n({acc}/22 hp)",
+                      f"{v}\n({acc}/{U} hp)",
                       ha="center", va="bottom", fontsize=8, color="#444")
         ax2.plot(train_iters, red_yield, color=GREEN_COL, marker="o",
                  linewidth=1.8, markersize=7, label="Training yield (%)")
         ax_l.set_xlabel("Self-play iteration")
         ax_l.set_ylabel("Red EIS (training compute)", color=RED_COL)
-        ax2.set_ylabel("Training yield on 22 honeypots (%)", color=GREEN_COL)
+        ax2.set_ylabel(f"Training yield on {U} honeypots (%)", color=GREEN_COL)
         ax_l.set_xticks(train_iters)
         ax_l.set_title("Training-time saturation\n(all exits: no_new_honeypot_for_1000_steps)")
         ax_l.grid(True, axis="y", alpha=0.3)
@@ -187,11 +215,11 @@ def plot_honeypot_saturation(
         ax_r.errorbar(eval_iters, cov,
                       yerr=(_yerr(cov, cov_ci) if show_ci else None),
                       fmt="-o", color=BLUE_COL, linewidth=1.8, markersize=7,
-                      capsize=4, label="Coverage (referenced / 22)")
+                      capsize=4, label=f"Coverage (referenced / {U})")
         ax_r.errorbar(eval_iters, yld,
                       yerr=(_yerr(yld, yld_ci) if show_ci else None),
                       fmt="--s", color=RED_COL, linewidth=1.8, markersize=7,
-                      capsize=4, label="Yield (accessed / 22)")
+                      capsize=4, label=f"Yield (accessed / {U})")
         ax_r.set_xlabel("Self-play iteration (co-evolved diagonal)")
         ax_r.set_ylabel("Fraction of honeypot universe (%)")
         ax_r.set_xticks(eval_iters)
@@ -206,7 +234,7 @@ def plot_honeypot_saturation(
 
     fig.suptitle(
         f"Attack-capacity-limited equilibrium — {label} "
-        "(22-honeypot universe: 2 tables + 12 cols + 5 so-cols + 3 order_ids)",
+        f"({U}-honeypot {arm} universe)",
         fontsize=12,
     )
     fig.tight_layout(pad=0.5)
@@ -222,7 +250,25 @@ def plot_honeypot_saturation(
     if eval_iters:
         for i, c, y in zip(eval_iters, cov, yld):
             print(f"  eval iter={i} coverage={c}% yield={y}%", file=sys.stderr)
-    return out_path
+
+    # Persist the saturation numbers so the sidecar is reproducible (was empty:
+    # this plotter previously returned only the path and wrote metrics={}).
+    metrics = {
+        "honeypot_universe": U,
+        "honeypot_type": arm,
+        "eval_source": source,
+        "training": [
+            {"iter": i, "red_eis": e, "red_accessed_hp": a,
+             "red_yield_pct": round(y, 2), "red_exit": x}
+            for i, e, a, y, x in zip(train_iters, red_eis, red_accessed, red_yield, red_exits)
+        ],
+        "eval": [
+            {"iter": i, "coverage_pct": c, "coverage_pct_ci": cc,
+             "yield_pct": y, "yield_pct_ci": yc}
+            for i, c, cc, y, yc in zip(eval_iters, cov, cov_ci, yld, yld_ci)
+        ],
+    }
+    return out_path, metrics
 
 
 def main() -> None:
@@ -231,8 +277,8 @@ def main() -> None:
     ap.add_argument("--out", default="figures/honeypot_saturation.png")
     args = ap.parse_args()
     results = parse_results_arg(args.results)
-    out = plot_honeypot_saturation(results, args.out)
-    write_sidecar(out, DESCRIPTION, results)
+    out, metrics = plot_honeypot_saturation(results, args.out)
+    write_sidecar(out, DESCRIPTION, results, metrics)
     print(f"[{DESCRIPTION[:100]}...]\n  → {out}")
 
 

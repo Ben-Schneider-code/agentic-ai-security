@@ -60,16 +60,27 @@ TIER_LABELS = {
 TIERS = ["pii_dominant", "harvestable", "rare"]
 
 
-def _load_tier_map(selfplay_dir: str) -> dict[str, str]:
-    """Load honeypot_id -> tier from figures/honeypot_tiers.json."""
-    tiers_path = Path(selfplay_dir).parent / "figures" / "honeypot_tiers.json"
-    if not tiers_path.exists():
-        tiers_path = Path("figures/honeypot_tiers.json")
-    if not tiers_path.exists():
-        return {}
-    with open(tiers_path) as f:
-        data = json.load(f)
-    return {h["id"]: h["tier"] for h in data.get("honeypots", [])}
+def _load_tier_map(selfplay_dir: str, out_dir: str | Path | None = None) -> dict[str, str]:
+    """Load honeypot_id -> tier from honeypot_tiers.json.
+
+    The figure out_dir (where plot_honeypot_difficulty writes the sidecar) is checked
+    first; a custom ``--out-dir`` is the common case and was previously missed, leaving
+    the map empty so every breach fell into an 'unknown' tier (and cum_total=0 raised
+    ZeroDivisionError downstream).
+    """
+    candidates = []
+    if out_dir is not None:
+        candidates.append(Path(out_dir) / "honeypot_tiers.json")
+    candidates += [
+        Path(selfplay_dir).parent / "figures" / "honeypot_tiers.json",
+        Path("figures/honeypot_tiers.json"),
+    ]
+    for tiers_path in candidates:
+        if tiers_path.exists():
+            with open(tiers_path) as f:
+                data = json.load(f)
+            return {h["id"]: h["tier"] for h in data.get("honeypots", [])}
+    return {}
 
 
 def _find_blue_jsonl(iter_dir: Path) -> Path | None:
@@ -77,8 +88,8 @@ def _find_blue_jsonl(iter_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def compute_defender_concentration(selfplay_dir: str) -> dict[int, dict]:
-    tier_map = _load_tier_map(selfplay_dir)
+def compute_defender_concentration(selfplay_dir: str, out_dir: str | Path | None = None) -> dict[int, dict]:
+    tier_map = _load_tier_map(selfplay_dir, out_dir=out_dir)
     base = Path(selfplay_dir)
     result: dict[int, dict] = {}
 
@@ -142,7 +153,7 @@ def plot_defender_concentration(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     label, selfplay_dir = results[0]
-    data = compute_defender_concentration(selfplay_dir)
+    data = compute_defender_concentration(selfplay_dir, out_dir=out_dir)
     if not data:
         print(f"[defender_concentration] No data found.", file=sys.stderr)
         return out_path
@@ -190,9 +201,12 @@ def plot_defender_concentration(
     cum_harv = sum(data[i]["tier_counts"].get("harvestable", 0) for i in iters)
     cum_rare = sum(data[i]["tier_counts"].get("rare", 0) for i in iters)
     cum_total = cum_pii + cum_harv + cum_rare
-    note = (f"Cumulative: PII {cum_pii/cum_total*100:.0f}% | "
-            f"Harvestable {cum_harv/cum_total*100:.0f}% | "
-            f"Rare {cum_rare/cum_total*100:.0f}%")
+    if cum_total > 0:
+        note = (f"Cumulative: PII {cum_pii/cum_total*100:.0f}% | "
+                f"Harvestable {cum_harv/cum_total*100:.0f}% | "
+                f"Rare {cum_rare/cum_total*100:.0f}%")
+    else:
+        note = "Cumulative: no tier-classified breaches"
     ax_r.text(0.01, 1.01, note, transform=ax_r.transAxes,
               va="bottom", ha="left", fontsize=6, style="italic")
 

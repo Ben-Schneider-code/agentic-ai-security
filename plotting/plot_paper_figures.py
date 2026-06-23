@@ -777,14 +777,14 @@ def run_all(
             multi = len(results) > 1
             for label, sd in results:
                 try:
-                    path = plot_honeypot_saturation(
+                    path, sat_metrics = plot_honeypot_saturation(
                         [(label, sd)],
                         _per_path(out_dir / "honeypot_saturation.png", label, multi),
                         show_ci=show_ci,
                     )
                     produced.append((DESC_HP_SAT, path))
                     write_sidecar(
-                        path, DESC_HP_SAT, [(label, sd)],
+                        path, DESC_HP_SAT, [(label, sd)], metrics=sat_metrics,
                         plot_kwargs={"show_ci": show_ci}, run_meta=run_meta,
                     )
                 except Exception as e:  # pragma: no cover

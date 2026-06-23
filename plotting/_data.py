@@ -596,6 +596,10 @@ def extract_diagonal_metrics(
         m = dict(pairing.get("metrics", {}))
         for k, v in pairing.get("confidence_intervals", {}).items():
             m[f"{k}_ci"] = v
+        # Carry the raw numerators/denominators so downstream plots can report
+        # "k breaches / n episodes" next to each PVR% (a single event must not be
+        # readable as a trend when n is tiny).
+        m["raw_counts"] = pairing.get("raw_counts", {})
         bo = bo_data.get(f"blue_{bi}")
         if bo:
             if "tpr" in bo:
