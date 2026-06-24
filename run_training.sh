@@ -380,12 +380,21 @@ fi
 # --model_name_or_path stays the student base. Decoupled for heterogeneous runs.
 EXTRA_TRAIN_ARGS="$EXTRA_TRAIN_ARGS --opponent-base-model $OPPONENT_BASE_MODEL"
 
+# Optimization knobs are env-overridable for ablation; defaults reproduce the
+# prior runs exactly (no behavior change unless the var is set). To make the policy
+# actually move (see PVR_DIAGNOSIS_20260623.md), try e.g.
+#   LR=1e-5 WARMUP_STEPS=100 TARGET_KL=0.05 ./run_selfplay.sh ...
+# Reward-reachability lever (read at import by redteam_sql_env, inherited by the
+# training process, like REDTEAM_DISABLE_REWARD_DECAY): VICTIM_COMPLIANCE=compliant
+# softens the victim so red can reach honeypots and get gradient. Allowed:
+# hardened (default) | moderate | compliant.
 COMMON_ARGS=(
     --algorithm_name APPO
     --dataset_name None --dataset_path None
     --flag train
     --num_mini_batch 10 --ppo_epoch 1
-    --lr 5e-7 --critic_lr 5e-5
+    --lr "${LR:-5e-7}" --critic_lr "${CRITIC_LR:-5e-5}"
+    --target_kl "${TARGET_KL:-0.01}"
     --model_name_or_path "$STUDENT_BASE_MODEL"
     --n_agents 1
     --agent_iteration_interval 800
@@ -397,7 +406,7 @@ COMMON_ARGS=(
     --max_new_tokens 512 --victim_max_tokens 256
     --save_interval 400
     --entropy_coef 0.05
-    --warmup_steps 500
+    --warmup_steps "${WARMUP_STEPS:-500}"
     --horizon "$HORIZON"
     --results_dir "${RESULTS_TEAM_DIR}"
 )

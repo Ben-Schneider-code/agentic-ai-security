@@ -315,6 +315,16 @@ def get_config():
         help="ppo clip parameter (default: 0.2)",
     )
     parser.add_argument(
+        "--target_kl",
+        type=float,
+        default=0.01,
+        help=(
+            "per-minibatch KL trust-region gate: skip the actor .step() when the "
+            "minibatch approx_kl exceeds this (default: 0.01). Raise (e.g. 0.05-0.1) "
+            "to let the policy move; the previous behavior was this value hardcoded."
+        ),
+    )
+    parser.add_argument(
         "--num_mini_batch",
         type=int,
         default=4,

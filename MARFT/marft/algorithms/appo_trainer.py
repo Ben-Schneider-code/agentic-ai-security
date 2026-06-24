@@ -15,6 +15,9 @@ class APPOTrainer(ABC):
         self.warmup_steps = args.warmup_steps
         self.agent_iteration_interval = args.agent_iteration_interval
         self.clip_param = args.clip_param
+        # Per-minibatch KL trust-region gate (was hardcoded 0.01). Skip the actor
+        # update when a minibatch's approx_kl exceeds this. Raise to let the policy move.
+        self.target_kl = getattr(args, "target_kl", 0.01)
         self.ppo_epoch = args.ppo_epoch
         self.num_mini_batch = args.num_mini_batch
         self.value_loss_coef = args.value_loss_coef
@@ -204,8 +207,8 @@ class APPOTrainer(ABC):
             cp_policy_loss = cp_policy_loss * cp_weight
             cp_policy_loss.backward()
             policy_loss += cp_policy_loss.item()
-        # TODO: Review for later tweaking (01/14/26) - Increased from 1e-3 to 0.01 to allow more policy updates
-        if total_approx_kl > 0.01:
+        # KL trust-region gate (configurable via --target_kl; was hardcoded 0.01).
+        if total_approx_kl > self.target_kl:
             return value_loss, critic_grad_norm, 0, 0, total_approx_kl, total_entropy
 
         if agent_to_train is not None:

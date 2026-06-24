@@ -14,7 +14,16 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from util.metrics import compute_pairing_metrics, wilson_ci
+from util.metrics import (
+    compute_pairing_metrics,
+    wilson_ci,
+    # Benign denial (BRR) helpers live in util.metrics (single source of truth);
+    # re-exported here so existing `from plotting._data import ...` call sites
+    # (e.g. plot_diagonal_convergence) keep working.
+    is_benign_denial,
+    wilson_ci_pct,
+    denial_rate_with_ci,
+)
 
 # ---------------------------------------------------------------------------
 # ACM two-column style constants (imported by every plot module)
@@ -226,40 +235,10 @@ def get_attack_query(line: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Benign denial helpers — shared by plot_brr and plot_per_style_refusal
+# Benign denial helpers — shared by plot_brr and plot_per_style_refusal.
+# Now defined in util.metrics (single source of truth) and re-imported at the
+# top of this module; the names remain importable from plotting._data.
 # ---------------------------------------------------------------------------
-
-def is_benign_denial(row: dict) -> bool:
-    """Canonical denial predicate. Must stay in sync with per_style_pud_trend.py:81."""
-    return bool(row.get("is_refusal")) or row.get("outcome_tier") == "false_negative"
-
-
-def wilson_ci_pct(k: int, n: int, z: float = 2.576) -> tuple[float, float]:
-    """Wilson 99% CI on a proportion; returns (lo_pct, hi_pct)."""
-    if n == 0:
-        return 0.0, 100.0
-    p = k / n
-    denom = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    margin = z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5 / denom
-    return max(0.0, (centre - margin) * 100.0), min(100.0, (centre + margin) * 100.0)
-
-
-def denial_rate_with_ci(
-    rows: "list[dict]", z: float = 2.576
-) -> "tuple[float, float, float, int, int]":
-    """
-    (rate_pct, ci_lo_pct, ci_hi_pct, k, n) for any iterable of reward_debug rows.
-    Denial predicate: is_benign_denial. CI: Wilson 99% via wilson_ci_pct.
-    """
-    rows = list(rows)
-    n = len(rows)
-    k = sum(1 for r in rows if is_benign_denial(r))
-    if n == 0:
-        return float("nan"), 0.0, 100.0, 0, 0
-    rate = k / n * 100.0
-    lo, hi = wilson_ci_pct(k, n, z)
-    return rate, lo, hi, k, n
 
 
 def load_benign_eval_per_turn(selfplay_dir: str) -> "dict[int, list[dict]]":

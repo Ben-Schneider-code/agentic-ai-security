@@ -45,6 +45,8 @@ Output order:
     figures/lora_cosine.png
     figures/sql_error_heatmap.png
     figures/training_plots/red_reward_curve.png
+    figures/training_plots/red_reward_vs_eis_scatter.png
+    figures/training_plots/red_cumulative_reward_vs_eis.png
     figures/training_plots/red_outcome_composition.png
     figures/training_plots/red_fluency.png
     figures/training_plots/red_honeypot_discovery.png
@@ -1189,18 +1191,22 @@ def run_all(
     if "training_curves" not in skip:
         try:
             from plotting.plot_training_curves import (
-                plot_red_reward_curve, plot_red_outcome_composition,
+                plot_red_reward_curve, plot_red_reward_scatter,
+                plot_red_cumulative_reward, plot_red_outcome_composition,
                 plot_red_fluency, plot_red_honeypot_discovery,
                 plot_blue_prf1, plot_blue_outcome_rates,
                 plot_selfplay_arms_race, plot_selfplay_dominance,
                 plot_optimization_curves,
-                DESC_RED_REWARD, DESC_RED_COMPOSITION, DESC_RED_FLUENCY,
+                DESC_RED_REWARD, DESC_RED_REWARD_SCATTER, DESC_RED_CUMULATIVE,
+                DESC_RED_COMPOSITION, DESC_RED_FLUENCY,
                 DESC_RED_HONEYPOT, DESC_BLUE_PRF1, DESC_BLUE_RATES,
                 DESC_ARMS_RACE, DESC_DOMINANCE, DESC_OPT_CURVES,
             )
             multi = len(results) > 1
             tc_jobs = [
                 (plot_red_reward_curve,        "red_reward_curve.png",        DESC_RED_REWARD,      {}),
+                (plot_red_reward_scatter,      "red_reward_vs_eis_scatter.png",   DESC_RED_REWARD_SCATTER, {}),
+                (plot_red_cumulative_reward,   "red_cumulative_reward_vs_eis.png", DESC_RED_CUMULATIVE,     {}),
                 (plot_red_outcome_composition, "red_outcome_composition.png", DESC_RED_COMPOSITION, {}),
                 (plot_red_fluency,             "red_fluency.png",             DESC_RED_FLUENCY,      {}),
                 (plot_red_honeypot_discovery,  "red_honeypot_discovery.png",  DESC_RED_HONEYPOT,     {}),

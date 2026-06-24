@@ -41,7 +41,7 @@ import numpy as np
 try:
     from ._data import (
         apply_paper_style, discover_iterations, find_run_dir,
-        load_reward_debug_lines, parse_results_arg, wilson_ci_pct,
+        is_benign_denial, load_reward_debug_lines, parse_results_arg, wilson_ci_pct,
         RED_COL, BLUE_COL, GREEN_COL, GRAY_COL, HUMAN_COL,
         RED_MARKER, BLUE_MARKER, HUMAN_MARKER,
         FIG_SIZE_SINGLE, FIG_SIZE_1x2,
@@ -51,7 +51,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from plotting._data import (
         apply_paper_style, discover_iterations, find_run_dir,
-        load_reward_debug_lines, parse_results_arg, wilson_ci_pct,
+        is_benign_denial, load_reward_debug_lines, parse_results_arg, wilson_ci_pct,
         RED_COL, BLUE_COL, GREEN_COL, GRAY_COL, HUMAN_COL,
         RED_MARKER, BLUE_MARKER, HUMAN_MARKER,
         FIG_SIZE_SINGLE, FIG_SIZE_1x2,
@@ -71,6 +71,22 @@ DESC_RED_REWARD = (
     "curve per self-play iteration (light = early, dark = late). RL shaping "
     "signal, NOT a paper metric. Source: logs/summary.json average_step_rewards "
     "(fallback: all_episodic_returns)."
+)
+DESC_RED_REWARD_SCATTER = (
+    "Attacker (red) per-logged-interval step reward vs. environment-interaction "
+    "steps as a scatter, one colour per self-play iteration (light = early, dark = "
+    "late). Companion to red_reward_curve.png: exposes the spread/variance of the "
+    "reward signal that the smoothed line hides. RL shaping signal, NOT a paper "
+    "metric. Source: logs/summary.json average_step_rewards (same points as the "
+    "reward curve, unsmoothed)."
+)
+DESC_RED_CUMULATIVE = (
+    "Attacker (red) cumulative step reward vs. environment-interaction steps, one "
+    "curve per self-play iteration (light = early, dark = late), reset per "
+    "iteration. Running sum of the logged average_step_rewards — a proxy for "
+    "accumulated reward whose slope tracks the current reward level (rising = net "
+    "positive, flat = near zero, falling = net negative). RL shaping diagnostic, "
+    "NOT a paper metric. Source: logs/summary.json average_step_rewards."
 )
 DESC_RED_COMPOSITION = (
     "Attacker (red) tail-window outcome-tier composition per self-play iteration "
@@ -96,21 +112,23 @@ DESC_BLUE_PRF1 = (
     "reward_debug.jsonl (training turns only)."
 )
 DESC_BLUE_RATES = (
-    "Defender (blue) outcome rates over training (rolling window): 1-PUD (benign "
-    "served), 1-PVR_turn (attack refused), and catastrophic-failure rate "
-    "(attack->honeypot). Final iteration solid, earlier iterations faded. Source: "
-    "reward_debug.jsonl (training turns only)."
+    "Defender (blue) outcome rates over training (rolling window): BRR (benign "
+    "refused), 1-PVR_turn (attack refused), and PVR_turn (turn-level policy "
+    "violation: attack turn accessed a honeypot). Lower BRR and lower PVR_turn are "
+    "better. BRR uses the canonical is_benign_denial predicate; PVR_turn = "
+    "false_positive/attack turns (formerly labeled CFR). Final iteration solid, "
+    "earlier iterations faded. Source: reward_debug.jsonl (training turns only)."
 )
 DESC_ARMS_RACE = (
-    "Self-play arms race: tail-window PVR_conv (red), 1-PVR_turn (blue) and 1-PUD "
+    "Self-play arms race: tail-window PVR_conv (red), 1-PVR_turn (blue) and 1-BRR "
     "(green) per iteration, with 99% Wilson CIs. Ports the tail-window math from "
     "util/plot_selfplay_results.py (PVR_conv reproduces it exactly); the blue "
-    "metrics here exclude held-out is_eval turns, so 1-PUD / 1-PVR_turn are "
+    "metrics here exclude held-out is_eval turns, so 1-BRR / 1-PVR_turn are "
     "training-time only (the original mixed eval turns into its tail)."
 )
 DESC_DOMINANCE = (
-    "Self-play dominance score per iteration in [-1, +1]: HM(1-PVR_turn,1-PUD) * "
-    "(1-10*CFR) - min(1, 5*PVR_conv). Blue bars (>=0) = defender-favoured, red "
+    "Self-play dominance score per iteration in [-1, +1]: HM(1-PVR_turn,1-BRR) * "
+    "(1-10*PVR_turn) - min(1, 5*PVR_conv). Blue bars (>=0) = defender-favoured, red "
     "bars (<0) = attacker-favoured; +-0.2 competitive band shaded."
 )
 DESC_OPT_CURVES = (
@@ -259,6 +277,102 @@ def plot_red_reward_curve(
     ax.set_title("Attacker (Red) Reward over Training")
     ax.set_xlabel("Environment Interaction Steps (EIS)")
     ax.set_ylabel("Avg Step Reward (smoothed)")
+    ax.set_xlim(left=0)
+    ax.grid(True, axis="y", alpha=0.4)
+    if drew:
+        ax.legend(fontsize=9, frameon=True, ncol=2)
+    return _save(fig, out_path)
+
+
+def plot_red_reward_scatter(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+    smooth_window: int = 7,
+) -> Path:
+    """Attacker step reward vs EIS as a scatter, one colour per iteration.
+
+    Shows the spread of the reward signal (the smoothed line in
+    plot_red_reward_curve hides it). A faint smoothed trend is overlaid per
+    iteration for orientation.
+    """
+    out_path = Path(out_path)
+    selfplay_dir = _single_run(results, "plot_red_reward_scatter")
+    iters = discover_iterations(selfplay_dir)
+    cmap = _colormap("Reds")
+    n = len(iters)
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+    drew = False
+    for idx, entry in enumerate(iters):
+        red_dir = entry.get("red_dir")
+        if not red_dir:
+            continue
+        run_dir = find_run_dir(red_dir)
+        if not run_dir:
+            continue
+        curve = load_training_curve(run_dir)
+        if not curve:
+            continue
+        steps, rewards = zip(*curve)
+        col = cmap(_iter_shade(idx, n))
+        ax.scatter(steps, rewards, color=col, s=14, alpha=0.55,
+                   edgecolors="none", label=f"Iter {entry['iter']}", zorder=3)
+        sm = _smooth(list(rewards), smooth_window)
+        ax.plot(steps, sm, color=col, linewidth=1.2, alpha=0.5, zorder=2)
+        drew = True
+
+    ax.axhline(0, color="#bbbbbb", linewidth=0.9, zorder=1)
+    ax.set_title("Attacker (Red) Step Reward vs EIS (scatter)")
+    ax.set_xlabel("Environment Interaction Steps (EIS)")
+    ax.set_ylabel("Avg Step Reward")
+    ax.set_xlim(left=0)
+    ax.grid(True, axis="y", alpha=0.4)
+    if drew:
+        ax.legend(fontsize=9, frameon=True, ncol=2)
+    return _save(fig, out_path)
+
+
+def plot_red_cumulative_reward(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+    smooth_window: int = 7,  # unused; kept for a uniform tc_jobs signature
+) -> Path:
+    """Attacker cumulative step reward vs EIS, one curve per iteration (reset/iter).
+
+    Running sum of the logged average_step_rewards: slope tracks the current
+    reward level (rising = net positive accrual, flat = near zero, falling = net
+    negative). A proxy for accumulated reward, NOT a paper metric.
+    """
+    out_path = Path(out_path)
+    selfplay_dir = _single_run(results, "plot_red_cumulative_reward")
+    iters = discover_iterations(selfplay_dir)
+    cmap = _colormap("Reds")
+    n = len(iters)
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+    drew = False
+    for idx, entry in enumerate(iters):
+        red_dir = entry.get("red_dir")
+        if not red_dir:
+            continue
+        run_dir = find_run_dir(red_dir)
+        if not run_dir:
+            continue
+        curve = load_training_curve(run_dir)
+        if not curve:
+            continue
+        steps, rewards = zip(*curve)
+        cum = np.cumsum(rewards)
+        col = cmap(_iter_shade(idx, n))
+        ax.plot(steps, cum, color=col, linewidth=1.6, marker="o", markersize=3,
+                label=f"Iter {entry['iter']}", zorder=3)
+        ax.fill_between(steps, 0, cum, color=col, alpha=0.10, zorder=2)
+        drew = True
+
+    ax.axhline(0, color="#bbbbbb", linewidth=0.9, zorder=1)
+    ax.set_title("Attacker (Red) Cumulative Reward vs EIS")
+    ax.set_xlabel("Environment Interaction Steps (EIS)")
+    ax.set_ylabel("Cumulative Step Reward")
     ax.set_xlim(left=0)
     ax.grid(True, axis="y", alpha=0.4)
     if drew:
@@ -493,16 +607,23 @@ def _blue_prf1(recs):
 
 
 def _blue_rates(recs):
-    """(1-PUD, 1-PVR_turn, CFR) in percent. Mirrors _compute_blue_rates."""
+    """(BRR, 1-PVR_turn, PVR_turn) in percent.
+
+    BRR (Benign Refusal Rate) uses the canonical is_benign_denial predicate from
+    util.metrics (re-exported via _data) so this curve matches plot_brr.py. The
+    third value is the turn-level policy-violation rate PVR_turn = fp/attack
+    (formerly mislabeled "CFR"; util.metrics aliases CFR to the conversation-level
+    PVR_conv, a different metric).
+    """
     benign = [r for r in recs if r.get("turn_type") == "benign"]
     attack = [r for r in recs if r.get("turn_type") == "attack"]
-    tp = sum(1 for r in benign if r.get("outcome_tier") == "true_positive")
+    n_denied = sum(1 for r in benign if is_benign_denial(r))
     tn = sum(1 for r in attack if r.get("outcome_tier") == "true_negative")
     fp = sum(1 for r in attack if r.get("outcome_tier") == "false_positive")
-    one_minus_pud = 100.0 * tp / len(benign) if benign else np.nan
-    one_minus_pvr = 100.0 * tn / len(attack) if attack else np.nan
-    cfr = 100.0 * fp / len(attack) if attack else np.nan
-    return one_minus_pud, one_minus_pvr, cfr
+    brr = 100.0 * n_denied / len(benign) if benign else np.nan
+    one_minus_pvr_turn = 100.0 * tn / len(attack) if attack else np.nan
+    pvr_turn = 100.0 * fp / len(attack) if attack else np.nan
+    return brr, one_minus_pvr_turn, pvr_turn
 
 
 def _iter_alpha(idx: int, n: int) -> float:
@@ -563,18 +684,17 @@ def plot_blue_outcome_rates(
     smooth_window: int = 50,
     show_ci: bool = True,
 ) -> Path:
-    """Defender 1-PUD / 1-PVR_turn / CFR over training; final iter solid, others faded."""
+    """Defender BRR / 1-PVR_turn / PVR_turn over training; final iter solid, others faded."""
     out_path = Path(out_path)
     selfplay_dir = _single_run(results, "plot_blue_outcome_rates")
     iters = discover_iterations(selfplay_dir)
     n = len(iters)
 
-    series = [("1-PUD (benign served)", GREEN_COL, 0),
+    series = [("BRR (benign refused)", GREEN_COL, 0),
               ("1-PVR_turn (attack refused)", BLUE_COL, 1),
-              ("CFR (attack->honeypot)", RED_COL, 2)]
+              ("PVR_turn (attack→honeypot breach)", RED_COL, 2)]
 
     fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
-    ax.axhspan(0, 10, color="#f8d7da", alpha=0.25, zorder=0)  # CFR danger band
     drew = False
     legend_done = False
     for idx, entry in enumerate(iters):
@@ -705,7 +825,7 @@ def plot_selfplay_arms_race(
         ("one_minus_pvr_turn", "omp_k", "omp_n", BLUE_COL, BLUE_MARKER,
          "1-PVR_turn (defender)", "-"),
         ("one_minus_pud", "omu_k", "omu_n", GREEN_COL, HUMAN_MARKER,
-         "1-PUD (utility)", "--"),
+         "1-BRR (utility)", "--"),
     ]
     for key, kk, nk, col, mk, lbl, ls in spec:
         xs, ys, los, his = [], [], [], []
