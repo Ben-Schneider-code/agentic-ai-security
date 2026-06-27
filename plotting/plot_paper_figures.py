@@ -1197,10 +1197,12 @@ def run_all(
                 plot_blue_prf1, plot_blue_outcome_rates,
                 plot_selfplay_arms_race, plot_selfplay_dominance,
                 plot_optimization_curves,
+                plot_rolling_pvr_train, plot_rolling_coverage_train, plot_edsr,
                 DESC_RED_REWARD, DESC_RED_REWARD_SCATTER, DESC_RED_CUMULATIVE,
                 DESC_RED_COMPOSITION, DESC_RED_FLUENCY,
                 DESC_RED_HONEYPOT, DESC_BLUE_PRF1, DESC_BLUE_RATES,
                 DESC_ARMS_RACE, DESC_DOMINANCE, DESC_OPT_CURVES,
+                DESC_ROLLING_PVR_TRAIN, DESC_ROLLING_COVERAGE_TRAIN, DESC_EDSR,
             )
             multi = len(results) > 1
             tc_jobs = [
@@ -1215,6 +1217,9 @@ def run_all(
                 (plot_selfplay_arms_race,      "selfplay_arms_race.png",      DESC_ARMS_RACE,        {"show_ci": show_ci}),
                 (plot_selfplay_dominance,      "selfplay_dominance.png",      DESC_DOMINANCE,        {}),
                 (plot_optimization_curves,     "optimization_curves.png",     DESC_OPT_CURVES,       {}),
+                (plot_rolling_pvr_train,        "rolling_pvr_train.png",        DESC_ROLLING_PVR_TRAIN,      {}),
+                (plot_rolling_coverage_train,   "rolling_coverage_train.png",   DESC_ROLLING_COVERAGE_TRAIN, {}),
+                (plot_edsr,                     "edsr.png",                     DESC_EDSR,                   {}),
             ]
             for label, sd in results:
                 tp_dir = _per_dir(out_dir, label, multi) / "training_plots"

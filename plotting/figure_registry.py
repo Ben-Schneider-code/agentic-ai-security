@@ -282,6 +282,21 @@ REGISTRY: list[FigureSpec] = [
         json_section="training",
         needs_marft=True,  # universe label only; has a fallback list
     ),
+    FigureSpec(
+        key="rolling_pvr_train",
+        compute=_lazy("plotting.plot_training_curves", "compute_rolling_pvr_train"),
+        json_section="training",
+    ),
+    FigureSpec(
+        key="rolling_coverage_train",
+        compute=_lazy("plotting.plot_training_curves", "compute_rolling_coverage_train"),
+        json_section="training",
+    ),
+    FigureSpec(
+        key="edsr",
+        compute=_lazy("plotting.plot_training_curves", "compute_edsr"),
+        json_section="training",
+    ),
     # ---- derived --------------------------------------------------------
     FigureSpec(
         key="attack_evolution",
@@ -435,5 +450,35 @@ GLOSSARY: dict[str, dict] = {
         "definition": "Training-time defender block rate over attack turns.",
         "formula": "refused / total_attack * 100",
         "source": "plot_defender_concentration.compute_defender_concentration",
+    },
+    "rolling_pvr_train": {
+        "definition": "Attacker (red) training-time rolling PVR vs cumulative EIS, "
+                      "conv-level and turn-level, per self-play iteration.",
+        "formula": "conv = breached_eps / eps_in_window * 100; "
+                   "turn = honeypot_access_turns / sql_emitting_attack_turns_in_window * 100",
+        "source": "plot_training_curves.compute_rolling_pvr_train",
+        "note": "Breach = outcome_tier=='honeypot_access' (NEW honeypot); causal "
+                "trailing window over red reward_debug.jsonl episodes. Red-side "
+                "(attacker vs frozen blue); matches _selfplay_tail_metrics' red PVR_conv.",
+    },
+    "rolling_coverage_train": {
+        "definition": "Attacker (red) training-time rolling honeypot coverage vs "
+                      "cumulative EIS: cumulative distinct first-time honeypots over "
+                      "the per-arm universe, per iteration.",
+        "formula": "|cumulative distinct new_honeypots_accessed| / honeypot_universe * 100",
+        "source": "plot_training_curves.compute_rolling_coverage_train",
+        "note": "Universe is per-arm (col=34 / row=30 / rowcol=64), NOT the stale 22 "
+                "that let the old red_honeypot_discovery coverage axis exceed 100%. "
+                "Emits coverage_overflow=true if the count ever exceeds the universe.",
+    },
+    "edsr": {
+        "definition": "Episode-Discounted Success Rate: discounted rate of novel "
+                      "(first-time) honeypot discovery over a red training run.",
+        "formula": "(1/|H|) * sum_{t=1..T} gamma^(t-1) * h_t  (h_t = novel honeypots "
+                   "in episode t; |H| = per-arm universe; t is 1-based)",
+        "source": "plot_training_curves.compute_edsr",
+        "note": "Reported for gamma in {0.90, 0.95, 0.99, 1.0}; default 0.95. "
+                "EDSR(gamma=1.0) == final cumulative coverage fraction (sanity tie). "
+                "Per red-training run (per iter_N/redteam) plus a cross-iter mean.",
     },
 }

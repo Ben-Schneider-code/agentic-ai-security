@@ -19,6 +19,15 @@
 #       --num-env-steps 200 --num-iterations 4 --horizon 5 \
 #       --vanilla-size 120 --bordercase-size 20 --honeypot-type rowcol \
 #       --redteam-gpu 0 --blueteam-gpu 1
+#
+# Optional skip flags (consumed here; NOT forwarded to run_selfplay.sh). They
+# are orthogonal — each skips exactly one benign component, neither implies
+# the other:
+#   --skip-benign-eval    Skip Phase 3 entirely (the dedicated benign-eval
+#                         sweep; no benign_eval/ dir is produced).
+#   --skip-cross-benign   Skip only the benign-only sub-phase inside Phase 2
+#                         cross-eval (forwarded as --skip-benign-only; no
+#                         cross_eval/benign_only/ dir is produced).
 
 set -e
 set -o pipefail
@@ -32,6 +41,8 @@ RESUME=false
 HONEYPOT_TYPE_SNIFFED=""
 SCORING_MODE_SNIFFED=""
 MATCH_TRAIN_SEEDS=false
+SKIP_BENIGN_EVAL=false
+SKIP_CROSS_BENIGN=false
 
 source .venv/bin/activate
 
@@ -45,6 +56,8 @@ source .venv/bin/activate
 # "skip Phase 1 if the cell is already selfplay-complete."
 # --match-train-seeds is sniffed + consumed: it only applies to Phase 2
 # (cross-eval) and would be rejected by run_selfplay.sh.
+# --skip-benign-eval / --skip-cross-benign are likewise sniffed + consumed:
+# they gate Phases 3 and 2 respectively and would be rejected by run_selfplay.sh.
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
     case "${args[$i]}" in
@@ -57,6 +70,8 @@ for ((i=0; i<${#args[@]}; i++)); do
         --scoring-mode)      SCORING_MODE_SNIFFED="${args[$((i+1))]}" ;;
         --resume)            RESUME=true ;;
         --match-train-seeds) MATCH_TRAIN_SEEDS=true ;;
+        --skip-benign-eval)  SKIP_BENIGN_EVAL=true ;;
+        --skip-cross-benign) SKIP_CROSS_BENIGN=true ;;
     esac
 done
 
@@ -161,6 +176,8 @@ if [[ -z "$RESULTS_DIR" ]]; then
     for ((i=0; i<${#args[@]}; i++)); do
         [[ "${args[$i]}" == "--resume" ]] && continue
         [[ "${args[$i]}" == "--match-train-seeds" ]] && continue
+        [[ "${args[$i]}" == "--skip-benign-eval" ]] && continue
+        [[ "${args[$i]}" == "--skip-cross-benign" ]] && continue
         SELFPLAY_ARGS+=("${args[$i]}")
     done
     [[ -z "$RESULTS_ID_OVERRIDE" ]] && SELFPLAY_ARGS+=(--results-id "$AAS_RUN_ID")
@@ -221,7 +238,8 @@ echo "[replicate] Blue base model (for benign-eval): $BLUE_BASE_MODEL"
 # off → cross-eval uses --seed as an independent draw from the same dataset.
 CROSS_EXTRA=()
 [[ "$MATCH_TRAIN_SEEDS" == "true" ]] && CROSS_EXTRA+=(--match-train-seeds)
-echo "[replicate] Phase 2/3: cross-eval (match-train-seeds=$MATCH_TRAIN_SEEDS)"
+[[ "$SKIP_CROSS_BENIGN" == "true" ]] && CROSS_EXTRA+=(--skip-benign-only)
+echo "[replicate] Phase 2/3: cross-eval (match-train-seeds=$MATCH_TRAIN_SEEDS, skip-cross-benign=$SKIP_CROSS_BENIGN)"
 ./run_cross_eval.sh \
     --selfplay-dir "$RESULTS_DIR" \
     --base-model   "$BASE_MODEL" \
@@ -235,18 +253,23 @@ echo "[replicate] Phase 2/3: cross-eval (match-train-seeds=$MATCH_TRAIN_SEEDS)"
     "${CROSS_EXTRA[@]}"
 
 # Phase 3 — benign-eval (single GPU; reuse the blue GPU)
-echo "[replicate] Phase 3/3: benign-eval"
-./util/run_benign_eval.sh \
-    --results-dir "$RESULTS_DIR" \
-    --base-model  "$BLUE_BASE_MODEL" \
-    --gpu         "$BLUE_GPU" \
-    --episodes    320 \
-    --seed        "$REPLICATE_SEED" \
-    --resume
+if [[ "$SKIP_BENIGN_EVAL" == "true" ]]; then
+    echo "[replicate] Phase 3/3: benign-eval SKIPPED (--skip-benign-eval)"
+else
+    echo "[replicate] Phase 3/3: benign-eval"
+    ./util/run_benign_eval.sh \
+        --results-dir "$RESULTS_DIR" \
+        --base-model  "$BLUE_BASE_MODEL" \
+        --gpu         "$BLUE_GPU" \
+        --episodes    320 \
+        --seed        "$REPLICATE_SEED" \
+        --resume
+fi
 
 echo "========================================"
 echo "[replicate] complete. Artifacts under $RESULTS_DIR/"
 echo "  - iter_*/{red,blue}team/        (training)"
 echo "  - cross_eval/cross_eval_results.json"
-echo "  - benign_eval/benign_eval_results.json"
+[[ "$SKIP_CROSS_BENIGN" != "true" ]] && echo "  - cross_eval/benign_only/       (benign-only sub-phase)"
+[[ "$SKIP_BENIGN_EVAL"  != "true" ]] && echo "  - benign_eval/benign_eval_results.json"
 echo "========================================"

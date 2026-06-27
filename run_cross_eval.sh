@@ -18,7 +18,9 @@
 # fits in ~40GB and is suitable when no GPU is fully free.
 #
 # After the paired evaluation + benign-only pass (both run by
-# util/cross_evaluate.py), this script also invokes util/mcnemar_cross_eval.py
+# util/cross_evaluate.py; pass --skip-benign-only to omit the benign-only
+# pass and produce no cross_eval/benign_only/ dir), this script also invokes
+# util/mcnemar_cross_eval.py
 # to produce significance_tests.csv + significance_matrix.json, so that
 # util/plot_cross_eval.py can annotate non-significant cells (p > 0.05) in the
 # cross-eval heatmaps per methodology §sec:episode-protocol.
@@ -75,6 +77,7 @@ OUTPUT_DIR_OVERRIDE=""          # override default output dir (cross_eval, diago
 EPISODES_EXPLICIT=false
 PAIRING_SUBSET_EXPLICIT=false
 MATCH_TRAIN_SEEDS=false  # when true, cross-eval reads red_seed from summary.json instead of --seed
+SKIP_BENIGN_ONLY=false   # when true, skip the benign-only sub-phase (no cross_eval/benign_only/)
 
 # --- Parse arguments ---
 while [[ "$#" -gt 0 ]]; do
@@ -108,6 +111,7 @@ while [[ "$#" -gt 0 ]]; do
         --blue-port) BLUE_PORT="$2"; shift ;;
         --skip-init) SKIP_INIT=true ;;
         --match-train-seeds) MATCH_TRAIN_SEEDS=true ;;
+        --skip-benign-only) SKIP_BENIGN_ONLY=true ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -641,6 +645,7 @@ EXTRA_CROSS_ARGS=()
 [[ "$INCLUDE_BASE" == "false" ]] && EXTRA_CROSS_ARGS+=(--no-include-base)
 [[ "$RESUME"       == "true"  ]] && EXTRA_CROSS_ARGS+=(--resume)
 [[ "$MATCH_TRAIN_SEEDS" == "true" ]] && EXTRA_CROSS_ARGS+=(--match-train-seeds)
+[[ "$SKIP_BENIGN_ONLY" == "true" ]] && EXTRA_CROSS_ARGS+=(--skip-benign-only)
 [[ -n "$BLUETEAM_SYSTEM_PROMPT_FILE" ]] && EXTRA_CROSS_ARGS+=(--blueteam-system-prompt-file "$BLUETEAM_SYSTEM_PROMPT_FILE")
 python3 util/cross_evaluate.py \
     --selfplay-dir "$SELFPLAY_DIR" \

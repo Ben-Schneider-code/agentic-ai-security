@@ -1431,17 +1431,29 @@ async def run_evaluation(args):
                     failed_pairings.append(pairing_key)
                     # Continue to next pairing
 
-        # Evaluate benign-only for each blue version
-        benign_to_run = [
-            b for b in blue_versions
-            if b in blue_iters_needed and f"benign_blue_{b}" not in completed
-        ]
-        print(
-            f"\nBenign-only phase: {len(benign_to_run)} blue versions to evaluate.",
-            flush=True,
-        )
+        # Evaluate benign-only for each blue version, unless skipped via
+        # --skip-benign-only. When skipped, no cross_eval/benign_only/ dir is
+        # written; aggregate_results() tolerates that (os.path.isdir guard) and
+        # emits an empty "benign_only": {}.
+        if args.skip_benign_only:
+            print(
+                "[cross-eval] benign_only sub-phase SKIPPED (--skip-benign-only)",
+                flush=True,
+            )
+            benign_to_run = []
+            blue_versions_for_benign = []
+        else:
+            benign_to_run = [
+                b for b in blue_versions
+                if b in blue_iters_needed and f"benign_blue_{b}" not in completed
+            ]
+            print(
+                f"\nBenign-only phase: {len(benign_to_run)} blue versions to evaluate.",
+                flush=True,
+            )
+            blue_versions_for_benign = blue_versions
         benign_idx = 0
-        for blue_iter in blue_versions:
+        for blue_iter in blue_versions_for_benign:
             if blue_iter not in blue_iters_needed:
                 continue
             benign_key = f"benign_blue_{blue_iter}"
@@ -1559,6 +1571,10 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Resume from progress checkpoint")
     parser.add_argument("--aggregate-only", action="store_true",
                         help="Only rebuild cross_eval_results.json from existing data")
+    parser.add_argument("--skip-benign-only", action="store_true",
+                        help="Skip the benign-only evaluation sub-phase (produces no "
+                             "cross_eval/benign_only/). Aggregation tolerates the missing "
+                             "dir and writes an empty \"benign_only\": {}.")
     parser.add_argument("--pairing-subset",
                         choices=["full", "diagonal", "diag_plus_base", "diag_plus_adjacent", "custom"],
                         default="full",
