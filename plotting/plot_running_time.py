@@ -18,6 +18,7 @@ Or imported:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -94,12 +95,129 @@ def load_eis_per_iteration(
 
 
 # ---------------------------------------------------------------------------
+# Pure compute (data loading + math only; no matplotlib, no side effects)
+# ---------------------------------------------------------------------------
+
+def compute_running_time(
+    results: list[tuple[str, str]],
+    **kwargs,
+) -> dict:
+    """
+    Compute per-iteration and cumulative EIS for each run (pure, JSON-serializable).
+
+    For each (label, selfplay_dir) in `results`, EIS per iteration is sourced from
+    `<selfplay_dir>/compute_cost_analysis.json` when present (its
+    `per_iteration[*].red_eis/blue_eis` + `aggregate`); otherwise derived via the
+    same loaders the plot uses (`discover_iterations` + `load_training_state`'s
+    `total_num_steps`, through `load_eis_per_iteration`).
+
+    Returns:
+        {
+          "runs": [
+            {
+              "label": str,
+              "selfplay_dir": str,
+              "source": "compute_cost_analysis.json" | "training_state",
+              "per_iteration": [{"iter", "red_eis", "blue_eis", "ratio"}],
+              "cumulative": {"red": [...], "blue": [...]},
+              "aggregate": {"mean_red_eis", "mean_blue_eis", ...},
+            }, ...
+          ]
+        }
+    A run with no iteration data is omitted (matches the plot's `continue`).
+    Returns {} when no run has data.
+    """
+    runs: list[dict] = []
+
+    for label, selfplay_dir in results:
+        records, source = _load_eis_records(selfplay_dir)
+        if not records:
+            continue
+
+        per_iteration: list[dict] = []
+        red_seq: list[int] = []
+        blue_seq: list[int] = []
+        for r in records:
+            re_ = r["red_eis"] or 0
+            be_ = r["blue_eis"] or 0
+            red_seq.append(re_)
+            blue_seq.append(be_)
+            per_iteration.append({
+                "iter": r["iter"],
+                "red_eis": re_,
+                "blue_eis": be_,
+                # blue/red ratio (None when red is 0 — matches the plot's `re_ > 0` guard)
+                "ratio": (be_ / re_) if re_ > 0 else None,
+            })
+
+        cum_red = list(np.cumsum(red_seq).astype(int)) if red_seq else []
+        cum_blue = list(np.cumsum(blue_seq).astype(int)) if blue_seq else []
+        # Cast numpy ints to plain ints for JSON-serializability.
+        cum_red = [int(v) for v in cum_red]
+        cum_blue = [int(v) for v in cum_blue]
+
+        red_nonzero = [v for v in red_seq if v > 0]
+        blue_nonzero = [v for v in blue_seq if v > 0]
+        ratios = [p["ratio"] for p in per_iteration if p["ratio"] is not None]
+        aggregate = {
+            "mean_red_eis": float(np.mean(red_nonzero)) if red_nonzero else 0.0,
+            "mean_blue_eis": float(np.mean(blue_nonzero)) if blue_nonzero else 0.0,
+            "cumulative_red_eis": cum_red[-1] if cum_red else 0,
+            "cumulative_blue_eis": cum_blue[-1] if cum_blue else 0,
+            "mean_eis_ratio": float(np.mean(ratios)) if ratios else 0.0,
+        }
+
+        runs.append({
+            "label": label,
+            "selfplay_dir": selfplay_dir,
+            "source": source,
+            "per_iteration": per_iteration,
+            "cumulative": {"red": cum_red, "blue": cum_blue},
+            "aggregate": aggregate,
+        })
+
+    if not runs:
+        return {}
+    return {"runs": runs}
+
+
+def _load_eis_records(selfplay_dir: str) -> tuple[list[dict], str]:
+    """
+    Return ([{"iter", "red_eis", "blue_eis"}, ...], source_str).
+
+    Prefers <selfplay_dir>/compute_cost_analysis.json when it has a populated
+    per_iteration list; otherwise derives from training_state.json via
+    load_eis_per_iteration. Mirrors the plot's exact numeric source.
+    """
+    cca = Path(selfplay_dir) / "compute_cost_analysis.json"
+    if cca.is_file():
+        try:
+            with open(cca) as f:
+                data = json.load(f)
+            per_iter = data.get("per_iteration") or []
+            if per_iter:
+                records = [
+                    {
+                        "iter": entry.get("iter"),
+                        "red_eis": entry.get("red_eis"),
+                        "blue_eis": entry.get("blue_eis"),
+                    }
+                    for entry in per_iter
+                ]
+                return records, "compute_cost_analysis.json"
+        except (json.JSONDecodeError, OSError):
+            pass
+    return load_eis_per_iteration(selfplay_dir), "training_state"
+
+
+# ---------------------------------------------------------------------------
 # Public plotting function (deterministic, idempotent)
 # ---------------------------------------------------------------------------
 
 def plot_running_time(
     results: list[tuple[str, str]],
     out_path: str | Path,
+    precomputed: dict | None = None,
 ) -> Path:
     """
     Plot EIS per iteration (grouped bars) and cumulative EIS (line chart).
@@ -107,23 +225,34 @@ def plot_running_time(
     Args:
         results:  [(label, selfplay_dir), ...]
         out_path: Destination PNG path.
+        precomputed: optional dict from compute_running_time(results); when None
+            it is computed here. Fully drives rendering.
 
     Returns the resolved Path that was written.
     """
     out_path = Path(out_path)
+    if precomputed is None:
+        precomputed = compute_running_time(results)
+    run_data = precomputed.get("runs", []) if precomputed else []
+    # Index computed runs by position in `results` so per-run styling (colors,
+    # offsets) matches the original loop even when some runs were dropped (no data).
+    by_dir: dict[str, dict] = {r["selfplay_dir"]: r for r in run_data}
+
     fig, (ax_bar, ax_cum) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
 
     colors = RUN_COLORS * (len(results) // len(RUN_COLORS) + 1)
 
+    iters: list[int] = []
     for run_idx, (label, selfplay_dir) in enumerate(results):
-        records = load_eis_per_iteration(selfplay_dir)
-        if not records:
+        run = by_dir.get(selfplay_dir)
+        if run is None:
             print(f"  [plot_running_time] No data found in {selfplay_dir}", file=sys.stderr)
             continue
 
-        iters = [r["iter"] for r in records]
-        red_eis = [r["red_eis"] or 0 for r in records]
-        blue_eis = [r["blue_eis"] or 0 for r in records]
+        per_iter = run["per_iteration"]
+        iters = [r["iter"] for r in per_iter]
+        red_eis = [r["red_eis"] for r in per_iter]
+        blue_eis = [r["blue_eis"] for r in per_iter]
 
         n_runs = len(results)
         bar_w = 0.35 / max(n_runs, 1)
@@ -169,8 +298,8 @@ def plot_running_time(
                            linewidth=1.2, alpha=0.7)
 
         # --- Cumulative EIS ---
-        cum_red  = np.cumsum(red_eis)
-        cum_blue = np.cumsum(blue_eis)
+        cum_red  = np.asarray(run["cumulative"]["red"])
+        cum_blue = np.asarray(run["cumulative"]["blue"])
 
         ax_cum.plot(iters, cum_red, marker="o", color=red_color, linewidth=2,
                     label=red_label)

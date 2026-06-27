@@ -136,11 +136,74 @@ def _plot_series(ax, rows, color, label, marker, show_ci: bool = True):
                 capsize=4, capthick=1.1, elinewidth=1.0, label=label)
 
 
+def compute_generalization(
+    results: list[tuple[str, str]],
+    subdir: str | None = None,
+    **kwargs,
+) -> dict:
+    """
+    Pure compute of the generalization series (no matplotlib, no writes).
+
+    Uses the first result entry. Picks the richest grid via _best_grid (honoring
+    `subdir` when given), then extracts three PVR_conv (asr) series with 99% CIs
+    via the same _series helper the plot uses:
+
+        {
+          "source_subdir": str,
+          "reds": [...], "blues": [...],
+          "n_attack_episodes_per_cell": int | None,
+          "col0":     [{"iter", "asr", "ci": [lo, hi]}],  # iter-red vs frozen blue_0
+          "row0":     [{"iter", "asr", "ci": [lo, hi]}],  # iter-blue vs frozen red_0
+          "diagonal": [{"iter", "asr", "ci": [lo, hi]}],  # red_i vs blue_i
+        }
+
+    Returns {} when no cross-eval grid is available.
+    """
+    if not results:
+        return {}
+    _label, selfplay_dir = results[0]
+
+    loaded = _best_grid(selfplay_dir, subdir=subdir)
+    if loaded is None:
+        return {}
+    ce, source = loaded
+    pairings = ce.get("pairings", {})
+    reds = sorted({v["red_iter"] for v in pairings.values()})
+    blues = sorted({v["blue_iter"] for v in pairings.values()})
+    n_attack = ce.get("metadata", {}).get("n_attack_episodes_per_cell", None)
+
+    col0 = _series(pairings, fix_key="blue_iter", fix_val=0, var_key="red_iter")
+    row0 = _series(pairings, fix_key="red_iter", fix_val=0, var_key="blue_iter")
+    diag_rows = [(v["red_iter"], v["metrics"]["asr"],
+                  v["confidence_intervals"].get("asr") or [float("nan")] * 2)
+                 for v in pairings.values()
+                 if v.get("red_iter") == v.get("blue_iter")
+                 and v.get("metrics", {}).get("asr") is not None]
+    diag_rows.sort(key=lambda r: r[0])
+
+    def _rows_to_dicts(rows: list[tuple[int, float, list[float]]]) -> list[dict]:
+        return [
+            {"iter": int(x), "asr": float(y), "ci": [float(ci[0]), float(ci[1])]}
+            for x, y, ci in rows
+        ]
+
+    return {
+        "source_subdir": source,
+        "reds": reds,
+        "blues": blues,
+        "n_attack_episodes_per_cell": n_attack,
+        "col0": _rows_to_dicts(col0),
+        "row0": _rows_to_dicts(row0),
+        "diagonal": _rows_to_dicts(diag_rows),
+    }
+
+
 def plot_generalization(
     results: list[tuple[str, str]],
     out_path: str | Path,
     subdir: str | None = None,
     show_ci: bool = True,
+    precomputed: dict | None = None,
 ) -> Path:
     out_path = Path(out_path)
     if len(results) > 1:
@@ -148,8 +211,10 @@ def plot_generalization(
               file=sys.stderr)
     label, selfplay_dir = results[0]
 
-    loaded = _best_grid(selfplay_dir, subdir=subdir)
-    if loaded is None:
+    if precomputed is None:
+        precomputed = compute_generalization(results, subdir=subdir)
+
+    if not precomputed:
         print(f"[plot_generalization] No cross-eval grid in {selfplay_dir}.",
               file=sys.stderr)
         fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
@@ -158,23 +223,22 @@ def plot_generalization(
         fig.savefig(out_path)
         plt.close(fig)
         return out_path
-    ce, source = loaded
-    pairings = ce.get("pairings", {})
-    reds = sorted({v["red_iter"] for v in pairings.values()})
-    blues = sorted({v["blue_iter"] for v in pairings.values()})
-    n_attack = ce.get("metadata", {}).get("n_attack_episodes_per_cell", None)
+
+    source = precomputed["source_subdir"]
+    reds = precomputed["reds"]
+    blues = precomputed["blues"]
+    n_attack = precomputed["n_attack_episodes_per_cell"]
+
+    # Rebuild the (iter, asr, [lo, hi]) tuple lists the renderer/_plot_series expect.
+    def _dicts_to_rows(entries: list[dict]) -> list[tuple[int, float, list[float]]]:
+        return [(d["iter"], d["asr"], list(d["ci"])) for d in entries]
 
     # Column 0 = iterative red vs frozen blue_0 (vary red_iter)
-    col0 = _series(pairings, fix_key="blue_iter", fix_val=0, var_key="red_iter")
+    col0 = _dicts_to_rows(precomputed["col0"])
     # Row 0 = iterative blue vs frozen red_0 (vary blue_iter)
-    row0 = _series(pairings, fix_key="red_iter", fix_val=0, var_key="blue_iter")
+    row0 = _dicts_to_rows(precomputed["row0"])
     # Diagonal
-    diag_rows = [(v["red_iter"], v["metrics"]["asr"],
-                  v["confidence_intervals"].get("asr") or [float("nan")] * 2)
-                 for v in pairings.values()
-                 if v.get("red_iter") == v.get("blue_iter")
-                 and v.get("metrics", {}).get("asr") is not None]
-    diag_rows.sort(key=lambda r: r[0])
+    diag_rows = _dicts_to_rows(precomputed["diagonal"])
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
 

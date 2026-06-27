@@ -56,17 +56,120 @@ ATTEMPTS_CDF_JOBS: list[tuple[str, str]] = [
 ]
 
 
+def _hit_idx_summary(hit_indices: list[int]) -> dict:
+    """Summarize a list of first-hit SQL indices (quantiles + histogram + mean).
+
+    `_raw` carries the full sorted array so the renderer can reproduce the exact
+    empirical step-CDF; JSON-facing keys are the compact summary.
+    """
+    arr = np.array(sorted(hit_indices), dtype=float)
+    if arr.size == 0:
+        return {
+            "quantiles": {k: None for k in ("p10", "p25", "p50", "p75", "p90", "max")},
+            "hist": {"bin_edges": [], "counts": []},
+            "mean": None,
+            "_raw": [],
+        }
+    qs = np.percentile(arr, [10, 25, 50, 75, 90])
+    # Integer-aligned histogram over the observed range (1 bin per SQL-turn index).
+    lo, hi = int(arr.min()), int(arr.max())
+    bin_edges = np.arange(lo, hi + 2) - 0.5  # centers on integers lo..hi
+    counts, edges = np.histogram(arr, bins=bin_edges)
+    return {
+        "quantiles": {
+            "p10": float(qs[0]), "p25": float(qs[1]), "p50": float(qs[2]),
+            "p75": float(qs[3]), "p90": float(qs[4]), "max": float(arr.max()),
+        },
+        "hist": {
+            "bin_edges": [float(e) for e in edges],
+            "counts": [int(c) for c in counts],
+        },
+        "mean": float(arr.mean()),
+        "_raw": [int(v) for v in arr],
+    }
+
+
+def compute_attempts_cdf(
+    results: list[tuple[str, str]],
+    subdir: str = "cross_eval",
+    **kwargs,
+) -> dict:
+    """
+    Pure compute of per-pairing attempts-to-compromise summaries (no matplotlib).
+
+    Uses the first result entry (the plot is single-run). For each (red_i, blue_j)
+    pairing returns, keyed "red_i_blue_j":
+
+        {
+          "red_i_blue_j": {
+            "red_iter": int, "blue_iter": int,
+            "n_hit": int, "n_total": int,
+            "hit_idx": {
+              "quantiles": {"p10","p25","p50","p75","p90","max"},
+              "hist": {"bin_edges": [...], "counts": [...]},
+              "mean": float | None,
+              "_raw": [int, ...],   # internal: full array for exact CDF rendering
+            },
+          }, ...
+        }
+
+    Also carries top-level "_axes": {"red_iters": [...], "blue_iters": [...]} so
+    the renderer can lay out subplots. Returns {} on no data.
+    """
+    if not results:
+        return {}
+    _label, selfplay_dir = results[0]
+    cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
+    if cross_eval is None:
+        return {}
+
+    pairings = cross_eval.get("pairings", {})
+    red_iters = sorted({v["red_iter"] for v in pairings.values()})
+    blue_iters = sorted({v["blue_iter"] for v in pairings.values()})
+    if not red_iters:
+        return {}
+
+    cells: dict = {}
+    for ri in red_iters:
+        for bi in blue_iters:
+            key = f"red_{ri}_blue_{bi}"
+            pairing = pairings.get(key)
+            if pairing is None:
+                continue
+            ep_stats = pairing.get("episode_stats", {})
+            n_total = pairing.get("n_attack_episodes", 0)
+            indices = ep_stats.get("per_ep_first_hit_sql_idx", [])
+            hit_indices = [x for x in indices if x is not None]
+            cells[key] = {
+                "red_iter": ri,
+                "blue_iter": bi,
+                "n_hit": len(hit_indices),
+                "n_total": n_total,
+                "hit_idx": _hit_idx_summary(hit_indices),
+            }
+
+    if not cells:
+        return {}
+    cells["_axes"] = {"red_iters": red_iters, "blue_iters": blue_iters}
+    return cells
+
+
 def plot_attempts_cdf(
     results: list[tuple[str, str]],
     out_path: str | Path,
     *,
     subdir: str = "cross_eval",
+    precomputed: dict | None = None,
 ) -> Path:
     """
     CDF of SQL turns before first violation, per (Red_i × Blue_j) pairing.
 
     One subplot per Red iter (rows); within each subplot, one CDF line per Blue iter
     colored along viridis. Only the first result entry is used.
+
+    precomputed: optional dict from compute_attempts_cdf(results, subdir=...);
+        when None it is computed here. Fully drives rendering via the per-cell
+        summaries' internal `_raw` arrays.
     """
     out_path = Path(out_path)
     if len(results) > 1:
@@ -75,18 +178,25 @@ def plot_attempts_cdf(
             file=sys.stderr,
         )
 
+    if precomputed is None:
+        precomputed = compute_attempts_cdf(results, subdir=subdir)
+
     _label, selfplay_dir = results[0]
-    cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
-    if cross_eval is None:
-        print(
-            f"[plot_attempts_cdf] No data for subdir={subdir!r} in {selfplay_dir}.",
-            file=sys.stderr,
-        )
+    if not precomputed:
+        # Distinguish "no subdir data" from "no pairings" to preserve messages.
+        if load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir) is None:
+            print(
+                f"[plot_attempts_cdf] No data for subdir={subdir!r} in {selfplay_dir}.",
+                file=sys.stderr,
+            )
+        else:
+            print("[plot_attempts_cdf] No pairings found.", file=sys.stderr)
         return out_path
 
-    pairings = cross_eval.get("pairings", {})
-    red_iters = sorted({v["red_iter"] for v in pairings.values()})
-    blue_iters = sorted({v["blue_iter"] for v in pairings.values()})
+    cells = precomputed
+    axes_info = cells.get("_axes", {})
+    red_iters = axes_info.get("red_iters", [])
+    blue_iters = axes_info.get("blue_iters", [])
 
     if not red_iters:
         print("[plot_attempts_cdf] No pairings found.", file=sys.stderr)
@@ -109,15 +219,13 @@ def plot_attempts_cdf(
         any_data = False
         for bi in blue_iters:
             key = f"red_{ri}_blue_{bi}"
-            pairing = pairings.get(key)
-            if pairing is None:
+            cell = cells.get(key)
+            if cell is None:
                 continue
 
-            ep_stats = pairing.get("episode_stats", {})
-            n_total = pairing.get("n_attack_episodes", 0)
-            indices = ep_stats.get("per_ep_first_hit_sql_idx", [])
-            hit_indices = [x for x in indices if x is not None]
-            n_hit = len(hit_indices)
+            n_total = cell["n_total"]
+            hit_indices = cell["hit_idx"]["_raw"]
+            n_hit = cell["n_hit"]
 
             color = bi_to_color[bi]
             if n_hit == 0:

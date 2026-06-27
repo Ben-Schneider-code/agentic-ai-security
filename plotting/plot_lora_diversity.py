@@ -240,6 +240,72 @@ def compute_lora_metrics(
     )
 
 
+def compute_lora(
+    results: list[tuple[str, str]],
+    base_model: str | None = None,
+    **kwargs,
+) -> dict:
+    """Pure compute export of the LoRA task-vector metrics for a single run.
+
+    Resolution order (no matplotlib / no file writes):
+      1. Prefer the precomputed cache ``<selfplay_dir>/lora_delta/lora_delta_metrics.json``.
+         If present, return ``json.load(...)`` merged with ``{"source": ...}``.
+         This path NEVER imports torch.
+      2. Otherwise recompute via ``compute_lora_metrics`` (the torch + adapters path),
+         returning its dict merged with ``{"source": "recomputed"}``.
+
+    The schema (``red_iters``, ``blue_iters``, ``shared_iters``, ``red_norm``,
+    ``blue_norm``, ``red_delta_norm``, ``blue_delta_norm``, ``red_cos_consec``,
+    ``blue_cos_consec``, ``red_cos_vs1``, ``blue_cos_vs1``, ``rb_cosine``) is identical
+    in both paths, so the cached json and the recomputed dict are interchangeable.
+
+    Args:
+        results:    ``[(label, selfplay_dir), ...]``; only the first run is used.
+        base_model: optional base-model id; cross-checked against adapter_config.json
+                    on the recompute path only.
+        **kwargs:   accepted and ignored (uniform compute-fn signature).
+
+    Returns:
+        ``{}`` when no run is available, when there are no valid checkpoints, or when
+        torch / adapters are unavailable on the recompute path (never raises on those).
+    """
+    if not results:
+        return {}
+    selfplay_dir = results[0][1]
+
+    cache = Path(selfplay_dir) / "lora_delta" / "lora_delta_metrics.json"
+    if cache.is_file():
+        try:
+            data = json.load(open(cache))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, dict):
+            return {**data, "source": "lora_delta_metrics.json"}
+
+    # Recompute path (requires torch + adapters via llm_task_vector). Wrap the whole
+    # path so any missing optional dep -> {} rather than a crash.
+    try:
+        red_loras, blue_loras = discover_lora_checkpoints(selfplay_dir)
+        red_loras = {n: p for n, p in red_loras.items() if validate_adapter(p)}
+        blue_loras = {n: p for n, p in blue_loras.items() if validate_adapter(p)}
+        if not red_loras and not blue_loras:
+            return {}
+        if base_model is not None:
+            all_paths = list(red_loras.values()) + list(blue_loras.values())
+            detected = {_read_base_model(p) for p in all_paths}
+            if base_model not in detected:
+                raise RuntimeError(
+                    f"--base-model {base_model!r} not among adapter values {sorted(detected)}"
+                )
+        metrics = compute_lora_metrics(red_loras, blue_loras)
+    except (ImportError, ModuleNotFoundError):
+        return {}
+    except Exception as e:  # pragma: no cover - defensive; never crash the exporter
+        print(f"  [compute_lora] recompute failed: {e}", file=sys.stderr)
+        return {}
+    return {**metrics, "source": "recomputed"}
+
+
 # ---------------------------------------------------------------------------
 # Individual plot functions
 # ---------------------------------------------------------------------------

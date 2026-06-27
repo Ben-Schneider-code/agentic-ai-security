@@ -395,6 +395,97 @@ def _empty_placeholder(out_dir: Path, msg: str) -> dict[str, Path]:
 # ---------------------------------------------------------------------------
 
 
+def compute_diagonal_convergence(
+    results: list[tuple[str, str]],
+    *,
+    eval_subdir: str | None = None,
+    brr_source: str = "cross_eval",
+    **kwargs,
+) -> dict:
+    """Pure data load + metric math for the diagonal-convergence trajectories.
+
+    Loads every replicate's adjacent-pairing PVR_conv / PVR_turn series and the
+    BRR rows, computes the per-replicate trajectory arrays (with 99% Wilson CIs)
+    on the master x-axis, and returns the JSON-serializable metrics dict that the
+    three trajectory renderers are fully driven by. Returns ``{}`` when no
+    replicate has usable cross-eval data or when there are no adjacent pairings
+    (mirrors the plot's placeholder branches). No matplotlib, no file writes.
+
+    Per-replicate arrays are stored at full precision under
+    ``<metric>_pct_raw`` / ``<metric>_ci_99_raw`` (NaN where data is absent) so
+    the renderer reproduces the figure exactly; the rounded ``<metric>_pct`` /
+    ``<metric>_ci_99`` keys are kept for the sidecar.
+
+    Accepts and ignores unknown kwargs (e.g. render-only ``show_ci``).
+    """
+    if brr_source not in _BRR_SOURCES:
+        raise ValueError(f"brr_source must be one of {_BRR_SOURCES}, got {brr_source!r}")
+
+    reps = [
+        rep for rep in (
+            _load_replicate(label, selfplay_dir, eval_subdir, brr_source)
+            for label, selfplay_dir in results
+        )
+        if rep is not None
+    ]
+
+    if not reps:
+        print(
+            "[plot_diagonal_convergence] No usable cross-eval data in any replicate.",
+            file=sys.stderr,
+        )
+        return {}
+
+    master_seq = sorted({pair for rep in reps for pair in rep["seq"]})
+    if not master_seq:
+        return {}
+
+    x_labels = [f"R{r}·B{b}" for r, b in master_seq]
+
+    def _r(v: float) -> float | None:
+        return round(v, 2) if not np.isnan(v) else None
+
+    rep_metrics: dict[str, dict] = {}
+
+    for i, rep in enumerate(reps):
+        col = _REP_COLORS[i % len(_REP_COLORS)]
+        (
+            cv, cv_lo, cv_hi,
+            tv, tv_lo, tv_hi,
+        ) = _extract_attack_series(master_seq, rep["pairing_lookup"])
+        bv, bv_lo, bv_hi = _extract_brr_series(master_seq, rep["brr_rows"])
+
+        rep_metrics[rep["label"]] = {
+            "selfplay_dir": rep["selfplay_dir"],
+            "source_subdir": rep["chosen_subdir"],
+            # Render-driver color + full-precision arrays (NaN where absent).
+            "rep_color": col,
+            "pvr_conv_pct_raw": cv,
+            "pvr_conv_ci_99_raw": [[l, h] for l, h in zip(cv_lo, cv_hi)],
+            "pvr_turn_pct_raw": tv,
+            "pvr_turn_ci_99_raw": [[l, h] for l, h in zip(tv_lo, tv_hi)],
+            "brr_pct_raw": bv,
+            "brr_ci_99_raw": [[l, h] for l, h in zip(bv_lo, bv_hi)],
+            # Rounded copies for the JSON sidecar.
+            "pvr_conv_pct": [_r(v) for v in cv],
+            "pvr_conv_ci_99": [[_r(l), _r(h)] for l, h in zip(cv_lo, cv_hi)],
+            "pvr_turn_pct": [_r(v) for v in tv],
+            "pvr_turn_ci_99": [[_r(l), _r(h)] for l, h in zip(tv_lo, tv_hi)],
+            "brr_pct": [_r(v) for v in bv],
+            "brr_ci_99": [[_r(l), _r(h)] for l, h in zip(bv_lo, bv_hi)],
+        }
+
+    chosen_subdir = reps[0]["chosen_subdir"]
+    metrics = {
+        "source_subdir": chosen_subdir,
+        "brr_source": brr_source,
+        "trajectory_labels": x_labels,
+        "trajectory_seq": [{"red_iter": r, "blue_iter": b} for r, b in master_seq],
+        "replicates": rep_metrics,
+    }
+    return metrics
+
+
 def plot_diagonal_convergence(
     results: list[tuple[str, str]],
     out_dir: str | Path,
@@ -402,6 +493,7 @@ def plot_diagonal_convergence(
     eval_subdir: str | None = None,
     show_ci: bool = True,
     brr_source: str = "cross_eval",
+    precomputed: dict | None = None,
 ) -> tuple[dict[str, Path], dict]:
     """
     Plot PVR_conv, PVR_turn, and BRR for adjacent pairings along the training
@@ -419,6 +511,8 @@ def plot_diagonal_convergence(
         eval_subdir: Subdir for attack pairings (auto: diagonal_eval, cross_eval).
         show_ci:     Toggle 99% Wilson CI error bars.
         brr_source:  "cross_eval" (default), "benign_eval", or "train_rollouts".
+        precomputed: Optional metrics dict from compute_diagonal_convergence; when
+                     None it is computed here.
 
     Returns:
         (paths, metrics) where paths is {"pvr_conv": Path, "pvr_turn": Path,
@@ -427,62 +521,42 @@ def plot_diagonal_convergence(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if brr_source not in _BRR_SOURCES:
-        raise ValueError(f"brr_source must be one of {_BRR_SOURCES}, got {brr_source!r}")
-
-    reps = [
-        rep for rep in (
-            _load_replicate(label, selfplay_dir, eval_subdir, brr_source)
-            for label, selfplay_dir in results
+    if precomputed is None:
+        metrics = compute_diagonal_convergence(
+            results, eval_subdir=eval_subdir, brr_source=brr_source
         )
-        if rep is not None
-    ]
+    else:
+        metrics = precomputed
 
-    if not reps:
-        print(
-            "[plot_diagonal_convergence] No usable cross-eval data in any replicate.",
-            file=sys.stderr,
-        )
-        return _empty_placeholder(out_dir, "No data"), {}
+    if not metrics:
+        # Distinguish the two empty branches by message, matching the originals.
+        msg = "No data"
+        return _empty_placeholder(out_dir, msg), {}
 
-    master_seq = sorted({pair for rep in reps for pair in rep["seq"]})
-    if not master_seq:
-        return _empty_placeholder(out_dir, "No adjacent pairings"), {}
-
+    # Reconstruct everything the renderer needs straight from the metrics dict.
+    master_seq = [(d["red_iter"], d["blue_iter"]) for d in metrics["trajectory_seq"]]
     x        = np.arange(len(master_seq))
-    x_labels = [f"R{r}·B{b}" for r, b in master_seq]
+    x_labels = metrics["trajectory_labels"]
     point_colors = [_point_color(r, b) for r, b in master_seq]
-
-    def _r(v: float) -> float | None:
-        return round(v, 2) if not np.isnan(v) else None
 
     conv_series: list[tuple] = []
     turn_series: list[tuple] = []
     brr_series:  list[tuple] = []
-    rep_metrics: dict[str, dict] = {}
+    for label, rep in metrics["replicates"].items():
+        col = rep["rep_color"]
+        cv = rep["pvr_conv_pct_raw"]
+        cv_lo = [c[0] for c in rep["pvr_conv_ci_99_raw"]]
+        cv_hi = [c[1] for c in rep["pvr_conv_ci_99_raw"]]
+        tv = rep["pvr_turn_pct_raw"]
+        tv_lo = [c[0] for c in rep["pvr_turn_ci_99_raw"]]
+        tv_hi = [c[1] for c in rep["pvr_turn_ci_99_raw"]]
+        bv = rep["brr_pct_raw"]
+        bv_lo = [c[0] for c in rep["brr_ci_99_raw"]]
+        bv_hi = [c[1] for c in rep["brr_ci_99_raw"]]
 
-    for i, rep in enumerate(reps):
-        col = _REP_COLORS[i % len(_REP_COLORS)]
-        (
-            cv, cv_lo, cv_hi,
-            tv, tv_lo, tv_hi,
-        ) = _extract_attack_series(master_seq, rep["pairing_lookup"])
-        bv, bv_lo, bv_hi = _extract_brr_series(master_seq, rep["brr_rows"])
-
-        conv_series.append((rep["label"], col, cv, cv_lo, cv_hi))
-        turn_series.append((rep["label"], col, tv, tv_lo, tv_hi))
-        brr_series.append((rep["label"], col, bv, bv_lo, bv_hi))
-
-        rep_metrics[rep["label"]] = {
-            "selfplay_dir": rep["selfplay_dir"],
-            "source_subdir": rep["chosen_subdir"],
-            "pvr_conv_pct": [_r(v) for v in cv],
-            "pvr_conv_ci_99": [[_r(l), _r(h)] for l, h in zip(cv_lo, cv_hi)],
-            "pvr_turn_pct": [_r(v) for v in tv],
-            "pvr_turn_ci_99": [[_r(l), _r(h)] for l, h in zip(tv_lo, tv_hi)],
-            "brr_pct": [_r(v) for v in bv],
-            "brr_ci_99": [[_r(l), _r(h)] for l, h in zip(bv_lo, bv_hi)],
-        }
+        conv_series.append((label, col, cv, cv_lo, cv_hi))
+        turn_series.append((label, col, tv, tv_lo, tv_hi))
+        brr_series.append((label, col, bv, bv_lo, bv_hi))
 
     panels = {
         "pvr_conv": conv_series,
@@ -499,14 +573,6 @@ def plot_diagonal_convergence(
         )
         paths[key] = p
 
-    chosen_subdir = reps[0]["chosen_subdir"]
-    metrics = {
-        "source_subdir": chosen_subdir,
-        "brr_source": brr_source,
-        "trajectory_labels": x_labels,
-        "trajectory_seq": [{"red_iter": r, "blue_iter": b} for r, b in master_seq],
-        "replicates": rep_metrics,
-    }
     return paths, metrics
 
 

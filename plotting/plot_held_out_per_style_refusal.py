@@ -107,17 +107,21 @@ def load_held_out_per_style(
     return result
 
 
-def plot_held_out_per_style_refusal(
+def compute_held_out_per_style_refusal(
     results: list[tuple[str, str]],
     cross_eval_subdir: str = "cross_eval",
-    out_dir: str = "figures/",
-    show_ci: bool = True,
-) -> Path:
-    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+    **kwargs,
+) -> dict:
+    """Pure data-load + per-style refusal math for the held-out figure.
 
-    out_path = Path(out_dir) / "held_out_per_style_refusal.png"
-    sidecar_path = Path(out_dir) / "held_out_per_style_refusal.json"
-
+    Returns the JSON sidecar dict ``{"selfplay_dir", "per_iter", "pooled"}``,
+    where ``per_iter[style][bi] = {"n", "refused", "rate_pct"}`` (rate_pct is NaN
+    when n==0) and ``pooled[style] = {"n", "refused", "rate_pct", "ci95_lo",
+    "ci95_hi"}`` (only styles with n>0). Returns ``{}`` on no-data. Accepts /
+    ignores unknown ``**kwargs``.
+    """
+    if not results:
+        return {}
     label, selfplay_dir = results[0]
     data = load_held_out_per_style(selfplay_dir, cross_eval_subdir)
     if not data:
@@ -126,22 +130,79 @@ def plot_held_out_per_style_refusal(
             f"{selfplay_dir}/{cross_eval_subdir}/benign_only/",
             file=sys.stderr,
         )
-        return out_path
+        return {}
 
     blue_iters = sorted(data.keys())
     sidecar: dict = {"selfplay_dir": selfplay_dir, "per_iter": {}, "pooled": {}}
 
     for style in STYLES:
-        rates, lo_errs, hi_errs = [], [], []
+        rates = []
         for bi in blue_iters:
             counts = data[bi].get(style, {"n": 0, "refused": 0})
             n, ref = counts["n"], counts["refused"]
             if n == 0:
                 rates.append(float("nan"))
+            else:
+                rates.append(ref / n * 100)
+        sidecar["per_iter"][style] = {
+            str(bi): {"n": data[bi].get(style, {"n": 0})["n"],
+                      "refused": data[bi].get(style, {"n": 0, "refused": 0})["refused"],
+                      "rate_pct": r}
+            for bi, r in zip(blue_iters, rates)
+        }
+
+    # Pooled values
+    for style in STYLES:
+        total_n = sum(data[bi].get(style, {"n": 0})["n"] for bi in blue_iters)
+        total_ref = sum(data[bi].get(style, {"n": 0, "refused": 0})["refused"] for bi in blue_iters)
+        if total_n > 0:
+            rate = total_ref / total_n * 100
+            lo, hi = wilson_ci_pct(total_ref, total_n, z=1.96)
+            sidecar["pooled"][style] = {"n": total_n, "refused": total_ref,
+                                        "rate_pct": rate, "ci95_lo": lo, "ci95_hi": hi}
+
+    return sidecar
+
+
+def plot_held_out_per_style_refusal(
+    results: list[tuple[str, str]],
+    cross_eval_subdir: str = "cross_eval",
+    out_dir: str = "figures/",
+    show_ci: bool = True,
+    precomputed: dict | None = None,
+) -> Path:
+    fig, ax = plt.subplots(figsize=FIG_SIZE_SINGLE)
+
+    out_path = Path(out_dir) / "held_out_per_style_refusal.png"
+    sidecar_path = Path(out_dir) / "held_out_per_style_refusal.json"
+
+    sidecar = (
+        precomputed if precomputed is not None
+        else compute_held_out_per_style_refusal(results, cross_eval_subdir)
+    )
+    if not sidecar:
+        # compute_* already emitted the "No data found" message on the no-data
+        # path; nothing to render.
+        return out_path
+
+    # Recover the iteration axis from the per_iter sidecar (any style spans all
+    # blue iters). Keys are stringified; restore int ordering for the x-axis.
+    any_style = STYLES[0]
+    blue_iters = sorted(int(bi) for bi in sidecar["per_iter"].get(any_style, {}))
+
+    for style in STYLES:
+        per_iter_style = sidecar["per_iter"].get(style, {})
+        rates, lo_errs, hi_errs = [], [], []
+        for bi in blue_iters:
+            cell = per_iter_style.get(str(bi), {"n": 0, "refused": 0,
+                                                "rate_pct": float("nan")})
+            n, ref = cell["n"], cell["refused"]
+            rate = cell["rate_pct"]
+            if n == 0:
+                rates.append(float("nan"))
                 lo_errs.append(0.0)
                 hi_errs.append(0.0)
             else:
-                rate = ref / n * 100
                 lo, hi = wilson_ci_pct(ref, n, z=1.96)
                 rates.append(rate)
                 lo_errs.append(max(0.0, rate - lo))
@@ -157,26 +218,20 @@ def plot_held_out_per_style_refusal(
             linewidth=1.5,
             markersize=5,
         )
-        sidecar["per_iter"][style] = {
-            str(bi): {"n": data[bi].get(style, {"n": 0})["n"],
-                      "refused": data[bi].get(style, {"n": 0, "refused": 0})["refused"],
-                      "rate_pct": r}
-            for bi, r in zip(blue_iters, rates)
-        }
 
     # Pooled values annotation
     pooled_rows = []
     grand_total_n = 0
     for style in STYLES:
-        total_n = sum(data[bi].get(style, {"n": 0})["n"] for bi in blue_iters)
-        total_ref = sum(data[bi].get(style, {"n": 0, "refused": 0})["refused"] for bi in blue_iters)
+        pooled = sidecar["pooled"].get(style)
+        if pooled is None:
+            # No-data style still contributes 0 to the grand total (matches the
+            # original sum, which counted n==0 styles as 0).
+            continue
+        total_n = pooled["n"]
         grand_total_n += total_n
-        if total_n > 0:
-            rate = total_ref / total_n * 100
-            lo, hi = wilson_ci_pct(total_ref, total_n, z=1.96)
-            pooled_rows.append(f"{STYLE_LABELS[style]}: {rate:.1f}% [{lo:.1f}, {hi:.1f}] (n={total_n:,})")
-            sidecar["pooled"][style] = {"n": total_n, "refused": total_ref,
-                                         "rate_pct": rate, "ci95_lo": lo, "ci95_hi": hi}
+        rate, lo, hi = pooled["rate_pct"], pooled["ci95_lo"], pooled["ci95_hi"]
+        pooled_rows.append(f"{STYLE_LABELS[style]}: {rate:.1f}% [{lo:.1f}, {hi:.1f}] (n={total_n:,})")
 
     ax.set_xlabel("Blue checkpoint iteration")
     ax.set_ylabel("Benign refusal rate (%)")

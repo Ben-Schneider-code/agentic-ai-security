@@ -128,12 +128,21 @@ def _load_diagonal(selfplay_dir: str) -> tuple[dict[int, dict], str] | None:
     return None
 
 
-def plot_honeypot_saturation(
+def compute_honeypot_saturation(
     results: list[tuple[str, str]],
-    out_path: str | Path,
-    show_ci: bool = True,
-) -> Path:
-    out_path = Path(out_path)
+    **kwargs,
+) -> dict:
+    """Pure data load + metric math for the honeypot saturation plot.
+
+    Loads the training-side compute-cost metrics (red EIS / yield / accessed
+    honeypots per iteration) and the eval-side diagonal coverage/yield, then
+    returns the JSON-serializable metrics dict the renderer is fully driven by.
+    Always returns a populated dict (training/eval lists are empty when their
+    sources are missing — mirrors the plot's per-panel no-data branches). No
+    matplotlib, no file writes.
+
+    Accepts and ignores unknown kwargs (e.g. render-only ``show_ci``).
+    """
     if len(results) > 1:
         print("[plot_honeypot_saturation] Multiple runs given; using first only.",
               file=sys.stderr)
@@ -174,6 +183,76 @@ def plot_honeypot_saturation(
             yld.append(m.get("yield_pct") if m.get("yield_pct") is not None
                        else float("nan"))
             yld_ci.append(m.get("yield_pct_ci"))
+
+    # stderr summary for paper use
+    print(f"[plot_honeypot_saturation] label={label} source={source}", file=sys.stderr)
+    if train_iters:
+        for i, e, a, y, x in zip(train_iters, red_eis, red_accessed, red_yield, red_exits):
+            print(f"  train iter={i} red_eis={e} accessed={a}/22 yield={y:.1f}% exit={x}",
+                  file=sys.stderr)
+    if eval_iters:
+        for i, c, y in zip(eval_iters, cov, yld):
+            print(f"  eval iter={i} coverage={c}% yield={y}%", file=sys.stderr)
+
+    # Persist the saturation numbers so the sidecar is reproducible (was empty:
+    # this plotter previously returned only the path and wrote metrics={}).
+    # ``label`` and ``selfplay_dir`` are carried so the renderer (suptitle) is
+    # fully driven by this dict.
+    metrics = {
+        "label": label,
+        "selfplay_dir": selfplay_dir,
+        "honeypot_universe": U,
+        "honeypot_type": arm,
+        "eval_source": source,
+        "training": [
+            {"iter": i, "red_eis": e, "red_accessed_hp": a,
+             # Rounded for the sidecar; *_raw is the full-precision value the
+             # left-panel yield line plots so the figure is byte-reproducible.
+             "red_yield_pct": round(y, 2), "red_yield_pct_raw": y, "red_exit": x}
+            for i, e, a, y, x in zip(train_iters, red_eis, red_accessed, red_yield, red_exits)
+        ],
+        "eval": [
+            {"iter": i, "coverage_pct": c, "coverage_pct_ci": cc_i,
+             "yield_pct": y, "yield_pct_ci": yc}
+            for i, c, cc_i, y, yc in zip(eval_iters, cov, cov_ci, yld, yld_ci)
+        ],
+    }
+    return metrics
+
+
+def plot_honeypot_saturation(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+    show_ci: bool = True,
+    precomputed: dict | None = None,
+) -> Path:
+    out_path = Path(out_path)
+
+    metrics = (
+        compute_honeypot_saturation(results) if precomputed is None else precomputed
+    )
+
+    # Reconstruct every plotted array straight from the metrics dict.
+    label = metrics["label"]
+    U = metrics["honeypot_universe"]
+    arm = metrics["honeypot_type"]
+    source = metrics["eval_source"]
+
+    train_rows = metrics["training"]
+    train_iters = [r["iter"] for r in train_rows]
+    red_eis = [r["red_eis"] for r in train_rows]
+    red_accessed = [r["red_accessed_hp"] for r in train_rows]
+    red_yield = [r["red_yield_pct_raw"] for r in train_rows]
+    red_exits = [r["red_exit"] for r in train_rows]
+
+    eval_rows = metrics["eval"]
+    eval_iters = [r["iter"] for r in eval_rows]
+    cov = [r["coverage_pct"] if r["coverage_pct"] is not None else float("nan")
+           for r in eval_rows]
+    cov_ci = [r["coverage_pct_ci"] for r in eval_rows]
+    yld = [r["yield_pct"] if r["yield_pct"] is not None else float("nan")
+           for r in eval_rows]
+    yld_ci = [r["yield_pct_ci"] for r in eval_rows]
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
 
@@ -241,33 +320,7 @@ def plot_honeypot_saturation(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path)
     plt.close(fig)
-    # stderr summary for paper use
-    print(f"[plot_honeypot_saturation] label={label} source={source}", file=sys.stderr)
-    if train_iters:
-        for i, e, a, y, x in zip(train_iters, red_eis, red_accessed, red_yield, red_exits):
-            print(f"  train iter={i} red_eis={e} accessed={a}/22 yield={y:.1f}% exit={x}",
-                  file=sys.stderr)
-    if eval_iters:
-        for i, c, y in zip(eval_iters, cov, yld):
-            print(f"  eval iter={i} coverage={c}% yield={y}%", file=sys.stderr)
 
-    # Persist the saturation numbers so the sidecar is reproducible (was empty:
-    # this plotter previously returned only the path and wrote metrics={}).
-    metrics = {
-        "honeypot_universe": U,
-        "honeypot_type": arm,
-        "eval_source": source,
-        "training": [
-            {"iter": i, "red_eis": e, "red_accessed_hp": a,
-             "red_yield_pct": round(y, 2), "red_exit": x}
-            for i, e, a, y, x in zip(train_iters, red_eis, red_accessed, red_yield, red_exits)
-        ],
-        "eval": [
-            {"iter": i, "coverage_pct": c, "coverage_pct_ci": cc,
-             "yield_pct": y, "yield_pct_ci": yc}
-            for i, c, cc, y, yc in zip(eval_iters, cov, cov_ci, yld, yld_ci)
-        ],
-    }
     return out_path, metrics
 
 

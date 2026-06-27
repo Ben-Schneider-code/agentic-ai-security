@@ -123,12 +123,20 @@ def _render(ax, iters, vals, lo, hi, metric_label: str, color: str,
     ax.legend(fontsize=9, frameon=True, loc="upper left")
 
 
-def plot_pvr_asymptote(
+def compute_pvr_asymptote(
     results: list[tuple[str, str]],
-    out_path: str | Path,
-    show_ci: bool = True,
-) -> tuple[Path, dict]:
-    out_path = Path(out_path)
+    **kwargs,
+) -> dict:
+    """Pure data load + metric math for the PVR asymptote plot.
+
+    Loads the diagonal cross-eval metrics, computes per-iteration PVR_conv /
+    PVR_turn arrays (with 99% Wilson CIs and raw k/n counts) and the plateau
+    tail statistics, then returns the JSON-serializable metrics dict that the
+    renderer is fully driven by. Returns ``{}`` when there is no diagonal data
+    (mirrors the plot's no-data branch). No matplotlib, no file writes.
+
+    Accepts and ignores unknown kwargs (e.g. render-only ``show_ci``).
+    """
     if len(results) > 1:
         print("[plot_pvr_asymptote] Multiple runs given; using first only.",
               file=sys.stderr)
@@ -138,13 +146,7 @@ def plot_pvr_asymptote(
     if loaded is None:
         print(f"[plot_pvr_asymptote] No diagonal metrics found in {selfplay_dir}.",
               file=sys.stderr)
-        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
-        ax.text(0.5, 0.5, "No diagonal cross-eval data",
-                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
-        fig.tight_layout()
-        fig.savefig(out_path)
-        plt.close(fig)
-        return out_path, {}
+        return {}
 
     diag, source = loaded
     iters = sorted(diag)
@@ -171,31 +173,6 @@ def plot_pvr_asymptote(
         print(f"{i:<6}{vc:<10.2f}{kn_c:<9}[{cc[0]:.1f}, {cc[1]:.1f}]   "
               f"{vt:<10.2f}{kn_t:<9}[{ct[0]:.1f}, {ct[1]:.1f}]",
               file=sys.stderr)
-
-    fig, (ax_c, ax_t) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
-    _render(ax_c, iters, pvr_conv,
-            [c[0] for c in pvr_conv_ci],
-            [c[1] for c in pvr_conv_ci],
-            r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)", RED_COL, show_ci=show_ci)
-    _render(ax_t, iters, pvr_turn,
-            [c[0] for c in pvr_turn_ci],
-            [c[1] for c in pvr_turn_ci],
-            r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)", BLUE_COL, show_ci=show_ci)
-
-    ax_c.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{conv}}$")
-    ax_t.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{turn}}$")
-    eq_phrase = (
-        "Bounded equilibrium on the diagonal" if len(iters) >= 3
-        else f"Diagonal PVR (N={len(iters)} iter — equilibrium not estimable)"
-    )
-    fig.suptitle(
-        f"{eq_phrase} — {label}  (source: {source}, 99% Wilson CI)",
-        fontsize=12,
-    )
-    fig.tight_layout(pad=0.5)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path)
-    plt.close(fig)
 
     pvr_conv_plat_mean, pvr_conv_plat_std, n_tail = _plateau(pvr_conv)
     pvr_turn_plat_mean, pvr_turn_plat_std, _ = _plateau(pvr_turn)
@@ -226,6 +203,62 @@ def plot_pvr_asymptote(
         "pvr_turn": _plateau_block(pvr_turn, pvr_turn_ci, pvr_turn_plat_mean,
                                    pvr_turn_plat_std, turn_counts),
     }
+    return metrics
+
+
+def plot_pvr_asymptote(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+    show_ci: bool = True,
+    precomputed: dict | None = None,
+) -> tuple[Path, dict]:
+    out_path = Path(out_path)
+
+    metrics = compute_pvr_asymptote(results) if precomputed is None else precomputed
+
+    if not metrics:
+        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
+        ax.text(0.5, 0.5, "No diagonal cross-eval data",
+                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return out_path, {}
+
+    # Reconstruct every plotted array straight from the metrics dict.
+    source = metrics["source_subdir"]
+    label = metrics["label"]
+    iters = metrics["iters"]
+    pvr_conv = metrics["pvr_conv"]["per_iter_pct"]
+    pvr_conv_ci = metrics["pvr_conv"]["per_iter_ci_99"]
+    pvr_turn = metrics["pvr_turn"]["per_iter_pct"]
+    pvr_turn_ci = metrics["pvr_turn"]["per_iter_ci_99"]
+
+    fig, (ax_c, ax_t) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
+    _render(ax_c, iters, pvr_conv,
+            [c[0] for c in pvr_conv_ci],
+            [c[1] for c in pvr_conv_ci],
+            r"$\mathrm{PVR}_{\mathrm{conv}}$ (%)", RED_COL, show_ci=show_ci)
+    _render(ax_t, iters, pvr_turn,
+            [c[0] for c in pvr_turn_ci],
+            [c[1] for c in pvr_turn_ci],
+            r"$\mathrm{PVR}_{\mathrm{turn}}$ (%)", BLUE_COL, show_ci=show_ci)
+
+    ax_c.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{conv}}$")
+    ax_t.set_title(r"Co-evolved $\mathrm{PVR}_{\mathrm{turn}}$")
+    eq_phrase = (
+        "Bounded equilibrium on the diagonal" if len(iters) >= 3
+        else f"Diagonal PVR (N={len(iters)} iter — equilibrium not estimable)"
+    )
+    fig.suptitle(
+        f"{eq_phrase} — {label}  (source: {source}, 99% Wilson CI)",
+        fontsize=12,
+    )
+    fig.tight_layout(pad=0.5)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path)
+    plt.close(fig)
+
     return out_path, metrics
 
 

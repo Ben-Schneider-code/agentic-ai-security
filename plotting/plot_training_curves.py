@@ -798,6 +798,73 @@ def _selfplay_tail_metrics(
     return out
 
 
+def _resolve_honeypot_universe(selfplay_dir: str) -> int:
+    """Resolve the honeypot universe from <selfplay_dir>/summary.json honeypot_type.
+
+    Reads ``honeypot_type`` and maps it through ``util._diag_common.HONEYPOT_UNIVERSE``
+    (col=34, row=30, rowcol=64). Falls back to ``DEFAULT_HONEYPOT_UNIVERSE`` if the
+    summary is missing/unreadable, lacks ``honeypot_type``, or the type is unmapped.
+    """
+    summary = Path(selfplay_dir) / "summary.json"
+    if not summary.is_file():
+        return DEFAULT_HONEYPOT_UNIVERSE
+    try:
+        data = json.loads(summary.read_text())
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_HONEYPOT_UNIVERSE
+    hp_type = data.get("honeypot_type")
+    try:
+        from util._diag_common import HONEYPOT_UNIVERSE
+    except Exception:
+        return DEFAULT_HONEYPOT_UNIVERSE
+    universe = HONEYPOT_UNIVERSE.get(hp_type)
+    return universe if universe is not None else DEFAULT_HONEYPOT_UNIVERSE
+
+
+def compute_selfplay_tail(results: list[tuple[str, str]], **kwargs) -> dict:
+    """Pure compute export of the self-play tail-window paper metrics.
+
+    Resolves the honeypot universe from ``<selfplay_dir>/summary.json`` and returns
+    the per-iteration tail-window metrics produced by ``_selfplay_tail_metrics`` (the
+    same numbers backing ``plot_selfplay_arms_race`` / ``plot_selfplay_dominance``).
+
+    This is the ONLY paper-metric export from this module; the nine reward-shaping
+    curves are explicitly NOT paper metrics.
+
+    Args:
+        results: ``[(label, selfplay_dir), ...]``; only the first run is used.
+        **kwargs: accepted and ignored (uniform compute-fn signature).
+
+    Returns:
+        ``{}`` when no run/metrics are available, else::
+
+            {
+              "honeypot_universe": int,
+              "per_iter": {
+                <int iter>: {pvr_conv, pvr_conv_k, pvr_conv_n,
+                             one_minus_pvr_turn, omp_k, omp_n,
+                             one_minus_pud, omu_k, omu_n,
+                             cfr, dominance},
+                ...
+              },
+            }
+
+        (per-iteration keys are exactly those ``_selfplay_tail_metrics`` populates;
+        rates are in percent and individual keys may be absent when a side is missing.)
+    """
+    if not results:
+        return {}
+    selfplay_dir = _single_run(results, "compute_selfplay_tail")
+    universe = _resolve_honeypot_universe(selfplay_dir)
+    per_iter = _selfplay_tail_metrics(selfplay_dir, universe)
+    if not per_iter:
+        return {}
+    return {
+        "honeypot_universe": int(universe),
+        "per_iter": {int(it): m for it, m in per_iter.items()},
+    }
+
+
 def _errbars(rate, k, n, show_ci):
     """Return a (2,1) yerr array for a percentage rate, or None."""
     if not show_ci or k is None or n is None or n == 0:

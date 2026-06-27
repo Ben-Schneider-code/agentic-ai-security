@@ -258,11 +258,19 @@ def _accumulate(pair_dir: Path) -> Counter:
     return counts
 
 
-def plot_honeypot_difficulty(
+def compute_honeypot_difficulty(
     results: list[tuple[str, str]],
-    out_path: str | Path,
-) -> Path:
-    out_path = Path(out_path)
+    **kwargs,
+) -> dict:
+    """Pure data-load + tier-classification for the honeypot-difficulty figure.
+
+    Walks the co-evolved diagonal pairings, accumulates per-honeypot hit counts
+    per iteration, classifies each honeypot into a tier, and returns the exact
+    dict serialized to ``honeypot_tiers.json``. Returns ``{}`` on no-data so the
+    plot can render its placeholder. Accepts/ignores unknown ``**kwargs``.
+    """
+    if not results:
+        return {}
     if len(results) > 1:
         print("[plot_honeypot_difficulty] Multiple runs given; using first only.",
               file=sys.stderr)
@@ -272,12 +280,7 @@ def plot_honeypot_difficulty(
     if found is None:
         print(f"[plot_honeypot_difficulty] No pairings dir under {selfplay_dir}",
               file=sys.stderr)
-        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
-        ax.text(0.5, 0.5, "No pairings data",
-                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
-        fig.savefig(out_path)
-        plt.close(fig)
-        return out_path
+        return {}
     pair_root, source = found
 
     # Iterate the co-evolved diagonal (red_i == blue_i).
@@ -300,12 +303,7 @@ def plot_honeypot_difficulty(
     if not per_iter:
         print(f"[plot_honeypot_difficulty] No diagonal pairings in {pair_root}",
               file=sys.stderr)
-        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
-        ax.text(0.5, 0.5, "No diagonal pairings",
-                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
-        fig.savefig(out_path)
-        plt.close(fig)
-        return out_path
+        return {}
 
     universe = _honeypot_universe_from_marft()
     # Include any honeypot seen even if absent from static universe
@@ -333,6 +331,104 @@ def plot_honeypot_difficulty(
     # Sort hardest (low totals) first
     hp_sorted = sorted(honeypots, key=lambda h: (totals[h], h))
     iters_sorted = sorted(per_iter)
+    tier_counts: Counter = Counter(tier_of.values())
+
+    # The returned dict is exactly the honeypot_tiers.json sidecar payload, with
+    # an extra "label"/"source_subdir" carried so the plot can fully render from
+    # it (per_iter / totals / tier_of / hp_sorted reconstructed from honeypots[]).
+    return {
+        "label": label,
+        "description": (
+            "Per-honeypot tier classification on the co-evolved diagonal. "
+            "Thresholds: never_breached = 0 hits; "
+            "harvestable/pii_dominant = hit in >50% of iterations AND total >= 10; "
+            "rare = everything else with >0 hits. "
+            "PII flag uses a name-substring heuristic (see _PII_MARKERS)."
+        ),
+        "source_subdir": source,
+        "selfplay_dir": selfplay_dir,
+        "n_iterations": n_iters_total,
+        "honeypot_universe_declared": _declared_universe(selfplay_dir, len(hp_sorted)),
+        "honeypot_universe_observed": len(hp_sorted),
+        "tier_counts": {t: tier_counts.get(t, 0) for t in _TIER_ORDER},
+        "honeypots": [
+            {
+                "id": h,
+                "tier": tier_of[h],
+                "total_hits": totals[h],
+                "iters_with_hit": iters_with_hit[h],
+                "is_pii": _is_pii(h),
+                "per_iter_hits": {
+                    str(it): per_iter[it].get(h, 0) for it in iters_sorted
+                },
+            }
+            for h in sorted(hp_sorted, key=lambda h: (-totals[h], h))
+        ],
+    }
+
+
+def plot_honeypot_difficulty(
+    results: list[tuple[str, str]],
+    out_path: str | Path,
+    precomputed: dict | None = None,
+) -> Path:
+    out_path = Path(out_path)
+
+    tiers = precomputed if precomputed is not None else compute_honeypot_difficulty(results)
+
+    if not tiers:
+        # No-data path: mirror the previous placeholder behavior. Distinguish the
+        # two original messages by whether a pairings dir exists.
+        label = results[0][0] if results else ""
+        selfplay_dir = results[0][1] if results else ""
+        if _find_pairings_dir(selfplay_dir) is None:
+            print(f"[plot_honeypot_difficulty] No pairings dir under {selfplay_dir}",
+                  file=sys.stderr)
+            msg = "No pairings data"
+        else:
+            print(f"[plot_honeypot_difficulty] No diagonal pairings under {selfplay_dir}",
+                  file=sys.stderr)
+            msg = "No diagonal pairings"
+        fig, ax = plt.subplots(figsize=FIG_SIZE_1x2)
+        ax.text(0.5, 0.5, msg,
+                ha="center", va="center", transform=ax.transAxes, color=GRAY_COL)
+        fig.savefig(out_path)
+        plt.close(fig)
+        return out_path
+
+    label = tiers.get("label", "")
+    source = tiers["source_subdir"]
+    selfplay_dir = tiers["selfplay_dir"]
+    n_iters_total = tiers["n_iterations"]
+
+    # Reconstruct per_iter / totals / tier_of / iters_with_hit / hp_sorted from
+    # the returned dict so rendering is fully precomputed-driven.
+    per_iter: dict[int, Counter] = defaultdict(Counter)
+    totals: Counter = Counter()
+    tier_of: dict[str, str] = {}
+    iters_with_hit: dict[str, int] = {}
+    iters_seen: set[int] = set()
+    for hp in tiers["honeypots"]:
+        h = hp["id"]
+        tier_of[h] = hp["tier"]
+        totals[h] = hp["total_hits"]
+        iters_with_hit[h] = hp["iters_with_hit"]
+        for it_str, cnt in hp["per_iter_hits"].items():
+            it = int(it_str)
+            iters_seen.add(it)
+            if cnt:
+                per_iter[it][h] = cnt
+    for it in iters_seen:
+        per_iter.setdefault(it, Counter())
+
+    honeypots = [hp["id"] for hp in tiers["honeypots"]]
+    tier_counts: Counter = Counter()
+    for t, c in tiers["tier_counts"].items():
+        tier_counts[t] = c
+
+    # Sort hardest (low totals) first
+    hp_sorted = sorted(honeypots, key=lambda h: (totals[h], h))
+    iters_sorted = sorted(per_iter)
 
     fig, (ax_l, ax_r) = plt.subplots(
         1, 2, figsize=(FIG_SIZE_1x2[0] + 2.0, FIG_SIZE_1x2[1] + 1.0),
@@ -354,7 +450,6 @@ def plot_honeypot_difficulty(
     ax_l.grid(True, axis="x", alpha=0.3)
 
     # Tier legend (only show tiers that are actually represented)
-    tier_counts: Counter = Counter(tier_of.values())
     tier_handles = [
         plt.Rectangle((0, 0), 1, 1, facecolor=_TIER_COLORS[t],
                       edgecolor="#333", linewidth=0.4)
@@ -427,36 +522,12 @@ def plot_honeypot_difficulty(
           f"{[h for h in hp_sorted if totals[h]==0]}",
           file=sys.stderr)
 
-    # Emit tier JSON sidecar for the paper narrative.
+    # Emit tier JSON sidecar for the paper narrative. The payload is exactly the
+    # precomputed dict, minus the carried "label" key (not part of the sidecar
+    # schema), preserving the original file contents byte-for-byte.
     tier_sidecar = out_path.parent / "honeypot_tiers.json"
-    tier_sidecar.write_text(json.dumps({
-        "description": (
-            "Per-honeypot tier classification on the co-evolved diagonal. "
-            "Thresholds: never_breached = 0 hits; "
-            "harvestable/pii_dominant = hit in >50% of iterations AND total >= 10; "
-            "rare = everything else with >0 hits. "
-            "PII flag uses a name-substring heuristic (see _PII_MARKERS)."
-        ),
-        "source_subdir": source,
-        "selfplay_dir": selfplay_dir,
-        "n_iterations": n_iters_total,
-        "honeypot_universe_declared": _declared_universe(selfplay_dir, len(hp_sorted)),
-        "honeypot_universe_observed": len(hp_sorted),
-        "tier_counts": {t: tier_counts.get(t, 0) for t in _TIER_ORDER},
-        "honeypots": [
-            {
-                "id": h,
-                "tier": tier_of[h],
-                "total_hits": totals[h],
-                "iters_with_hit": iters_with_hit[h],
-                "is_pii": _is_pii(h),
-                "per_iter_hits": {
-                    str(it): per_iter[it].get(h, 0) for it in iters_sorted
-                },
-            }
-            for h in sorted(hp_sorted, key=lambda h: (-totals[h], h))
-        ],
-    }, indent=2))
+    sidecar_payload = {k: v for k, v in tiers.items() if k != "label"}
+    tier_sidecar.write_text(json.dumps(sidecar_payload, indent=2))
     print(f"  tier sidecar → {tier_sidecar}", file=sys.stderr)
 
     return out_path

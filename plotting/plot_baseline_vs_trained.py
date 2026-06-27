@@ -111,17 +111,21 @@ def _scatter_reps(ax, x_positions: np.ndarray, points: list[list[float]], width:
         )
 
 
-def plot_baseline_vs_trained(
+def compute_baseline_vs_trained(
     results: list[tuple[str, str]],
-    out_dir: str = "figures/",
     cross_eval_subdir: str = "cross_eval",
     baseline_subdir: str = "cross_eval_baseline",
-    show_ci: bool = True,
-) -> Path:
-    out_path = Path(out_dir) / "baseline_vs_trained_defense.png"
-    sidecar_path = Path(out_dir) / "baseline_vs_trained_defense.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    **kwargs,
+) -> dict:
+    """Pure data-load + aggregation for the baseline-vs-trained figure.
 
+    Whole-results: consumes every replicate in ``results``. Returns the JSON
+    sidecar dict (trained/baseline ASR & TNR per replicate + grand means + gap
+    ratios), with an extra ``_render`` block carrying the rendering-only values
+    (iters, n_replicates, per-iter means, min/max yerr arrays, per-replicate
+    scatter points) so the plot is fully precomputed-driven. Returns ``{}`` on
+    no-data. Accepts / ignores unknown ``**kwargs``.
+    """
     # Collect per-replicate diagonal (trained) and baseline metrics.
     reps_trained: list[dict[int, tuple[float, float]]] = []
     reps_baseline: list[dict[int, tuple[float, float]]] = []
@@ -145,7 +149,7 @@ def plot_baseline_vs_trained(
             "[baseline_vs_trained] no replicate has both trained and baseline data",
             file=sys.stderr,
         )
-        return out_path
+        return {}
 
     iters = sorted({it for r in reps_trained + reps_baseline for it in r})
     n_rep = len(rep_labels)
@@ -155,72 +159,11 @@ def plot_baseline_vs_trained(
     t_tnr, t_tnr_err, t_tnr_pts = _aggregate(reps_trained, 1, iters)
     b_tnr, b_tnr_err, b_tnr_pts = _aggregate(reps_baseline, 1, iters)
 
-    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
-    width = 0.38
-
-    x = np.array(iters, dtype=float)
-    x_t = x - width / 2
-    x_b = x + width / 2
-
-    rep_note = f"mean of {n_rep} replicate{'s' if n_rep != 1 else ''}"
-
-    # Left: ASR comparison
-    ax_l.bar(
-        x_t, t_asr, width=width, color="#1976D2",
-        label=f"Trained (co-evolved diagonal, {rep_note})",
-        yerr=(t_asr_err if show_ci else None), ecolor="black", capsize=2,
-    )
-    ax_l.bar(
-        x_b, b_asr, width=width, color="#D32F2F",
-        label=f"Baseline (manual prompt, {rep_note})",
-        yerr=(b_asr_err if show_ci else None), ecolor="black", capsize=2,
-    )
-    _scatter_reps(ax_l, x_t, t_asr_pts, width)
-    _scatter_reps(ax_l, x_b, b_asr_pts, width)
     t_mean = float(np.nanmean(t_asr))
     b_mean = float(np.nanmean(b_asr))
-    ax_l.axhline(t_mean, color="#1976D2", linestyle="--", linewidth=1, alpha=0.4)
-    ax_l.axhline(b_mean, color="#D32F2F", linestyle="--", linewidth=1, alpha=0.4)
-    ax_l.set_xlabel("Red training iteration")
-    ax_l.set_ylabel("Attack Success Rate (%)")
-    ax_l.set_title(f"ASR: trained {t_mean:.1f}% vs baseline {b_mean:.1f}% ({b_mean / t_mean:.1f}× gap)")
-    ax_l.set_xticks(iters)
-    ax_l.set_ylim(0, float(np.nanmax(np.array(b_asr) + b_asr_err[1])) * 1.15)
-    ax_l.legend(fontsize=8, loc="lower right")
-
-    # Right: TNR comparison
-    ax_r.bar(
-        x_t, t_tnr, width=width, color="#1976D2", label="Trained",
-        yerr=(t_tnr_err if show_ci else None), ecolor="black", capsize=2,
-    )
-    ax_r.bar(
-        x_b, b_tnr, width=width, color="#D32F2F", label="Baseline",
-        yerr=(b_tnr_err if show_ci else None), ecolor="black", capsize=2,
-    )
-    _scatter_reps(ax_r, x_t, t_tnr_pts, width)
-    _scatter_reps(ax_r, x_b, b_tnr_pts, width)
     t_tnr_mean = float(np.nanmean(t_tnr))
     b_tnr_mean = float(np.nanmean(b_tnr))
-    ax_r.axhline(t_tnr_mean, color="#1976D2", linestyle="--", linewidth=1, alpha=0.4)
-    ax_r.axhline(b_tnr_mean, color="#D32F2F", linestyle="--", linewidth=1, alpha=0.4)
-    ax_r.set_xlabel("Red training iteration")
-    ax_r.set_ylabel("True Negative Rate (%)")
     ratio = (t_tnr_mean / b_tnr_mean) if b_tnr_mean > 0 else float("inf")
-    ax_r.set_title(f"TNR: trained {t_tnr_mean:.1f}% vs baseline {b_tnr_mean:.1f}% ({ratio:.1f}× gap)")
-    ax_r.set_xticks(iters)
-    ax_r.legend(fontsize=8, loc="upper right")
-
-    asr_ratio = (b_mean / t_mean) if t_mean > 0 else float("inf")
-    fig.suptitle(
-        f"Self-play training reduces ASR {asr_ratio:.1f}× and lifts TNR {ratio:.1f}× "
-        f"over manual-prompt baseline  ({n_rep} replicate{'s' if n_rep != 1 else ''}; "
-        "error bars = min–max spread, dots = per-replicate values)",
-        y=1.02,
-        fontsize=9,
-    )
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
     def _per_rep_block(per_rep, idx):
         return [
@@ -253,9 +196,126 @@ def plot_baseline_vs_trained(
         },
         "asr_gap_ratio": b_mean / t_mean if t_mean > 0 else None,
         "tnr_gap_ratio": ratio,
+        # Rendering-only payload (unrounded means/errors/points). Stripped before
+        # the sidecar is written so honeypot_tiers-style JSON contents are
+        # preserved exactly.
+        "_render": {
+            "iters": iters,
+            "n_rep": n_rep,
+            "t_asr": t_asr, "t_asr_err": t_asr_err.tolist(), "t_asr_pts": t_asr_pts,
+            "b_asr": b_asr, "b_asr_err": b_asr_err.tolist(), "b_asr_pts": b_asr_pts,
+            "t_tnr": t_tnr, "t_tnr_err": t_tnr_err.tolist(), "t_tnr_pts": t_tnr_pts,
+            "b_tnr": b_tnr, "b_tnr_err": b_tnr_err.tolist(), "b_tnr_pts": b_tnr_pts,
+            "t_mean": t_mean, "b_mean": b_mean,
+            "t_tnr_mean": t_tnr_mean, "b_tnr_mean": b_tnr_mean,
+            "ratio": ratio,
+        },
     }
+    return sidecar
+
+
+def plot_baseline_vs_trained(
+    results: list[tuple[str, str]],
+    out_dir: str = "figures/",
+    cross_eval_subdir: str = "cross_eval",
+    baseline_subdir: str = "cross_eval_baseline",
+    show_ci: bool = True,
+    precomputed: dict | None = None,
+) -> Path:
+    out_path = Path(out_dir) / "baseline_vs_trained_defense.png"
+    sidecar_path = Path(out_dir) / "baseline_vs_trained_defense.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sidecar = (
+        precomputed if precomputed is not None
+        else compute_baseline_vs_trained(results, cross_eval_subdir, baseline_subdir)
+    )
+    if not sidecar:
+        # compute_* already emitted the no-data diagnostic; nothing to render.
+        return out_path
+
+    rd = sidecar["_render"]
+    iters = rd["iters"]
+    n_rep = rd["n_rep"]
+    rep_labels = sidecar["replicate_labels"]
+    t_asr, t_asr_err, t_asr_pts = rd["t_asr"], np.array(rd["t_asr_err"]), rd["t_asr_pts"]
+    b_asr, b_asr_err, b_asr_pts = rd["b_asr"], np.array(rd["b_asr_err"]), rd["b_asr_pts"]
+    t_tnr, t_tnr_err, t_tnr_pts = rd["t_tnr"], np.array(rd["t_tnr_err"]), rd["t_tnr_pts"]
+    b_tnr, b_tnr_err, b_tnr_pts = rd["b_tnr"], np.array(rd["b_tnr_err"]), rd["b_tnr_pts"]
+
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=FIG_SIZE_1x2)
+    width = 0.38
+
+    x = np.array(iters, dtype=float)
+    x_t = x - width / 2
+    x_b = x + width / 2
+
+    rep_note = f"mean of {n_rep} replicate{'s' if n_rep != 1 else ''}"
+
+    # Left: ASR comparison
+    ax_l.bar(
+        x_t, t_asr, width=width, color="#1976D2",
+        label=f"Trained (co-evolved diagonal, {rep_note})",
+        yerr=(t_asr_err if show_ci else None), ecolor="black", capsize=2,
+    )
+    ax_l.bar(
+        x_b, b_asr, width=width, color="#D32F2F",
+        label=f"Baseline (manual prompt, {rep_note})",
+        yerr=(b_asr_err if show_ci else None), ecolor="black", capsize=2,
+    )
+    _scatter_reps(ax_l, x_t, t_asr_pts, width)
+    _scatter_reps(ax_l, x_b, b_asr_pts, width)
+    t_mean = rd["t_mean"]
+    b_mean = rd["b_mean"]
+    ax_l.axhline(t_mean, color="#1976D2", linestyle="--", linewidth=1, alpha=0.4)
+    ax_l.axhline(b_mean, color="#D32F2F", linestyle="--", linewidth=1, alpha=0.4)
+    ax_l.set_xlabel("Red training iteration")
+    ax_l.set_ylabel("Attack Success Rate (%)")
+    ax_l.set_title(f"ASR: trained {t_mean:.1f}% vs baseline {b_mean:.1f}% ({b_mean / t_mean:.1f}× gap)")
+    ax_l.set_xticks(iters)
+    ax_l.set_ylim(0, float(np.nanmax(np.array(b_asr) + b_asr_err[1])) * 1.15)
+    ax_l.legend(fontsize=8, loc="lower right")
+
+    # Right: TNR comparison
+    ax_r.bar(
+        x_t, t_tnr, width=width, color="#1976D2", label="Trained",
+        yerr=(t_tnr_err if show_ci else None), ecolor="black", capsize=2,
+    )
+    ax_r.bar(
+        x_b, b_tnr, width=width, color="#D32F2F", label="Baseline",
+        yerr=(b_tnr_err if show_ci else None), ecolor="black", capsize=2,
+    )
+    _scatter_reps(ax_r, x_t, t_tnr_pts, width)
+    _scatter_reps(ax_r, x_b, b_tnr_pts, width)
+    t_tnr_mean = rd["t_tnr_mean"]
+    b_tnr_mean = rd["b_tnr_mean"]
+    ax_r.axhline(t_tnr_mean, color="#1976D2", linestyle="--", linewidth=1, alpha=0.4)
+    ax_r.axhline(b_tnr_mean, color="#D32F2F", linestyle="--", linewidth=1, alpha=0.4)
+    ax_r.set_xlabel("Red training iteration")
+    ax_r.set_ylabel("True Negative Rate (%)")
+    ratio = rd["ratio"]
+    ax_r.set_title(f"TNR: trained {t_tnr_mean:.1f}% vs baseline {b_tnr_mean:.1f}% ({ratio:.1f}× gap)")
+    ax_r.set_xticks(iters)
+    ax_r.legend(fontsize=8, loc="upper right")
+
+    asr_ratio = (b_mean / t_mean) if t_mean > 0 else float("inf")
+    fig.suptitle(
+        f"Self-play training reduces ASR {asr_ratio:.1f}× and lifts TNR {ratio:.1f}× "
+        f"over manual-prompt baseline  ({n_rep} replicate{'s' if n_rep != 1 else ''}; "
+        "error bars = min–max spread, dots = per-replicate values)",
+        y=1.02,
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # Write the sidecar from the precomputed dict, minus the rendering-only
+    # "_render" block (not part of the original sidecar schema), preserving the
+    # original JSON contents exactly.
+    sidecar_out = {k: v for k, v in sidecar.items() if k != "_render"}
     with open(sidecar_path, "w") as f:
-        json.dump(sidecar, f, indent=2)
+        json.dump(sidecar_out, f, indent=2)
 
     print(f"[baseline_vs_trained] saved {out_path}")
     return out_path

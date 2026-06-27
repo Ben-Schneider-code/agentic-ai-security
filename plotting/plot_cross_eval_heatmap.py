@@ -159,6 +159,101 @@ def build_pvr_matrix(
     return mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters
 
 
+def _load_heatmap_panel(
+    selfplay_dir: str, subdir: str, metric: str
+) -> tuple | None:
+    """
+    Load + build one heatmap panel's matrices for (subdir, metric).
+
+    Shared by plot_heatmap's per-panel loop and compute_heatmaps so the metric
+    math (build_pvr_matrix) and ep/cell derivation are computed in exactly one
+    place. Returns (mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters, ep_note,
+    ep_per_cell) or None when the subdir has no data.
+    """
+    cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
+    if cross_eval is None:
+        return None
+    mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters = build_pvr_matrix(
+        cross_eval, metric=metric
+    )
+    # Derive actual ep/cell (median n_attack_episodes across pairings).
+    pairings_data = cross_eval.get("pairings", {})
+    ep_counts = [
+        v.get("n_attack_episodes", 0)
+        for v in pairings_data.values()
+        if v.get("n_attack_episodes")
+    ]
+    if ep_counts:
+        ep_per_cell = int(sorted(ep_counts)[len(ep_counts) // 2])
+        ep_note = f"{ep_per_cell} ep/cell"
+    else:
+        ep_per_cell = None
+        ep_note = ""
+    return mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters, ep_note, ep_per_cell
+
+
+def _mat_to_lists(mat: np.ndarray) -> list[list]:
+    """Convert a float matrix to nested lists with NaN -> None (JSON-safe)."""
+    out: list[list] = []
+    for row in mat:
+        out.append([None if np.isnan(v) else float(v) for v in row])
+    return out
+
+
+def compute_heatmaps(
+    results: list[tuple[str, str]],
+    jobs: list[tuple[str, str, str]] = HEATMAP_JOBS,
+    **kwargs,
+) -> dict:
+    """
+    Pure compute of every cross-eval heatmap matrix (no matplotlib, no writes).
+
+    For each (subdir, metric, _fname) in `jobs` whose data exists in the first
+    result entry that has it, build the N×N matrix via build_pvr_matrix (the same
+    metric math the plot uses). Returns, keyed by "<subdir>:<metric>":
+
+        {
+          "<subdir>:<metric>": {
+            "red_iters": [...], "blue_iters": [...],
+            "values":  [[...]],          # N_red × N_blue, NaN -> None
+            "ci_lo":   [[...]] | None,   # None when all-NaN
+            "ci_hi":   [[...]] | None,
+            "ep_per_cell": int | None,
+          }, ...
+        }
+
+    Jobs whose subdir has no data are omitted. Returns {} when nothing has data.
+    """
+    out: dict = {}
+    seen: set[str] = set()
+    for subdir, metric, _fname in jobs:
+        key = f"{subdir}:{metric}"
+        if key in seen:
+            continue
+        seen.add(key)
+        panel = None
+        for _label, selfplay_dir in results:
+            panel = _load_heatmap_panel(selfplay_dir, subdir, metric)
+            if panel is not None:
+                break
+        if panel is None:
+            continue
+        mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters, _ep_note, ep_per_cell = panel
+        ci_lo_all_nan = bool(np.all(np.isnan(ci_lo_mat)))
+        ci_hi_all_nan = bool(np.all(np.isnan(ci_hi_mat)))
+        out[key] = {
+            "red_iters": list(red_iters),
+            "blue_iters": list(blue_iters),
+            "values": _mat_to_lists(mat),
+            "ci_lo": None if ci_lo_all_nan else _mat_to_lists(ci_lo_mat),
+            "ci_hi": None if ci_hi_all_nan else _mat_to_lists(ci_hi_mat),
+            "ep_per_cell": ep_per_cell,
+        }
+    if not out:
+        return {}
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Shared renderer
 # ---------------------------------------------------------------------------
@@ -388,12 +483,36 @@ def _shared_clim(
     return max(0.0, vmin - 2.0), min(100.0, vmax + 2.0)
 
 
+def _panel_from_precomputed(entry: dict) -> tuple:
+    """Rebuild (mat, ci_lo, ci_hi, red_iters, blue_iters, ep_note, ep_per_cell)
+    from a compute_heatmaps schema entry (None -> NaN matrices)."""
+    red_iters = list(entry["red_iters"])
+    blue_iters = list(entry["blue_iters"])
+    shape = (len(red_iters), len(blue_iters))
+
+    def _to_mat(lists) -> np.ndarray:
+        if lists is None:
+            return np.full(shape, np.nan)
+        return np.array(
+            [[np.nan if v is None else v for v in row] for row in lists],
+            dtype=float,
+        )
+
+    mat = _to_mat(entry["values"])
+    ci_lo_mat = _to_mat(entry.get("ci_lo"))
+    ci_hi_mat = _to_mat(entry.get("ci_hi"))
+    ep_per_cell = entry.get("ep_per_cell")
+    ep_note = f"{ep_per_cell} ep/cell" if ep_per_cell else ""
+    return mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters, ep_note, ep_per_cell
+
+
 def plot_heatmap(
     results: list[tuple[str, str]],
     out_path: str | Path,
     *,
     subdir: str = "cross_eval",
     metric: str = "asr",
+    precomputed: dict | None = None,
 ) -> Path:
     """
     Generic cross-eval heatmap for any subdir × metric combination.
@@ -402,35 +521,37 @@ def plot_heatmap(
     metric: "asr" (PVR_conv) or "pvr_turn" (PVR_turn).
     Every result entry is rendered as its own side-by-side panel, sharing a
     common color scale so replicates are directly comparable.
+
+    precomputed: optional dict from compute_heatmaps(results); the entry under
+        "<subdir>:<metric>" drives the first available panel. Falls back to
+        loading per result when a panel is not present in the dict.
     """
     out_path = Path(out_path)
     mm = _METRIC_META[metric]
     sd_desc = _SUBDIR_META.get(subdir, subdir)
 
+    pre_entry = (precomputed or {}).get(f"{subdir}:{metric}")
+    pre_used = False  # the precomputed matrix is consumed by the first panel only
+
     # Load each replicate up front so the shared color scale can be computed.
     panels: list[dict] = []
     for label, selfplay_dir in results:
-        cross_eval = load_pairing_metrics_with_decomposed(selfplay_dir, subdir=subdir)
-        if cross_eval is None:
+        panel = None
+        if pre_entry is not None and not pre_used:
+            panel = _panel_from_precomputed(pre_entry)
+            pre_used = True
+        else:
+            loaded = _load_heatmap_panel(selfplay_dir, subdir, metric)
+            if loaded is not None:
+                panel = loaded
+        if panel is None:
             print(
                 f"[plot_heatmap] No data for subdir={subdir!r} in {selfplay_dir}.",
                 file=sys.stderr,
             )
             panels.append({"label": label, "data": None})
             continue
-        mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters = build_pvr_matrix(
-            cross_eval, metric=metric
-        )
-        # Derive actual ep/cell (median n_attack_episodes across pairings).
-        pairings_data = cross_eval.get("pairings", {})
-        ep_counts = [
-            v.get("n_attack_episodes", 0)
-            for v in pairings_data.values()
-            if v.get("n_attack_episodes")
-        ]
-        ep_note = (
-            f"{int(sorted(ep_counts)[len(ep_counts) // 2])} ep/cell" if ep_counts else ""
-        )
+        mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters, ep_note, _epc = panel
         panels.append({
             "label": label,
             "data": (mat, ci_lo_mat, ci_hi_mat, red_iters, blue_iters),

@@ -148,9 +148,99 @@ def _tfidf_similarity_matrix(per_iter_texts: dict[int, list[str]]) -> tuple[list
     return iters, sim
 
 
+def compute_attack_evolution(
+    results: list[tuple[str, str]],
+    **kwargs,
+) -> dict:
+    """Pure data loading + math for attack-evolution figures.
+
+    Returns:
+    {iters, tfidf_similarity_matrix (2D list or None if sklearn unavailable),
+     n_successful_per_iter, n_total_attacks_per_iter,
+     sql_pattern_pct_per_iter, top_ngrams_per_iter}
+    Returns {} when fewer than 2 iters have successful attacks.
+
+    sklearn (TfidfVectorizer) is OPTIONAL: if its import fails, the
+    tfidf_similarity_matrix is set to None and all regex/Counter-based
+    fields are still populated (compute never crashes on a missing dep).
+    """
+    label, selfplay_dir = results[0]
+    base = Path(selfplay_dir)
+
+    per_iter_inputs: dict[int, list[str]] = {}
+    per_iter_responses_succ: dict[int, list[str]] = {}
+    per_iter_responses_all: dict[int, list[str]] = {}
+    for iter_dir in sorted(base.glob("iter_*")):
+        try:
+            iter_num = int(iter_dir.name.split("_")[1])
+        except (IndexError, ValueError):
+            continue
+        if iter_num < 1:
+            continue
+        jsonl = _find_red_jsonl(iter_dir)
+        if jsonl is None:
+            continue
+        inputs, responses = _load_iter_attacks(jsonl)
+        if not inputs:
+            continue
+        per_iter_inputs[iter_num] = inputs
+        per_iter_responses_succ[iter_num] = responses
+        per_iter_responses_all[iter_num] = _all_attack_responses(jsonl)
+
+    if len(per_iter_inputs) < 2:
+        return {}
+
+    iters = sorted(per_iter_inputs.keys())
+
+    # TF-IDF similarity matrix — sklearn is an OPTIONAL dependency. If it is
+    # not importable, degrade gracefully to None rather than crashing.
+    try:
+        _, sim = _tfidf_similarity_matrix(per_iter_inputs)
+        tfidf_matrix = sim.tolist()
+    except ImportError:
+        tfidf_matrix = None
+
+    # SQL pattern histogram per iter (covers all attack turns)
+    pattern_iters = sorted(per_iter_responses_all.keys())
+    pattern_classes = ["direct_select", "join", "subquery", "union", "catalog", "none"]
+    pattern_matrix = np.zeros((len(pattern_classes), len(pattern_iters)), dtype=float)
+    for j, it in enumerate(pattern_iters):
+        responses = per_iter_responses_all[it]
+        if not responses:
+            continue
+        cls_counts = Counter(_classify_sql(r) for r in responses)
+        for i, cls in enumerate(pattern_classes):
+            pattern_matrix[i, j] = cls_counts.get(cls, 0) / len(responses) * 100
+
+    return {
+        "description": DESCRIPTION,
+        "iters": iters,
+        "tfidf_similarity_matrix": tfidf_matrix,
+        "n_successful_per_iter": {str(it): len(per_iter_inputs[it]) for it in iters},
+        "n_total_attacks_per_iter": {
+            str(it): len(per_iter_responses_all.get(it, [])) for it in iters
+        },
+        "sql_pattern_pct_per_iter": {
+            str(it): {
+                cls: round(float(pattern_matrix[i, j]), 2)
+                for i, cls in enumerate(pattern_classes)
+            }
+            for j, it in enumerate(pattern_iters)
+        },
+        "top_ngrams_per_iter": {
+            str(it): [
+                {"trigram": ng, "count": c}
+                for ng, c in _top_ngrams(per_iter_inputs[it], n=3, top_k=5)
+            ]
+            for it in iters
+        },
+    }
+
+
 def plot_attack_evolution(
     results: list[tuple[str, str]],
     out_dir: str = "figures/",
+    precomputed: dict | None = None,
 ) -> tuple[Path, Path]:
     out_dir_p = Path(out_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
@@ -185,10 +275,21 @@ def plot_attack_evolution(
         print(f"[attack_evolution] insufficient data (only {len(per_iter_inputs)} iters)", file=sys.stderr)
         return template_path, pattern_path
 
+    if precomputed is None:
+        precomputed = compute_attack_evolution(results)
+
     # ------------------------------------------------------------------
     # FIGURE 1: TF-IDF similarity + top n-grams
     # ------------------------------------------------------------------
-    iters, sim = _tfidf_similarity_matrix(per_iter_inputs)
+    iters = precomputed["iters"]
+    tfidf_matrix = precomputed["tfidf_similarity_matrix"]
+    if tfidf_matrix is None:
+        # sklearn unavailable in compute. The TF-IDF panel cannot be drawn
+        # without it; reproduce the original behaviour (which imported sklearn
+        # here) so the same ImportError surfaces in this environment.
+        _, sim = _tfidf_similarity_matrix(per_iter_inputs)
+    else:
+        sim = np.array(tfidf_matrix)
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12.0, 5.0))
 
     im = ax_l.imshow(sim, cmap="viridis", vmin=0.65, vmax=1.0, aspect="equal")
@@ -273,26 +374,8 @@ def plot_attack_evolution(
     fig2.savefig(pattern_path, dpi=150, bbox_inches="tight")
     plt.close(fig2)
 
-    sidecar = {
-        "description": DESCRIPTION,
-        "iters": iters,
-        "tfidf_similarity_matrix": sim.tolist(),
-        "n_successful_per_iter": {str(it): len(per_iter_inputs[it]) for it in iters},
-        "n_total_attacks_per_iter": {str(it): len(per_iter_responses_all.get(it, [])) for it in iters},
-        "sql_pattern_pct_per_iter": {
-            str(it): {
-                cls: round(float(pattern_matrix[i, j]), 2)
-                for i, cls in enumerate(pattern_classes)
-            }
-            for j, it in enumerate(pattern_iters)
-        },
-        "top_ngrams_per_iter": {
-            str(it): [{"trigram": ng, "count": c} for ng, c in _top_ngrams(per_iter_inputs[it], n=3, top_k=5)]
-            for it in iters
-        },
-    }
     with open(sidecar_path, "w") as f:
-        json.dump(sidecar, f, indent=2)
+        json.dump(precomputed, f, indent=2)
 
     print(f"[attack_evolution] saved {template_path} and {pattern_path}")
     return template_path, pattern_path

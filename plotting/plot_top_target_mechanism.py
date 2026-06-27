@@ -134,12 +134,92 @@ def collect_breaches(
     return bag
 
 
+# Module-level pattern class order, shared by compute + plot.
+PATTERN_CLASSES = ["direct_select", "join", "subquery", "union", "catalog", "none"]
+
+
+def _where_breakdown(rows: list[dict]) -> dict[str, float]:
+    # Where-clause sub-classification for each target (B.2.1 / A.2.3 — replaces
+    # inferred customerid-filter mechanism phrasing with measured percentages)
+    if not rows:
+        return {"with_customerid_29485": 0.0, "no_where_clause": 0.0, "other_where": 0.0, "n": 0}
+    n_with_cust = 0
+    n_no_where = 0
+    n_other = 0
+    for r in rows:
+        sql = (r.get("extracted_sql") or "").lower()
+        has_where = bool(re.search(r"\bwhere\b", sql))
+        has_cust_29485 = bool(re.search(r"customerid\s*=\s*29485", sql))
+        if has_cust_29485:
+            n_with_cust += 1
+        elif not has_where:
+            n_no_where += 1
+        else:
+            n_other += 1
+    n = len(rows)
+    return {
+        "with_customerid_29485": round(n_with_cust / n * 100, 2),
+        "no_where_clause": round(n_no_where / n * 100, 2),
+        "other_where": round(n_other / n * 100, 2),
+        "n": n,
+    }
+
+
+def compute_top_target_mechanism(
+    results: list[tuple[str, str]],
+    targets: list[str] | None = None,
+    cross_eval_subdir: str = "cross_eval",
+    **kwargs,
+) -> dict:
+    """Pure data loading + math for the top-target mechanism figure.
+
+    Returns:
+    {targets, n_breaches_per_target, sql_pattern_pct_per_target,
+     where_clause_breakdown_pct}
+
+    Exemplars (large free-text quotes) are intentionally OMITTED from this
+    returned dict for token efficiency; the plot path keeps the full exemplar
+    list in the sidecar JSON. Returns {} when no breaches are found on any
+    target.
+    """
+    if targets is None:
+        targets = DEFAULT_TARGETS
+
+    label, selfplay_dir = results[0]
+    bag = collect_breaches(selfplay_dir, targets, cross_eval_subdir)
+
+    if not any(bag[t] for t in targets):
+        return {}
+
+    pattern_pct = np.zeros((len(PATTERN_CLASSES), len(targets)), dtype=float)
+    for j, t in enumerate(targets):
+        rows = bag[t]
+        n = len(rows)
+        if n == 0:
+            continue
+        cls_counts = Counter(r["sql_pattern"] for r in rows)
+        for i, cls in enumerate(PATTERN_CLASSES):
+            pattern_pct[i, j] = cls_counts.get(cls, 0) / n * 100
+
+    return {
+        "description": DESCRIPTION,
+        "targets": targets,
+        "n_breaches_per_target": {t: len(bag[t]) for t in targets},
+        "sql_pattern_pct_per_target": {
+            t: {cls: round(float(pattern_pct[i, j]), 2) for i, cls in enumerate(PATTERN_CLASSES)}
+            for j, t in enumerate(targets)
+        },
+        "where_clause_breakdown_pct": {t: _where_breakdown(bag[t]) for t in targets},
+    }
+
+
 def plot_top_target_mechanism(
     results: list[tuple[str, str]],
     targets: list[str] | None = None,
     out_dir: str = "figures/",
     cross_eval_subdir: str = "cross_eval",
     n_exemplars: int = 5,
+    precomputed: dict | None = None,
 ) -> Path:
     if targets is None:
         targets = DEFAULT_TARGETS
@@ -148,10 +228,16 @@ def plot_top_target_mechanism(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     label, selfplay_dir = results[0]
+    # The exemplar quotes are not carried in the precomputed dict (token
+    # efficiency), so the raw breach bag is always loaded here for sidecar
+    # exemplar selection.
     bag = collect_breaches(selfplay_dir, targets, cross_eval_subdir)
 
-    # Build pattern matrix
-    pattern_classes = ["direct_select", "join", "subquery", "union", "catalog", "none"]
+    if precomputed is None:
+        precomputed = compute_top_target_mechanism(results, targets, cross_eval_subdir)
+
+    # Build pattern matrix (rendering values; mirrors precomputed)
+    pattern_classes = PATTERN_CLASSES
     pattern_pct = np.zeros((len(pattern_classes), len(targets)), dtype=float)
     n_per_target: list[int] = []
     for j, t in enumerate(targets):
@@ -222,43 +308,25 @@ def plot_top_target_mechanism(
                 selected.append(r)
         return selected[:n]
 
-    # Where-clause sub-classification for each target (B.2.1 / A.2.3 — replaces
-    # inferred customerid-filter mechanism phrasing with measured percentages)
-    def _where_breakdown(rows: list[dict]) -> dict[str, float]:
-        if not rows:
-            return {"with_customerid_29485": 0.0, "no_where_clause": 0.0, "other_where": 0.0, "n": 0}
-        n_with_cust = 0
-        n_no_where = 0
-        n_other = 0
-        for r in rows:
-            sql = (r.get("extracted_sql") or "").lower()
-            has_where = bool(re.search(r"\bwhere\b", sql))
-            has_cust_29485 = bool(re.search(r"customerid\s*=\s*29485", sql))
-            if has_cust_29485:
-                n_with_cust += 1
-            elif not has_where:
-                n_no_where += 1
-            else:
-                n_other += 1
-        n = len(rows)
-        return {
-            "with_customerid_29485": round(n_with_cust / n * 100, 2),
-            "no_where_clause": round(n_no_where / n * 100, 2),
-            "other_where": round(n_other / n * 100, 2),
-            "n": n,
+    # Sidecar = precomputed dict (description, targets, n_breaches_per_target,
+    # sql_pattern_pct_per_target, where_clause_breakdown_pct) plus the full
+    # free-text exemplar quotes, which are kept in the plot path only. When
+    # compute returned {} (no breaches on any target), the sidecar is still
+    # written with the full zero-valued schema, preserving original behaviour.
+    if precomputed:
+        sidecar = dict(precomputed)
+    else:
+        sidecar = {
+            "description": DESCRIPTION,
+            "targets": targets,
+            "n_breaches_per_target": {t: len(bag[t]) for t in targets},
+            "sql_pattern_pct_per_target": {
+                t: {cls: round(float(pattern_pct[i, j]), 2) for i, cls in enumerate(pattern_classes)}
+                for j, t in enumerate(targets)
+            },
+            "where_clause_breakdown_pct": {t: _where_breakdown(bag[t]) for t in targets},
         }
-
-    sidecar = {
-        "description": DESCRIPTION,
-        "targets": targets,
-        "n_breaches_per_target": {t: len(bag[t]) for t in targets},
-        "sql_pattern_pct_per_target": {
-            t: {cls: round(float(pattern_pct[i, j]), 2) for i, cls in enumerate(pattern_classes)}
-            for j, t in enumerate(targets)
-        },
-        "where_clause_breakdown_pct": {t: _where_breakdown(bag[t]) for t in targets},
-        "exemplars": {t: _select_exemplars(bag[t], n_exemplars) for t in targets},
-    }
+    sidecar["exemplars"] = {t: _select_exemplars(bag[t], n_exemplars) for t in targets}
     with open(sidecar_path, "w") as f:
         json.dump(sidecar, f, indent=2)
 

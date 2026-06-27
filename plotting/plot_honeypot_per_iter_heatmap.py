@@ -68,19 +68,23 @@ def _load_tiers(selfplay_dir: str, out_dir: str | Path | None = None) -> dict | 
     return None
 
 
-def plot_honeypot_per_iter_heatmap(
+def compute_honeypot_per_iter_heatmap(
     results: list[tuple[str, str]],
-    out_dir: str = "figures/",
-) -> Path:
-    out_path = Path(out_dir) / "honeypot_per_iter_heatmap.png"
-    sidecar_path = Path(out_dir) / "honeypot_per_iter_heatmap.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir: str | Path | None = "figures/",
+    **kwargs,
+) -> dict:
+    """Pure data loading + sorting/aggregation for the per-iter heatmap.
 
+    Returns the JSON-serializable dict the plot/sidecar builds:
+    {n_iterations, n_honeypots, total_hits, top2_share_pct,
+     honeypots: [{id, tier, total_hits, iters_with_hit, per_iter_hits}]}
+    Honeypots are returned already sorted (tier order, then total_hits desc).
+    Returns {} when honeypot_tiers.json cannot be found.
+    """
     label, selfplay_dir = results[0]
     data = _load_tiers(selfplay_dir, out_dir=out_dir)
     if data is None:
-        print("[honeypot_per_iter_heatmap] honeypot_tiers.json not found", file=sys.stderr)
-        return out_path
+        return {}
 
     honeypots = data["honeypots"]
     n_iters = data.get("n_iterations", 8)
@@ -92,6 +96,55 @@ def plot_honeypot_per_iter_heatmap(
         return (tier_rank, -h["total_hits"])
 
     honeypots_sorted = sorted(honeypots, key=sort_key)
+
+    # Build matrix to compute totals (math only; rendering rebuilds it from dict)
+    matrix = np.zeros((len(honeypots_sorted), n_iters), dtype=float)
+    for i, h in enumerate(honeypots_sorted):
+        per_iter = h.get("per_iter_hits", {})
+        for j, k in enumerate(iter_keys):
+            matrix[i, j] = per_iter.get(k, 0)
+    total_hits = matrix.sum()
+
+    top2_total = sum(h["total_hits"] for h in honeypots_sorted[:2])
+    pct_top2 = top2_total / total_hits * 100 if total_hits else 0.0
+
+    return {
+        "description": DESCRIPTION,
+        "n_iterations": n_iters,
+        "n_honeypots": len(honeypots_sorted),
+        "total_hits": int(total_hits),
+        "top2_share_pct": round(pct_top2, 2),
+        "honeypots": [
+            {
+                "id": h["id"],
+                "tier": h["tier"],
+                "total_hits": h["total_hits"],
+                "iters_with_hit": h["iters_with_hit"],
+                "per_iter_hits": h.get("per_iter_hits", {}),
+            }
+            for h in honeypots_sorted
+        ],
+    }
+
+
+def plot_honeypot_per_iter_heatmap(
+    results: list[tuple[str, str]],
+    out_dir: str = "figures/",
+    precomputed: dict | None = None,
+) -> Path:
+    out_path = Path(out_dir) / "honeypot_per_iter_heatmap.png"
+    sidecar_path = Path(out_dir) / "honeypot_per_iter_heatmap.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if precomputed is None:
+        precomputed = compute_honeypot_per_iter_heatmap(results, out_dir=out_dir)
+    if not precomputed:
+        print("[honeypot_per_iter_heatmap] honeypot_tiers.json not found", file=sys.stderr)
+        return out_path
+
+    honeypots_sorted = precomputed["honeypots"]
+    n_iters = precomputed["n_iterations"]
+    iter_keys = [str(i) for i in range(n_iters)]
 
     # Build matrix: rows = honeypots, cols = iters
     matrix = np.zeros((len(honeypots_sorted), n_iters), dtype=float)
@@ -164,8 +217,7 @@ def plot_honeypot_per_iter_heatmap(
     cb.set_label("Breach count per cell", fontsize=8)
 
     # Caption note
-    top2_total = sum(h["total_hits"] for h in honeypots_sorted[:2])
-    pct_top2 = top2_total / total_hits * 100
+    pct_top2 = precomputed["top2_share_pct"]
     fig.text(
         0.5,
         -0.02,
@@ -183,10 +235,10 @@ def plot_honeypot_per_iter_heatmap(
     # Sidecar
     sidecar = {
         "description": DESCRIPTION,
-        "n_iterations": n_iters,
-        "n_honeypots": len(honeypots_sorted),
-        "total_hits": int(total_hits),
-        "top2_share_pct": round(pct_top2, 2),
+        "n_iterations": precomputed["n_iterations"],
+        "n_honeypots": precomputed["n_honeypots"],
+        "total_hits": precomputed["total_hits"],
+        "top2_share_pct": precomputed["top2_share_pct"],
         "honeypots": [
             {
                 "id": h["id"],
